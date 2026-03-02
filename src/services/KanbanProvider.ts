@@ -25,11 +25,14 @@ export class KanbanProvider implements vscode.Disposable {
     private _sessionWatcher?: vscode.FileSystemWatcher;
     private _fsSessionWatcher?: fs.FSWatcher;
     private _refreshDebounceTimer?: NodeJS.Timeout;
+    private _codedColumnTarget: string;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
         private readonly _context: vscode.ExtensionContext
-    ) {}
+    ) {
+        this._codedColumnTarget = this._context.workspaceState.get<string>('kanban.codedTarget') || 'lead';
+    }
 
     dispose() {
         this._panel?.dispose();
@@ -52,7 +55,7 @@ export class KanbanProvider implements vscode.Disposable {
 
         this._panel = vscode.window.createWebviewPanel(
             'switchboard-kanban',
-            'Switchboard Kanban',
+            'CLI Kanban',
             vscode.ViewColumn.One,
             {
                 enableScripts: true,
@@ -148,6 +151,7 @@ export class KanbanProvider implements vscode.Disposable {
             const cards: KanbanCard[] = sheets.map((sheet: any) => this._sheetToCard(sheet));
 
             this._panel.webview.postMessage({ type: 'updateBoard', cards });
+            this._panel.webview.postMessage({ type: 'updateTarget', column: 'CODED', target: this._codedColumnTarget });
         } catch (e) {
             console.error('[KanbanProvider] Failed to refresh board:', e);
         }
@@ -208,6 +212,13 @@ export class KanbanProvider implements vscode.Disposable {
                 }
                 break;
             }
+            case 'setColumnTarget': {
+                if (msg.column === 'CODED' && msg.target) {
+                    this._codedColumnTarget = msg.target;
+                    await this._context.workspaceState.update('kanban.codedTarget', msg.target);
+                }
+                break;
+            }
             case 'completePlan':
                 if (msg.sessionId) {
                     // Delegate to the sidebar's completePlan handler via internal method
@@ -228,7 +239,7 @@ export class KanbanProvider implements vscode.Disposable {
     private _columnToRole(column: string): string | null {
         switch (column) {
             case 'REVIEWED': return 'planner';
-            case 'CODED': return 'lead';
+            case 'CODED': return this._codedColumnTarget;
             case 'CODE REVIEWED': return 'reviewer';
             default: return null;
         }

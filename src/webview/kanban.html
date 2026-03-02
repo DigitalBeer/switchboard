@@ -122,6 +122,22 @@
             text-align: center;
         }
 
+        .column-select {
+            background: var(--bg-color);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            padding: 2px 4px;
+            outline: none;
+            margin-right: 8px;
+            margin-left: auto;
+        }
+        .column-select:hover {
+            border-color: var(--text-secondary);
+        }
+
         .column-body {
             flex: 1;
             padding: 8px;
@@ -228,7 +244,7 @@
 </head>
 <body>
     <div class="kanban-header">
-        <div class="kanban-title">⚡ Kanban Board</div>
+        <div class="kanban-title">⚡ CLI Kanban</div>
         <button class="btn-refresh" id="btn-refresh">Refresh</button>
     </div>
     <div class="kanban-board" id="kanban-board">
@@ -249,6 +265,10 @@
         <div class="kanban-column" data-column="CODED">
             <div class="column-header">
                 <span class="column-name">Coded</span>
+                <select id="coded-target-select" class="column-select">
+                    <option value="lead">Lead Coder</option>
+                    <option value="coder">Coder</option>
+                </select>
                 <span class="column-count" id="count-CODED">0</span>
             </div>
             <div class="column-body" id="col-CODED"></div>
@@ -433,12 +453,25 @@
                 case 'updateBoard':
                     renderBoard(msg.cards || []);
                     break;
+                case 'updateTarget':
+                    if (msg.column === 'CODED' && msg.target) {
+                        const selectEl = document.getElementById('coded-target-select');
+                        if (selectEl) selectEl.value = msg.target;
+                    }
+                    break;
             }
         });
 
         document.getElementById('btn-refresh').addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
         });
+
+        const codedTargetSelect = document.getElementById('coded-target-select');
+        if (codedTargetSelect) {
+            codedTargetSelect.addEventListener('change', (e) => {
+                vscode.postMessage({ type: 'setColumnTarget', column: 'CODED', target: e.target.value });
+            });
+        }
 
         // Initial empty state
         renderBoard([]);
