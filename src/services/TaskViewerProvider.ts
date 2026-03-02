@@ -9,6 +9,8 @@ import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog
 import { sendRobustText } from './terminalUtils';
 import { InteractiveOrchestrator } from './InteractiveOrchestrator';
 import { PipelineOrchestrator } from './PipelineOrchestrator';
+import { NotebookLmService } from './NotebookLmService';
+import { bundleWorkspaceContext } from './ContextBundler';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
     syncMirrorToBrain: (options: {
         mirrorPath: string;
@@ -101,6 +103,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Persisted workspace blacklist: stable-path keys of brain plans present during setup.
     // Blacklisted plans are never auto-registered and never shown in the run sheet dropdown.
     private _brainPlanBlacklist = new Set<string>();
+
+    // NotebookLM planner service
+    private _notebookLmService: NotebookLmService | null = null;
 
     // Hard workspace ownership scoping
     private _workspaceId: string | null = null;
@@ -808,6 +813,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         if (data.role && data.sessionFile) {
                             await this._handleTriggerAgentAction(data.role, data.sessionFile, data.instruction);
                         }
+                        break;
+                    case 'triggerNotebookLm':
+                        await this._handleTriggerNotebookLm(data.query || '');
+                        break;
+                    case 'sendSpecToCoder':
+                        await this._handleSendSpecToCoder();
                         break;
                     case 'sendAnalystMessage':
                         if (data.instruction) {
@@ -5951,10 +5962,99 @@ ${focusDirective}`);
         timers.push(delayTimer);
     }
 
+    // --- NotebookLM Planner Handlers ---
+
+    private async _handleTriggerNotebookLm(userQuery: string): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            vscode.window.showErrorMessage('No workspace open.');
+            return;
+        }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        const emitStatus = (status: string, message?: string, error?: string) => {
+            this._view?.webview.postMessage({ type: 'notebookLmStatus', status, message: message || error || status });
+        };
+
+        try {
+            // Phase 1: Bundle
+            emitStatus('bundling', 'Bundling workspace context...');
+            const contextPath = await bundleWorkspaceContext(workspaceRoot);
+
+            // Phase 2: Initialize MCP
+            if (!this._notebookLmService) {
+                this._notebookLmService = new NotebookLmService((evt) => {
+                    emitStatus(evt.status, evt.message, evt.error);
+                });
+            }
+
+            emitStatus('connecting', 'Starting NotebookLM MCP server...');
+            await this._notebookLmService.initialize();
+
+            // Phase 3: Create notebook, upload, query
+            const defaultQuery = `You are a senior software architect. Analyze the uploaded codebase and generate a detailed implementation specification for the following request. Include: 1) Architecture overview, 2) File-by-file changes needed, 3) Data flow, 4) Edge cases, 5) Testing strategy. Format as markdown.\n\nRequest: ${userQuery || 'Provide a comprehensive architectural overview and improvement plan for this codebase.'}`;
+
+            const spec = await this._notebookLmService.createAndQueryNotebook(contextPath, defaultQuery);
+
+            // Write spec to file
+            const specPath = path.join(workspaceRoot, '.switchboard', 'notebooklm-spec.md');
+            await fs.promises.writeFile(specPath, spec, 'utf8');
+
+            // Send result to webview
+            this._view?.webview.postMessage({ type: 'notebookLmResult', spec });
+            emitStatus('complete', 'Spec generated successfully.');
+
+        } catch (err: any) {
+            console.error('[TaskViewerProvider] NotebookLM pipeline failed:', err);
+            emitStatus('error', undefined, err.message || String(err));
+            vscode.window.showErrorMessage(`NotebookLM: ${err.message || err}`);
+        }
+    }
+
+    private async _handleSendSpecToCoder(): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) { return; }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        const specPath = path.join(workspaceRoot, '.switchboard', 'notebooklm-spec.md');
+        if (!fs.existsSync(specPath)) {
+            vscode.window.showErrorMessage('No generated spec found. Run "Generate Spec" first.');
+            return;
+        }
+
+        let spec: string;
+        try {
+            spec = await fs.promises.readFile(specPath, 'utf8');
+        } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to read spec: ${err.message}`);
+            return;
+        }
+
+        // Find coder or lead agent
+        const coderAgent = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('lead');
+        if (!coderAgent) {
+            vscode.window.showErrorMessage("No agent assigned to 'coder' or 'lead' role. Please assign a terminal first.");
+            return;
+        }
+
+        const payload = `Execute the following implementation specification exactly as described. Do not deviate from the spec unless you encounter a clear error.\n\n---\n\n${spec}`;
+
+        await this._dispatchExecuteMessage(
+            workspaceRoot,
+            coderAgent,
+            this._withCoderAccuracyInstruction(payload),
+            { source: 'notebooklm-planner', workflow: 'notebooklm-spec' }
+        );
+
+        this._view?.webview.postMessage({ type: 'actionTriggered', role: 'notebooklm', success: true });
+        vscode.window.showInformationMessage(`Spec dispatched to ${coderAgent}.`);
+    }
+
     public dispose() {
         this._coderReviewerSessions.forEach((_, sessionId) => this._stopCoderReviewerWorkflow(sessionId));
         this._orchestrator.dispose();
         this._pipeline.dispose();
+        this._notebookLmService?.dispose();
         this._stateWatcher?.dispose();
         this._planWatcher?.dispose();
         this._planRootWatcher?.dispose();

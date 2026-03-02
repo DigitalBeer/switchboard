@@ -1837,6 +1837,36 @@
                         renderAgentList();
                     }
                     break;
+                case 'notebookLmStatus': {
+                    const nlmCard = document.getElementById('nlm-status');
+                    const nlmBtn = document.getElementById('nlm-generate-btn');
+                    if (nlmCard) {
+                        nlmCard.innerText = message.message || message.status || '';
+                        nlmCard.style.display = 'block';
+                    }
+                    if (nlmBtn) {
+                        const isActive = message.status !== 'complete' && message.status !== 'error' && message.status !== 'idle';
+                        nlmBtn.disabled = isActive;
+                        nlmBtn.innerText = isActive ? 'WORKING...' : 'GENERATE SPEC';
+                        nlmBtn.classList.toggle('dispatching', isActive);
+                    }
+                    if (message.status === 'error' && nlmCard) {
+                        nlmCard.style.color = 'var(--accent-red)';
+                        setTimeout(() => { nlmCard.style.color = ''; }, 4000);
+                    }
+                    break;
+                }
+                case 'notebookLmResult': {
+                    const viewer = document.getElementById('nlm-spec-viewer');
+                    const content = document.getElementById('nlm-spec-content');
+                    const sendBtn = document.getElementById('nlm-send-btn');
+                    const nlmBtn2 = document.getElementById('nlm-generate-btn');
+                    if (viewer) viewer.style.display = 'block';
+                    if (content) content.innerText = message.spec || '(empty response)';
+                    if (sendBtn) sendBtn.style.display = 'block';
+                    if (nlmBtn2) { nlmBtn2.disabled = false; nlmBtn2.innerText = 'GENERATE SPEC'; nlmBtn2.classList.remove('dispatching'); }
+                    break;
+                }
             }
         });
 
@@ -2007,10 +2037,96 @@
                 true
             ));
 
+            // === CLOUD TAB: NotebookLM Planner ===
+            agentListCloud.appendChild(createNotebookLmCard());
+
             // Restore active tab visibility after re-render
             switchAgentTab(currentAgentTab);
         }
 
+
+        function createNotebookLmCard() {
+            const container = document.createElement('div');
+            container.className = 'agent-row';
+            container.style.borderLeft = '2px solid var(--accent-cyan)';
+
+            // Header
+            const header = document.createElement('div');
+            header.className = 'row-header';
+            const identity = document.createElement('div');
+            identity.className = 'agent-identity';
+            const dot = document.createElement('div');
+            dot.className = 'status-dot green';
+            const name = document.createElement('div');
+            name.className = 'agent-name';
+            name.innerText = 'NOTEBOOKLM PLANNER';
+            identity.appendChild(dot);
+            identity.appendChild(name);
+            header.appendChild(identity);
+            container.appendChild(header);
+
+            // Status line
+            const statusLine = document.createElement('div');
+            statusLine.id = 'nlm-status';
+            statusLine.style.cssText = 'display:none; font-size:10px; padding:2px 8px; color:var(--text-secondary); font-family:var(--font-mono);';
+            container.appendChild(statusLine);
+
+            // Query input
+            const queryRow = document.createElement('div');
+            queryRow.style.cssText = 'padding:4px 8px;';
+            const queryInput = document.createElement('textarea');
+            queryInput.id = 'nlm-query-input';
+            queryInput.placeholder = 'Describe what you want built... (or leave blank for default planning prompt)';
+            queryInput.style.cssText = 'width:100%; min-height:48px; max-height:120px; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-family); font-size:11px; padding:6px; resize:vertical; border-radius:2px;';
+            queryRow.appendChild(queryInput);
+            container.appendChild(queryRow);
+
+            // Generate button
+            const btn = document.createElement('button');
+            btn.className = 'action-btn';
+            btn.id = 'nlm-generate-btn';
+            btn.innerText = 'GENERATE SPEC';
+            btn.disabled = !isPlanSelected();
+            btn.onclick = () => {
+                const query = queryInput.value.trim();
+                btn.disabled = true;
+                btn.classList.add('dispatching');
+                btn.innerText = 'WORKING...';
+                vscode.postMessage({ type: 'triggerNotebookLm', query: query || '' });
+            };
+            container.appendChild(btn);
+
+            // Spec viewer (hidden until result)
+            const viewer = document.createElement('div');
+            viewer.id = 'nlm-spec-viewer';
+            viewer.style.cssText = 'display:none; margin:6px 8px; padding:8px; background:var(--panel-bg2); border:1px solid var(--border-color); border-radius:2px; max-height:300px; overflow-y:auto;';
+            const specContent = document.createElement('pre');
+            specContent.id = 'nlm-spec-content';
+            specContent.style.cssText = 'white-space:pre-wrap; word-break:break-word; font-size:11px; font-family:var(--font-mono); color:var(--text-primary); margin:0;';
+            viewer.appendChild(specContent);
+            container.appendChild(viewer);
+
+            // Send to Coder button (hidden until result)
+            const sendBtn = document.createElement('button');
+            sendBtn.className = 'action-btn';
+            sendBtn.id = 'nlm-send-btn';
+            sendBtn.innerText = 'SEND TO CODER';
+            sendBtn.style.cssText = 'display:none; background:var(--accent-cyan); color:#fff; border-color:var(--accent-cyan);';
+            sendBtn.onclick = () => {
+                sendBtn.disabled = true;
+                sendBtn.innerText = 'DISPATCHING...';
+                sendBtn.classList.add('dispatching');
+                vscode.postMessage({ type: 'sendSpecToCoder' });
+                setTimeout(() => {
+                    sendBtn.disabled = false;
+                    sendBtn.innerText = 'SEND TO CODER';
+                    sendBtn.classList.remove('dispatching');
+                }, 3000);
+            };
+            container.appendChild(sendBtn);
+
+            return container;
+        }
 
         function createJulesHistoryList() {
             const container = document.createElement('div');
