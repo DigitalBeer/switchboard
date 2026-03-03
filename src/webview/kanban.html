@@ -7,21 +7,21 @@
     <title>Switchboard Kanban</title>
     <style>
         :root {
-            --bg-color: #0a0e13;
-            --panel-bg: #0f1419;
-            --panel-bg2: #131920;
-            --border-color: #1e2830;
-            --border-bright: #2a3a48;
-            --text-primary: #c9d1d9;
-            --text-secondary: #6b7c8d;
-            --accent-cyan: #2f81f7;
-            --accent-green: #3fb950;
-            --accent-green-dim: #238636;
-            --accent-red: #da3633;
-            --accent-orange: #d29922;
-            --glow-green: 0 0 6px rgba(63, 185, 80, 0.3), 0 0 12px rgba(63, 185, 80, 0.1);
-            --font-family: 'Segoe UI', 'Roboto', sans-serif;
-            --font-mono: 'Consolas', 'Courier New', monospace;
+            --bg-color: var(--vscode-editor-background);
+            --panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+            --panel-bg2: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
+            --border-color: var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+            --border-bright: var(--vscode-focusBorder, transparent);
+            --text-primary: var(--vscode-editor-foreground);
+            --text-secondary: var(--vscode-descriptionForeground);
+            --accent-cyan: var(--vscode-textLink-foreground, #2f81f7);
+            --accent-green: var(--vscode-button-background, #3fb950);
+            --accent-green-dim: var(--vscode-button-hoverBackground, #238636);
+            --accent-red: var(--vscode-errorForeground, #da3633);
+            --accent-orange: var(--vscode-editorWarning-foreground, #d29922);
+            --glow-green: 0 0 6px color-mix(in srgb, var(--accent-green) 30%, transparent), 0 0 12px color-mix(in srgb, var(--accent-green) 10%, transparent);
+            --font-family: var(--vscode-font-family, 'Segoe UI', 'Roboto', sans-serif);
+            --font-mono: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -32,10 +32,6 @@
             color: var(--text-primary);
             height: 100vh;
             overflow: hidden;
-            background-image:
-                linear-gradient(rgba(63, 185, 80, 0.01) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(63, 185, 80, 0.01) 1px, transparent 1px);
-            background-size: 20px 20px;
         }
 
         .kanban-header {
@@ -70,8 +66,10 @@
             transition: all 0.15s;
         }
         .btn-refresh:hover {
-            border-color: var(--text-secondary);
-            color: var(--text-primary);
+            border-color: color-mix(in srgb, var(--accent-green) 65%, transparent);
+            color: var(--accent-green);
+            background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-green) 25%, transparent);
         }
 
         .kanban-board {
@@ -89,7 +87,7 @@
             display: flex;
             flex-direction: column;
             background: var(--panel-bg);
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             border-radius: 4px;
             overflow: hidden;
         }
@@ -147,14 +145,14 @@
         }
 
         .column-body.drag-over {
-            background: rgba(63, 185, 80, 0.06);
+            background: color-mix(in srgb, var(--accent-green) 6%, transparent);
             outline: 1px dashed var(--accent-green-dim);
             outline-offset: -4px;
         }
 
         .kanban-card {
             background: linear-gradient(180deg, var(--panel-bg2) 0%, var(--panel-bg) 100%);
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             border-radius: 3px;
             padding: 10px 12px;
             margin-bottom: 8px;
@@ -238,8 +236,8 @@
         /* Scrollbar styling */
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, var(--border-bright)); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, var(--text-secondary)); }
     </style>
 </head>
 <body>
@@ -255,12 +253,12 @@
             </div>
             <div class="column-body" id="col-CREATED"></div>
         </div>
-        <div class="kanban-column" data-column="REVIEWED">
+        <div class="kanban-column" data-column="PLAN REVIEWED">
             <div class="column-header">
-                <span class="column-name">Reviewed</span>
-                <span class="column-count" id="count-REVIEWED">0</span>
+                <span class="column-name">Plan Reviewed</span>
+                <span class="column-count" id="count-PLAN REVIEWED">0</span>
             </div>
-            <div class="column-body" id="col-REVIEWED"></div>
+            <div class="column-body" id="col-PLAN REVIEWED"></div>
         </div>
         <div class="kanban-column" data-column="CODED">
             <div class="column-header">
@@ -284,7 +282,7 @@
 
     <script>
         const vscode = acquireVsCodeApi();
-        const columns = ['CREATED', 'REVIEWED', 'CODED', 'CODE REVIEWED'];
+        const columns = ['CREATED', 'PLAN REVIEWED', 'CODED', 'CODE REVIEWED'];
         let currentCards = [];
 
         function renderBoard(cards) {

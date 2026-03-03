@@ -9,7 +9,8 @@ import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog
 import { sendRobustText } from './terminalUtils';
 import { InteractiveOrchestrator } from './InteractiveOrchestrator';
 import { PipelineOrchestrator } from './PipelineOrchestrator';
-import { NotebookLmService } from './NotebookLmService';
+import * as NlmCli from './NlmCliRunner';
+import { NlmAuthError } from './NlmCliRunner';
 import { bundleWorkspaceContext } from './ContextBundler';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
     syncMirrorToBrain: (options: {
@@ -104,8 +105,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Blacklisted plans are never auto-registered and never shown in the run sheet dropdown.
     private _brainPlanBlacklist = new Set<string>();
 
-    // NotebookLM planner service
-    private _notebookLmService: NotebookLmService | null = null;
+    // (NlmCliRunner is stateless — no instance field needed)
 
     // Hard workspace ownership scoping
     private _workspaceId: string | null = null;
@@ -527,6 +527,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         await this._handleCompletePlan(sessionId);
     }
 
+    /** Called by the Kanban board to open a plan file. */
+    public async handleKanbanViewPlan(sessionId: string) {
+        await this._handleViewPlan(sessionId);
+    }
+
     public async getStartupCommands(): Promise<Record<string, string>> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return {};
@@ -814,11 +819,38 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             await this._handleTriggerAgentAction(data.role, data.sessionFile, data.instruction);
                         }
                         break;
-                    case 'triggerNotebookLm':
-                        await this._handleTriggerNotebookLm(data.query || '');
+                    case 'nlm_startServer':
+                        this._handleNlmStartServer();
                         break;
-                    case 'sendSpecToCoder':
-                        await this._handleSendSpecToCoder();
+                    case 'nlm_listNotebooks':
+                        await this._handleNlmListNotebooks();
+                        break;
+                    case 'nlm_createNotebook':
+                        await this._handleNlmCreateNotebook(data.title || '');
+                        break;
+                    case 'nlm_bundleAndUpload':
+                        await this._handleNlmBundleAndUpload(data.notebookId || '');
+                        break;
+                    case 'nlm_query':
+                        await this._handleNlmQuery(data.notebookId || '', data.question || '');
+                        break;
+                    case 'nlm_configurePersona':
+                        await this._handleNlmConfigurePersona(data.notebookId || '', data.persona || '');
+                        break;
+                    case 'nlm_addDriveLink':
+                        await this._handleNlmAddDriveLink(data.notebookId || '', data.url || '');
+                        break;
+                    case 'nlm_syncContext':
+                        await this._handleNlmSyncContext(data.notebookId || '');
+                        break;
+                    case 'runNlmSetupStep':
+                        await this._handleRunNlmSetupStep(data.step);
+                        break;
+                    case 'delegateNotebookLmSetup':
+                        await this._handleDelegateNotebookLmSetup();
+                        break;
+                    case 'copyNotebookLmSetupPrompt':
+                        await this._handleCopyNotebookLmSetupPrompt();
                         break;
                     case 'sendAnalystMessage':
                         if (data.instruction) {
@@ -874,6 +906,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'restorePlan': {
                         if (data.planId) {
                             const success = await this._handleRestorePlan(data.planId);
+                            this._view?.webview.postMessage({ type: 'restorePlanResult', success, planId: data.planId });
                             if (success) {
                                 const plans = this._getRecoverablePlans();
                                 this._view?.webview.postMessage({ type: 'recoverablePlans', plans });
@@ -1548,6 +1581,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         entry.updatedAt = new Date().toISOString();
         await this._savePlanRegistry(workspaceRoot);
 
+        let resolvedSessionId: string | undefined;
+
         // Remove tombstone if one was placed for this plan
         if (entry.sourceType === 'brain' && entry.brainSourcePath) {
             const stablePath = this._getStablePath(this._getBaseBrainPath(path.resolve(entry.brainSourcePath)));
@@ -1570,10 +1605,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
             // Restore the run sheet so the plan re-appears in the dropdown
             const runSheetId = `antigravity_${pathHash}`;
+            resolvedSessionId = runSheetId;
             await this._restoreRunSheet(workspaceRoot, runSheetId, path.resolve(entry.brainSourcePath));
             // Trigger re-mirror
             await this._mirrorBrainPlan(path.resolve(entry.brainSourcePath));
         } else if (entry.sourceType === 'local') {
+            resolvedSessionId = planId;
             // Restore the run sheet for local plans so the plan re-appears in the dropdown
             await this._restoreRunSheet(workspaceRoot, planId);
         }
@@ -1584,6 +1621,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             topic: entry.topic
         });
         await this._refreshRunSheets();
+        if (resolvedSessionId) {
+            this._view?.webview.postMessage({ type: 'selectSession', sessionId: resolvedSessionId });
+        }
         vscode.window.showInformationMessage(`Restored plan: ${entry.topic || planId}`);
         return true;
     }
@@ -2735,6 +2775,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 planFile: sheet.planFile,
                 topic: sheet.topic
             });
+            await this._archiveCompletedSession(sessionId, log, workspaceRoot);
             await this._refreshRunSheets();
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to mark plan complete: ${e}`);
@@ -4429,7 +4470,7 @@ ${focusDirective}`);
         } else {
             const workflowMap: Record<string, string> = {
                 'planner': 'sidebar-review',
-                'reviewer': 'challenge',
+                'reviewer': 'reviewer-pass',
                 'lead': 'handoff-lead',
                 'coder': 'handoff',
                 'jules': 'jules'
@@ -5964,97 +6005,211 @@ ${focusDirective}`);
 
     // --- NotebookLM Planner Handlers ---
 
-    private async _handleTriggerNotebookLm(userQuery: string): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-            vscode.window.showErrorMessage('No workspace open.');
-            return;
-        }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    private _handleNlmStartServer(): void {
+        const terminal = vscode.window.createTerminal({ name: 'NotebookLM Server' });
+        terminal.sendText('uvx --from notebooklm-mcp-cli notebooklm-mcp');
+        terminal.show();
+    }
 
-        const emitStatus = (status: string, message?: string, error?: string) => {
-            this._view?.webview.postMessage({ type: 'notebookLmStatus', status, message: message || error || status });
-        };
-
+    private async _handleNlmListNotebooks(): Promise<void> {
         try {
-            // Phase 1: Bundle
-            emitStatus('bundling', 'Bundling workspace context...');
-            const contextPath = await bundleWorkspaceContext(workspaceRoot);
-
-            // Phase 2: Initialize MCP
-            if (!this._notebookLmService) {
-                this._notebookLmService = new NotebookLmService((evt) => {
-                    emitStatus(evt.status, evt.message, evt.error);
-                });
-            }
-
-            emitStatus('connecting', 'Starting NotebookLM MCP server...');
-            await this._notebookLmService.initialize();
-
-            // Phase 3: Create notebook, upload, query
-            const defaultQuery = `You are a senior software architect. Analyze the uploaded codebase and generate a detailed implementation specification for the following request. Include: 1) Architecture overview, 2) File-by-file changes needed, 3) Data flow, 4) Edge cases, 5) Testing strategy. Format as markdown.\n\nRequest: ${userQuery || 'Provide a comprehensive architectural overview and improvement plan for this codebase.'}`;
-
-            const spec = await this._notebookLmService.createAndQueryNotebook(contextPath, defaultQuery);
-
-            // Write spec to file
-            const specPath = path.join(workspaceRoot, '.switchboard', 'notebooklm-spec.md');
-            await fs.promises.writeFile(specPath, spec, 'utf8');
-
-            // Send result to webview
-            this._view?.webview.postMessage({ type: 'notebookLmResult', spec });
-            emitStatus('complete', 'Spec generated successfully.');
-
+            const notebooks = await NlmCli.listNotebooks();
+            this._view?.webview.postMessage({ type: 'nlm_notebookList', notebooks });
         } catch (err: any) {
-            console.error('[TaskViewerProvider] NotebookLM pipeline failed:', err);
-            emitStatus('error', undefined, err.message || String(err));
-            vscode.window.showErrorMessage(`NotebookLM: ${err.message || err}`);
+            this._postNlmError(err);
         }
     }
 
-    private async _handleSendSpecToCoder(): Promise<void> {
+    private async _handleNlmCreateNotebook(title: string): Promise<void> {
+        try {
+            const notebookId = await NlmCli.createNotebook(title || 'Switchboard Session');
+            this._view?.webview.postMessage({ type: 'nlm_notebookCreated', notebookId });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private async _handleNlmBundleAndUpload(notebookId: string): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) { vscode.window.showErrorMessage('No workspace open.'); return; }
+        try {
+            const contextPath = await bundleWorkspaceContext(workspaceFolders[0].uri.fsPath);
+            const sourceId = await NlmCli.uploadSource(notebookId, contextPath);
+            this._view?.webview.postMessage({ type: 'nlm_uploadComplete', sourceId, contextPath });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private async _handleNlmQuery(notebookId: string, question: string): Promise<void> {
+        try {
+            const result = await NlmCli.queryNotebook(notebookId, question);
+            this._view?.webview.postMessage({ type: 'nlm_queryResult', answer: result.answer || JSON.stringify(result) });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private _postNlmError(err: any): void {
+        if (err instanceof NlmAuthError) {
+            this._view?.webview.postMessage({ type: 'nlm_authError', message: err.message });
+        } else {
+            this._view?.webview.postMessage({ type: 'nlm_error', message: err.message || String(err) });
+        }
+    }
+
+    private static readonly NLM_PERSONA_PROMPTS: Record<string, { goal: string; prompt: string }> = {
+        'Research Assistant': {
+            goal: 'research',
+            prompt: 'Analyze the context and give me an extremely concise, bulleted brief of the files I need to modify. Do not write code.'
+        },
+        'Patch Generator': {
+            goal: 'patch',
+            prompt: 'You are a code diff engine. Output ONLY a raw, unified Git patch implementing the requested changes based on the context. No markdown wrapping.'
+        },
+        'Default': {
+            goal: 'default',
+            prompt: ''
+        }
+    };
+
+    private static _extractDocId(url: string): string | null {
+        // Match /d/<id> pattern (Google Docs, Sheets, etc.)
+        const dMatch = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+        if (dMatch) { return dMatch[1]; }
+        // Match id=<id> query param
+        const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        if (idMatch) { return idMatch[1]; }
+        // If it looks like a raw doc ID already (no slashes, no protocol)
+        if (/^[a-zA-Z0-9_-]{10,}$/.test(url.trim())) { return url.trim(); }
+        return null;
+    }
+
+    private async _handleNlmConfigurePersona(notebookId: string, persona: string): Promise<void> {
+        try {
+            if (persona === 'Custom') {
+                const customPrompt = await vscode.window.showInputBox({
+                    prompt: 'Enter your custom system prompt for NotebookLM',
+                    placeHolder: 'e.g. Reply like a pirate.',
+                    ignoreFocusOut: true
+                });
+                if (customPrompt === undefined) {
+                    // User canceled — revert dropdown
+                    this._view?.webview.postMessage({ type: 'nlm_personaRevert' });
+                    return;
+                }
+                await NlmCli.configureChat(notebookId, 'custom', customPrompt);
+            } else {
+                const preset = TaskViewerProvider.NLM_PERSONA_PROMPTS[persona] || TaskViewerProvider.NLM_PERSONA_PROMPTS['Default'];
+                await NlmCli.configureChat(notebookId, preset.goal, preset.prompt || undefined);
+            }
+            this._view?.webview.postMessage({ type: 'nlm_chatConfigured', persona });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private async _handleNlmAddDriveLink(notebookId: string, url: string): Promise<void> {
+        const docId = TaskViewerProvider._extractDocId(url);
+        if (!docId) {
+            this._view?.webview.postMessage({ type: 'nlm_error', message: 'Could not extract a Google Doc ID from the provided URL.' });
+            return;
+        }
+        try {
+            const sourceId = await NlmCli.addDriveSource(notebookId, docId);
+            this._view?.webview.postMessage({ type: 'nlm_driveLinkAdded', sourceId });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private async _handleNlmSyncContext(notebookId: string): Promise<void> {
+        try {
+            await NlmCli.syncSources(notebookId);
+            this._view?.webview.postMessage({ type: 'nlm_syncComplete' });
+        } catch (err: any) {
+            this._postNlmError(err);
+        }
+    }
+
+    private static readonly NOTEBOOKLM_SETUP_PROMPT = `I am setting up the NotebookLM MCP server. I'm running setup commands in my terminal. Please stand by to help if I encounter any errors or need assistance with Python 3.11+, Google Chrome, or the 'uv' package manager. If 'uvx' is not found after installing uv, try running 'uv tool update-shell' then restart VS Code.`;
+
+    private _findOrCreateSetupTerminal(): vscode.Terminal {
+        const existing = vscode.window.terminals.find(t => t.name === 'Switchboard Setup');
+        if (existing) { return existing; }
+        return vscode.window.createTerminal({ name: 'Switchboard Setup' });
+    }
+
+    private async _handleRunNlmSetupStep(step: string): Promise<void> {
+        let command = '';
+        if (step === 'prereqs') {
+            command = 'python --version';
+        } else if (step === 'initial') {
+            command = process.platform === 'win32'
+                ? 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex" && uv tool update-shell'
+                : 'curl -LsSf https://astral.sh/uv/install.sh | sh && uv tool update-shell';
+        } else if (step === 'troubleshoot') {
+            command = 'uv tool update-shell';
+        } else if (step === 'login') {
+            command = 'uvx --from notebooklm-mcp-cli notebooklm-mcp';
+        } else if (step === 'verify') {
+            command = 'uvx --version';
+        }
+
+        if (!command) { return; }
+
+        // Run the command in a dedicated setup terminal
+        const terminal = this._findOrCreateSetupTerminal();
+        terminal.show();
+        await sendRobustText(terminal, command, false);
+        vscode.window.showInformationMessage(`Running "${step}" step in Switchboard Setup terminal.`);
+
+        // Optionally notify assigned agent with a generic help prompt
+        const agentName = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('planner');
+        if (agentName) {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders) {
+                await this._dispatchExecuteMessage(
+                    workspaceFolders[0].uri.fsPath,
+                    agentName,
+                    TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT,
+                    { source: 'notebooklm-setup', workflow: 'notebooklm-setup' }
+                );
+            }
+        }
+    }
+
+    private async _handleDelegateNotebookLmSetup(): Promise<void> {
+        const agentName = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('planner');
+        if (!agentName) {
+            // Fallback: copy prompt and tell user to paste it into their preferred AI assistant
+            await vscode.env.clipboard.writeText(TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT);
+            vscode.window.showInformationMessage('No agent terminal assigned. Setup prompt copied to clipboard — paste it into your AI assistant.');
+            return;
+        }
+
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) { return; }
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
-        const specPath = path.join(workspaceRoot, '.switchboard', 'notebooklm-spec.md');
-        if (!fs.existsSync(specPath)) {
-            vscode.window.showErrorMessage('No generated spec found. Run "Generate Spec" first.');
-            return;
-        }
-
-        let spec: string;
-        try {
-            spec = await fs.promises.readFile(specPath, 'utf8');
-        } catch (err: any) {
-            vscode.window.showErrorMessage(`Failed to read spec: ${err.message}`);
-            return;
-        }
-
-        // Find coder or lead agent
-        const coderAgent = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('lead');
-        if (!coderAgent) {
-            vscode.window.showErrorMessage("No agent assigned to 'coder' or 'lead' role. Please assign a terminal first.");
-            return;
-        }
-
-        const payload = `Execute the following implementation specification exactly as described. Do not deviate from the spec unless you encounter a clear error.\n\n---\n\n${spec}`;
-
         await this._dispatchExecuteMessage(
             workspaceRoot,
-            coderAgent,
-            this._withCoderAccuracyInstruction(payload),
-            { source: 'notebooklm-planner', workflow: 'notebooklm-spec' }
+            agentName,
+            TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT,
+            { source: 'notebooklm-setup', workflow: 'notebooklm-setup' }
         );
+        vscode.window.showInformationMessage(`NotebookLM setup prompt sent to ${agentName}.`);
+    }
 
-        this._view?.webview.postMessage({ type: 'actionTriggered', role: 'notebooklm', success: true });
-        vscode.window.showInformationMessage(`Spec dispatched to ${coderAgent}.`);
+    private async _handleCopyNotebookLmSetupPrompt(): Promise<void> {
+        await vscode.env.clipboard.writeText(TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT);
+        vscode.window.showInformationMessage('NotebookLM setup prompt copied to clipboard.');
     }
 
     public dispose() {
         this._coderReviewerSessions.forEach((_, sessionId) => this._stopCoderReviewerWorkflow(sessionId));
         this._orchestrator.dispose();
         this._pipeline.dispose();
-        this._notebookLmService?.dispose();
         this._stateWatcher?.dispose();
         this._planWatcher?.dispose();
         this._planRootWatcher?.dispose();

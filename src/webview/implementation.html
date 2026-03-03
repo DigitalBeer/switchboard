@@ -8,49 +8,42 @@
     <title>Switchboard</title>
     <style>
         :root {
-            /* Industrial / Cyber Theme - Glowing Green Edition */
-            --bg-color: #0a0e13;
-            --panel-bg: #0f1419;
-            --panel-bg2: #131920;
-            --border-color: #1e2830;
-            --border-bright: #2a3a48;
-            --text-primary: #c9d1d9;
-            --text-secondary: #6b7c8d;
+            --bg-color: var(--vscode-editor-background);
+            --panel-bg: var(--vscode-sideBar-background, var(--vscode-editor-background));
+            --panel-bg2: var(--vscode-sideBarSectionHeader-background, var(--vscode-editorGroupHeader-tabsBackground, var(--vscode-editor-background)));
+            --border-color: var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+            --border-bright: var(--vscode-focusBorder, transparent);
+            --text-primary: var(--vscode-editor-foreground);
+            --text-secondary: var(--vscode-descriptionForeground);
 
-            --accent-cyan: #2f81f7;
-            --accent-green: #3fb950;
-            /* Muted success green aligned with dark editor themes */
-            --accent-green-dim: #238636;
-            --accent-red: #da3633;
-            --accent-orange: #d29922;
+            --accent-cyan: var(--vscode-textLink-foreground, #2f81f7);
+            --accent-green: var(--vscode-button-background, #3fb950);
+            --accent-green-dim: var(--vscode-button-hoverBackground, #238636);
+            --accent-red: var(--vscode-errorForeground, #da3633);
+            --accent-orange: var(--vscode-editorWarning-foreground, #d29922);
 
-            --glow-green: 0 0 6px rgba(63, 185, 80, 0.3), 0 0 12px rgba(63, 185, 80, 0.1);
-            --glow-green-btn: 0 0 4px rgba(63, 185, 80, 0.25), inset 0 1px 0 rgba(63, 185, 80, 0.1);
-            --glow-cyan: 0 0 8px rgba(47, 129, 247, 0.4);
+            --glow-green: 0 0 6px color-mix(in srgb, var(--accent-green) 30%, transparent), 0 0 12px color-mix(in srgb, var(--accent-green) 10%, transparent);
+            --glow-green-btn: 0 0 4px color-mix(in srgb, var(--accent-green) 25%, transparent), inset 0 1px 0 color-mix(in srgb, var(--accent-green) 10%, transparent);
+            --glow-cyan: 0 0 8px color-mix(in srgb, var(--accent-cyan) 40%, transparent);
 
-            --font-family: 'Segoe UI', 'Roboto', sans-serif;
-            --font-mono: 'Consolas', 'Courier New', monospace;
+            --font-family: var(--vscode-font-family, 'Segoe UI', 'Roboto', sans-serif);
+            --font-mono: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
         }
 
         * {
             box-sizing: border-box;
         }
+body {
+    font-family: var(--font-family);
+    padding: 0;
+    margin: 0;
+    color: var(--text-primary);
+    background: var(--bg-color);
+    font-size: 13px;
+    overflow-x: hidden;
+}
 
-        body {
-            font-family: var(--font-family);
-            padding: 0;
-            margin: 0;
-            color: var(--text-primary);
-            background: var(--bg-color);
-            font-size: 13px;
-            overflow-x: hidden;
-            background-image:
-                linear-gradient(rgba(63, 185, 80, 0.01) 1px, transparent 1px),
-                linear-gradient(90deg, rgba(63, 185, 80, 0.01) 1px, transparent 1px);
-            background-size: 20px 20px;
-        }
-
-        /* Utility Classes */
+/* Utility Classes */
         .hidden {
             display: none !important;
         }
@@ -134,7 +127,7 @@
             height: 20px;
             border: 1px solid var(--border-bright);
             border-radius: 2px;
-            background: #0b1116;
+            background: var(--vscode-input-background, var(--vscode-editor-background));
             color: var(--text-secondary);
             cursor: pointer;
             display: inline-flex;
@@ -160,14 +153,14 @@
 
         .icon-btn.success {
             color: var(--accent-green);
-            border-color: rgba(63, 185, 80, 0.4);
-            box-shadow: 0 0 6px rgba(63, 185, 80, 0.2);
+            border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
+            box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 20%, transparent);
         }
 
         .icon-btn.error {
             color: var(--accent-red);
-            border-color: rgba(218, 54, 51, 0.45);
-            box-shadow: 0 0 10px rgba(218, 54, 51, 0.3);
+            border-color: color-mix(in srgb, var(--accent-red) 45%, transparent);
+            box-shadow: 0 0 10px color-mix(in srgb, var(--accent-red) 30%, transparent);
         }
 
         .dropdown-container {
@@ -176,9 +169,9 @@
 
         .plan-select {
             width: 100%;
-            background: #060a0e;
-            color: var(--text-primary);
-            border: 1px solid var(--border-bright);
+            background: var(--vscode-dropdown-background, var(--vscode-input-background));
+            color: var(--vscode-dropdown-foreground, var(--text-primary));
+            border: 1px solid var(--vscode-dropdown-border, var(--vscode-contrastBorder, var(--border-bright)));
             padding: 7px 10px;
             font-size: 11px;
             font-family: var(--font-mono);
@@ -186,12 +179,11 @@
             cursor: pointer;
             appearance: none;
             letter-spacing: 0.5px;
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5);
         }
 
         .plan-select:focus {
             border-color: var(--accent-green);
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 4px rgba(63, 185, 80, 0.12);
+            box-shadow: 0 0 4px color-mix(in srgb, var(--accent-green) 12%, transparent);
         }
 
         .select-arrow {
@@ -215,8 +207,8 @@
 
         .tab-btn {
             flex: 1;
-            background: #0b1116;
-            border: 1px solid var(--border-color);
+            background: var(--vscode-input-background, var(--vscode-editor-background));
+            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 10px;
@@ -229,8 +221,8 @@
 
         .tab-btn.is-active {
             color: var(--accent-green);
-            border-color: rgba(63, 185, 80, 0.35);
-            box-shadow: inset 0 -1px 0 rgba(63, 185, 80, 0.2);
+            border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
+            box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-green) 20%, transparent);
         }
 
         .sub-tab-bar {
@@ -243,8 +235,8 @@
 
         .sub-tab-btn {
             flex: 1;
-            background: #0b1116;
-            border: 1px solid var(--border-color);
+            background: var(--vscode-input-background, var(--vscode-editor-background));
+            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 9px;
@@ -262,8 +254,8 @@
 
         .sub-tab-btn.is-active {
             color: var(--accent-green);
-            border-color: rgba(63, 185, 80, 0.35);
-            box-shadow: inset 0 -1px 0 rgba(63, 185, 80, 0.2);
+            border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
+            box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-green) 20%, transparent);
         }
 
         .tab-panel {
@@ -342,9 +334,9 @@
 
         .activity-row.summary {
             border-left-color: var(--accent-green);
-            border-color: rgba(63, 185, 80, 0.3);
-            background: linear-gradient(180deg, rgba(7, 18, 12, 0.95) 0%, rgba(9, 23, 15, 0.9) 100%);
-            box-shadow: 0 0 6px rgba(63, 185, 80, 0.08);
+            border-color: color-mix(in srgb, var(--accent-green) 30%, transparent);
+            background: color-mix(in srgb, var(--accent-green) 5%, var(--panel-bg));
+            box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 8%, transparent);
         }
 
         .activity-summary-message {
@@ -370,7 +362,7 @@
             flex-direction: column;
             gap: 5px;
             background: var(--panel-bg);
-            border: 1px solid var(--border-color);
+            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             border-left: 2px solid var(--border-bright);
             padding: 8px 10px;
             border-radius: 2px;
@@ -379,12 +371,12 @@
 
         .agent-row:has(.status-dot.green) {
             border-left-color: var(--accent-green);
-            box-shadow: -2px 0 6px rgba(63, 185, 80, 0.1);
+            box-shadow: -2px 0 6px color-mix(in srgb, var(--accent-green) 10%, transparent);
         }
 
         .agent-row:has(.status-dot.green-pulse) {
             border-left-color: var(--accent-green);
-            box-shadow: -2px 0 8px rgba(63, 185, 80, 0.16);
+            box-shadow: -2px 0 8px color-mix(in srgb, var(--accent-green) 16%, transparent);
         }
 
         .row-header {
@@ -404,8 +396,8 @@
             width: 9px;
             height: 9px;
             border-radius: 50%;
-            background: #1e2830;
-            border: 1px solid #2a3a48;
+            background: var(--border-color);
+            border: 1px solid var(--border-bright);
             box-shadow: none;
             transition: all 0.3s ease;
             flex-shrink: 0;
@@ -432,17 +424,17 @@
         @keyframes pulse-green {
             0% {
                 opacity: 1;
-                box-shadow: 0 0 6px rgba(63, 185, 80, 0.35), 0 0 12px rgba(63, 185, 80, 0.15);
+                box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent-green) 15%, transparent);
             }
 
             50% {
                 opacity: 0.7;
-                box-shadow: 0 0 3px rgba(63, 185, 80, 0.2);
+                box-shadow: 0 0 3px color-mix(in srgb, var(--accent-green) 20%, transparent);
             }
 
             100% {
                 opacity: 1;
-                box-shadow: 0 0 6px rgba(63, 185, 80, 0.35), 0 0 12px rgba(63, 185, 80, 0.15);
+                box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 35%, transparent), 0 0 12px color-mix(in srgb, var(--accent-green) 15%, transparent);
             }
         }
 
@@ -462,7 +454,7 @@
         .locate-btn {
             background: none;
             border: none;
-            color: #3a5a7a;
+            color: var(--text-secondary);
             cursor: pointer;
             font-family: var(--font-mono);
             font-size: 10px;
@@ -476,7 +468,7 @@
         .locate-btn:hover {
             opacity: 1;
             color: var(--accent-cyan);
-            text-shadow: 0 0 5px rgba(47, 129, 247, 0.5);
+            text-shadow: 0 0 5px color-mix(in srgb, var(--accent-cyan) 50%, transparent);
         }
 
         .locate-btn:disabled {
@@ -485,13 +477,12 @@
             opacity: 0.25;
         }
 
-        /* Action Buttons - Glowing Green Tactile Style */
+        /* Action Buttons */
         .action-btn {
             width: 100%;
-            background: linear-gradient(180deg, #0e1e16 0%, #0a1610 100%);
-            border: 1px solid #1a3a28;
-            border-bottom-color: #0d2018;
-            color: #3a7a55;
+            background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+            border: 1px solid color-mix(in srgb, var(--accent-green) 40%, transparent);
+            color: var(--accent-green);
             padding: 9px;
             font-size: 11px;
             font-weight: 600;
@@ -501,26 +492,24 @@
             cursor: pointer;
             transition: all 0.15s ease;
             text-align: center;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.03);
             border-radius: 2px;
         }
 
         .action-btn:hover:not(:disabled) {
-            background: linear-gradient(180deg, #122a1e 0%, #0e1e16 100%);
-            border-color: rgba(63, 185, 80, 0.35);
+            background: color-mix(in srgb, var(--accent-green) 20%, transparent);
             color: var(--accent-green);
-            box-shadow: 0 0 8px rgba(63, 185, 80, 0.15), inset 0 1px 0 rgba(63, 185, 80, 0.08);
+            border-color: color-mix(in srgb, var(--accent-green) 65%, transparent);
+            box-shadow: 0 0 12px color-mix(in srgb, var(--accent-green) 35%, transparent);
         }
 
         .action-btn:active:not(:disabled) {
             transform: translateY(1px);
-            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), inset 0 2px 4px rgba(0, 0, 0, 0.3);
         }
 
         .action-btn:disabled {
             opacity: 0.3;
             cursor: not-allowed;
-            color: #2a3a30;
+            color: var(--vscode-disabledForeground, var(--text-secondary));
             border-color: var(--border-color);
         }
 
@@ -557,7 +546,7 @@
         }
 
         .mini-action-btn {
-            background: #0b1116;
+            background: var(--vscode-input-background, var(--panel-bg));
             border: 1px solid var(--border-bright);
             color: var(--text-secondary);
             font-family: var(--font-mono);
@@ -576,8 +565,8 @@
 
         .mini-action-btn.is-active {
             color: var(--accent-cyan);
-            border-color: rgba(47, 129, 247, 0.55);
-            box-shadow: 0 0 8px rgba(47, 129, 247, 0.25);
+            border-color: color-mix(in srgb, var(--accent-cyan) 55%, transparent);
+            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-cyan) 25%, transparent);
         }
 
         .mini-action-btn:disabled {
@@ -588,7 +577,7 @@
         /* Standby Input Area */
         .agent-input {
             width: 100%;
-            background: #060a0e;
+            background: var(--vscode-input-background, var(--panel-bg));
             border: 1px solid var(--border-bright);
             color: var(--text-secondary);
             font-family: var(--font-mono);
@@ -597,15 +586,14 @@
             resize: none;
             height: 40px;
             margin-bottom: 4px;
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
             border-radius: 2px;
         }
 
         .agent-input:focus {
             outline: none;
-            border-color: rgba(63, 185, 80, 0.35);
+            border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
             color: var(--text-primary);
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4), 0 0 4px rgba(63, 185, 80, 0.08);
+            box-shadow: 0 0 4px color-mix(in srgb, var(--accent-green) 8%, transparent);
         }
 
         /* Scrollbar Styling */
@@ -618,17 +606,17 @@
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #1e2830;
+            background: var(--vscode-scrollbarSlider-background, var(--border-color));
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #2a3a48;
+            background: var(--vscode-scrollbarSlider-hoverBackground, var(--border-bright));
         }
 
         /* Status Bar (Bottom) */
         .status-footer {
             padding: 6px 12px;
-            background: #060a0e;
+            background: var(--vscode-statusBar-background, var(--bg-color));
             border-top: 1px solid var(--border-color);
             display: flex;
             justify-content: space-between;
@@ -653,7 +641,7 @@
 
         .tiny-dot.green {
             background: var(--accent-green);
-            box-shadow: 0 0 4px rgba(63, 185, 80, 0.35);
+            box-shadow: 0 0 4px color-mix(in srgb, var(--accent-green) 35%, transparent);
         }
 
         .tiny-dot.orange {
@@ -703,9 +691,9 @@
         }
 
         .secondary-btn {
-            background: linear-gradient(180deg, #0f1419 0%, #0a1014 100%);
+            background: var(--vscode-dropdown-background, var(--panel-bg));
             border: 1px solid var(--border-bright);
-            border-bottom-color: #0d1419;
+            border-bottom-color: var(--border-color);
             color: var(--text-secondary);
             padding: 6px;
             font-size: 10px;
@@ -714,20 +702,32 @@
             letter-spacing: 1px;
             cursor: pointer;
             transition: all 0.15s;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+            box-shadow: none;
             border-radius: 2px;
         }
 
         .secondary-btn:hover {
             border-color: var(--text-secondary);
             color: var(--text-primary);
-            background: #131920;
+            background: var(--vscode-list-hoverBackground, var(--panel-bg2));
+        }
+
+        .secondary-btn.success {
+            color: var(--accent-green);
+            border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
+            box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 20%, transparent);
+        }
+
+        .secondary-btn.error {
+            color: var(--accent-red);
+            border-color: color-mix(in srgb, var(--accent-red) 45%, transparent);
+            box-shadow: 0 0 10px color-mix(in srgb, var(--accent-red) 30%, transparent);
         }
 
         .modal-overlay {
             position: fixed;
             inset: 0;
-            background: rgba(0, 0, 0, 0.65);
+            background: rgba(0, 0, 0, 0.45);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -765,7 +765,7 @@
         .modal-input,
         .modal-textarea {
             width: 100%;
-            background: #060a0e;
+            background: var(--vscode-input-background, var(--panel-bg));
             color: var(--text-primary);
             border: 1px solid var(--border-bright);
             padding: 7px;
@@ -814,8 +814,8 @@
             letter-spacing: 0.5px;
             font-family: var(--font-mono);
         }
-        .recover-status-chip.archived { background: rgba(130,80,223,0.2); color: #b590f0; }
-        .recover-status-chip.orphan { background: rgba(210,153,34,0.2); color: #e8b84a; }
+        .recover-status-chip.archived { background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: #b590f0; }
+        .recover-status-chip.orphan { background: color-mix(in srgb, var(--accent-orange) 20%, transparent); color: #e8b84a; }
         .recover-restore-btn {
             flex-shrink: 0;
             margin-left: 8px;
@@ -824,13 +824,13 @@
             font-family: var(--font-mono);
             background: transparent;
             color: var(--accent-green);
-            border: 1px solid rgba(63,185,80,0.4);
+            border: 1px solid color-mix(in srgb, var(--accent-green) 40%, transparent);
             border-radius: 2px;
             cursor: pointer;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
-        .recover-restore-btn:hover { background: rgba(63,185,80,0.12); }
+        .recover-restore-btn:hover { background: color-mix(in srgb, var(--accent-green) 12%, transparent); }
 
         /* Agent Startup Config */
         .startup-section {
@@ -880,7 +880,7 @@
 
         .startup-row input {
             width: 100%;
-            background: #060a0e;
+            background: var(--vscode-input-background, var(--panel-bg));
             color: var(--text-primary);
             border: 1px solid var(--border-bright);
             padding: 5px 7px;
@@ -894,17 +894,17 @@
         }
 
         /* Action Button Feedback Animations */
-        @keyframes success-glow {
-            0% {
-                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0.3);
-            }
-
-            50% {
-                box-shadow: 0 0 8px 3px rgba(63, 185, 80, 0.2);
-            }
-
-            100% {
-                box-shadow: 0 0 0 0 rgba(63, 185, 80, 0);
+        @keyframes pulse-green {
+                    0% {
+                        box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent-green) 30%, transparent);
+                    }
+                    70% {
+                        box-shadow: 0 0 8px 3px color-mix(in srgb, var(--accent-green) 20%, transparent);
+                    }
+                    100% {
+                        box-shadow: 0 0 0 0 transparent;
+                    }
+                }
             }
         }
 
@@ -945,14 +945,14 @@
             border-color: var(--accent-green) !important;
             color: var(--accent-green) !important;
             animation: success-glow 1.2s ease-out;
-            background: linear-gradient(90deg, transparent 0%, rgba(63, 185, 80, 0.06) 50%, transparent 100%);
+            background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent-green) 60%, transparent) 50%, transparent 100%);
             background-size: 200% 100%;
             animation: success-glow 1.2s ease-out, sweep 1s ease-out;
         }
 
         .action-btn.error {
-            border-color: #ff5252 !important;
-            color: #ff5252 !important;
+            border-color: var(--accent-red) !important;
+            color: var(--accent-red) !important;
             animation: error-shake 0.4s ease-out;
         }
 
@@ -1022,14 +1022,14 @@
 
         .orchestrator-controls .action-btn.stop-btn {
             color: var(--accent-red);
-            border-color: rgba(218, 54, 51, 0.4);
+            border-color: color-mix(in srgb, var(--accent-red) 40%, transparent);
             flex: 0 0 auto;
             width: 70px;
         }
 
         .orchestrator-controls .action-btn.stop-btn:hover:not(:disabled) {
             border-color: var(--accent-red);
-            box-shadow: 0 0 8px rgba(218, 54, 51, 0.3);
+            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-red) 30%, transparent);
         }
 
         .orchestrator-interval {
@@ -1049,7 +1049,7 @@
 
         .orchestrator-interval input {
             width: 60px;
-            background: #060a0e;
+            background: var(--vscode-input-background, var(--panel-bg));
             border: 1px solid var(--border-bright);
             color: var(--text-primary);
             font-family: var(--font-mono);
@@ -1076,7 +1076,7 @@
                 </div>
             </div>
             <div style="padding: 20px 16px;">
-                <button id="btn-onboard-init" class="secondary-btn w-full" style="padding: 10px; font-size: 11px; color: var(--accent-green); border-color: rgba(63,185,80,0.4);">INITIALIZE SWITCHBOARD</button>
+                <button id="btn-onboard-init" class="secondary-btn w-full" style="padding: 10px; font-size: 11px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);">INITIALIZE SWITCHBOARD</button>
                 <div id="onboard-init-status" style="text-align: center; margin-top: 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);"></div>
             </div>
         </div>
@@ -1093,7 +1093,7 @@
                 <div class="startup-row"><label>Reviewer</label><input type="text" id="onboard-cli-reviewer" placeholder="e.g. gemini --approval-mode auto_edit"></div>
                 <div class="startup-row"><label>Analyst</label><input type="text" id="onboard-cli-analyst" placeholder="e.g. qwen"></div>
                 <div style="margin-top: 12px; display: flex; gap: 8px;">
-                    <button id="btn-onboard-save" class="secondary-btn w-full" style="padding: 10px; font-size: 11px; color: var(--accent-green); border-color: rgba(63,185,80,0.4);">SAVE &amp; FINISH</button>
+                    <button id="btn-onboard-save" class="secondary-btn w-full" style="padding: 10px; font-size: 11px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);">SAVE &amp; FINISH</button>
                     <button id="btn-onboard-skip" class="secondary-btn w-full" style="padding: 10px; font-size: 11px;">SKIP</button>
                 </div>
                 <div id="onboard-cli-status" style="text-align: center; margin-top: 10px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);"></div>
@@ -1112,9 +1112,9 @@
                         title="Recover archived or orphaned plans" aria-label="Recover plans">RECOVER</button>
                     <button id="btn-delete-plan" class="icon-btn" style="color: var(--accent-red);"
                         title="Delete active plan" aria-label="Delete plan">DELETE</button>
-                    <button id="btn-copy-plan-link" class="icon-btn" title="Copy Markdown link for active plan"
-                        aria-label="Copy plan link"
-                        style="color: var(--accent-cyan); border-color: rgba(47, 129, 247, 0.5); font-weight: 600; opacity: 1;">COPY PLAN</button>
+                    <button id="btn-merge-all-plans" class="icon-btn" title="Merge all plans into a single file"
+                        aria-label="Merge all plans"
+                        style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 50%, transparent); font-weight: 600; opacity: 1;">MERGE ALL</button>
                 </div>
             </div>
             <div class="dropdown-container">
@@ -1125,13 +1125,16 @@
             </div>
             <div class="flex gap-2" style="margin-top: 6px;">
                 <button id="btn-complete-plan" class="secondary-btn w-full">MARK COMPLETE</button>
-                <button id="btn-merge-all-plans" class="secondary-btn w-full">MERGE ALL</button>
+                <button id="btn-copy-plan-link" class="secondary-btn w-full"
+                    title="Copy Markdown link for active plan"
+                    aria-label="Copy plan link"
+                    style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 30%, transparent);">COPY PLAN</button>
             </div>
             <div style="margin-top: 6px;">
                 <button id="btn-create-plan" class="secondary-btn w-full">CREATE PLAN</button>
             </div>
             <div style="margin-top: 6px;">
-                <button id="btn-open-kanban" class="secondary-btn w-full" style="color: var(--accent-cyan); border-color: rgba(47, 129, 247, 0.3);">OPEN KANBAN</button>
+                <button id="btn-open-kanban" class="secondary-btn w-full" style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 30%, transparent);">OPEN KANBAN</button>
             </div>
         </div>
 
@@ -1140,7 +1143,7 @@
             <div class="sub-tab-bar">
                 <button class="sub-tab-btn is-active" data-tab="agents">Agents</button>
                 <button class="sub-tab-btn" data-tab="auto">Auto</button>
-                <button class="sub-tab-btn" data-tab="cloud">Cloud</button>
+                <button class="sub-tab-btn" data-tab="notebooklm">NotebookLM</button>
             </div>
             <div id="agent-list-standard" class="agent-list">
                 <div style="text-align: center; padding: 20px; color: var(--text-secondary);">
@@ -1148,7 +1151,7 @@
                 </div>
             </div>
             <div id="agent-list-auto" class="agent-list hidden"></div>
-            <div id="agent-list-cloud" class="agent-list hidden"></div>
+            <div id="agent-list-notebooklm" class="agent-list hidden"></div>
         </div>
 
         <!-- LIVE ACTIVITY FEED -->
@@ -1176,7 +1179,7 @@
             <div class="panel-fields open" id="terminal-operations-fields">
                 <button id="createAgentGrid" class="secondary-btn w-full">OPEN AGENT TERMINALS</button>
                 <button id="btn-deregister-all" class="secondary-btn w-full"
-                    style="color: var(--accent-red); border-color: rgba(218, 54, 51, 0.3);">RESET ALL AGENTS</button>
+                    style="color: var(--accent-red); border-color: color-mix(in srgb, var(--accent-red) 30%, transparent);">RESET ALL AGENTS</button>
             </div>
         </div>
 
@@ -1206,7 +1209,7 @@
                     <span>Accurate coding mode for Coder prompts</span>
                 </label>
                 <button id="btn-save-startup" class="secondary-btn w-full"
-                    style="margin-top:4px; color: var(--accent-green); border-color: rgba(63,185,80,0.25);">SAVE STARTUP
+                    style="margin-top:4px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 250%, transparent);">SAVE STARTUP
                     COMMANDS</button>
                 <button id="btn-archive-all-completed" class="secondary-btn w-full" style="margin-top:4px;">🗄 Archive
                     All Completed</button>
@@ -1261,7 +1264,7 @@
         const runSheetSelect = document.getElementById('run-sheet-select');
         const agentListStandard = document.getElementById('agent-list-standard');
         const agentListAuto = document.getElementById('agent-list-auto');
-        const agentListCloud = document.getElementById('agent-list-cloud');
+        const agentListNotebooklm = document.getElementById('agent-list-notebooklm');
         const agentList = agentListStandard; // backward compat alias
         const activityList = document.getElementById('activity-list');
         const activityLoadMoreBtn = document.getElementById('btn-activity-load-more');
@@ -1436,22 +1439,37 @@
         recoverPlansModal.addEventListener('click', (event) => {
             if (event.target === recoverPlansModal) closeRecoverPlansModal();
         });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { closeInitiatePlanModal(); closeRecoverPlansModal(); }
+        });
         recoverSearchInput.addEventListener('input', () => {
             renderRecoverablePlans(recoverablePlansCache, recoverSearchInput.value);
         });
 
         // Setup Buttons
-        document.getElementById('btn-initialize').addEventListener('click', () => vscode.postMessage({ type: 'runSetup' }));
-        document.getElementById('btn-connect-mcp').addEventListener('click', () => vscode.postMessage({ type: 'connectMcp' }));
-        document.getElementById('createAgentGrid').addEventListener('click', () => vscode.postMessage({ type: 'createAgentGrid' }));
-        document.getElementById('btn-deregister-all').addEventListener('click', () => vscode.postMessage({ type: 'deregisterAllTerminals' }));
-        document.getElementById('btn-open-kanban').addEventListener('click', () => vscode.postMessage({ type: 'openKanban' }));
-        document.getElementById('terminal-operations-toggle').addEventListener('click', () => {
-            const fields = document.getElementById('terminal-operations-fields');
-            const chevron = document.getElementById('terminal-operations-chevron');
-            const isOpen = fields.classList.toggle('open');
-            chevron.classList.toggle('open', isOpen);
-        });
+        const btnInit = document.getElementById('btn-initialize');
+        if (btnInit) btnInit.addEventListener('click', () => vscode.postMessage({ type: 'runSetup' }));
+        const btnConnect = document.getElementById('btn-connect-mcp');
+        if (btnConnect) btnConnect.addEventListener('click', () => vscode.postMessage({ type: 'connectMcp' }));
+        const btnGrid = document.getElementById('createAgentGrid');
+        if (btnGrid) btnGrid.addEventListener('click', () => vscode.postMessage({ type: 'createAgentGrid' }));
+        const btnDeregister = document.getElementById('btn-deregister-all');
+        if (btnDeregister) btnDeregister.addEventListener('click', () => vscode.postMessage({ type: 'deregisterAllTerminals' }));
+        const btnKanban = document.getElementById('btn-open-kanban');
+        if (btnKanban) btnKanban.addEventListener('click', () => vscode.postMessage({ type: 'openKanban' }));
+        
+        const termOpsToggle = document.getElementById('terminal-operations-toggle');
+        if (termOpsToggle) {
+            termOpsToggle.addEventListener('click', () => {
+                const fields = document.getElementById('terminal-operations-fields');
+                const chevron = document.getElementById('terminal-operations-chevron');
+                if (fields && chevron) {
+                    const isOpen = fields.classList.toggle('open');
+                    chevron.classList.toggle('open', isOpen);
+                }
+            });
+        }
+        
         if (liveFeedToggle && liveFeedFields && liveFeedChevron) {
             liveFeedToggle.addEventListener('click', () => {
                 const isOpen = liveFeedFields.classList.toggle('open');
@@ -1461,50 +1479,75 @@
         }
 
         // Startup Commands
-        document.getElementById('startup-toggle').addEventListener('click', () => {
-            const fields = document.getElementById('startup-fields');
-            const chevron = document.getElementById('startup-chevron');
-            const isOpen = fields.classList.toggle('open');
-            chevron.classList.toggle('open', isOpen);
-            if (isOpen) vscode.postMessage({ type: 'getStartupCommands' });
-            if (isOpen) vscode.postMessage({ type: 'getAccurateCodingSetting' });
-        });
-        document.getElementById('btn-save-startup').addEventListener('click', () => {
-            const commands = { ...lastStartupCommands };
-            document.querySelectorAll('#startup-fields input[data-role]').forEach(input => {
-                const role = input.dataset.role;
-                const value = input.value.trim();
-                if (!role) return;
-                if (value) commands[role] = value;
-                else delete commands[role];
+        const startupToggle = document.getElementById('startup-toggle');
+        if (startupToggle) {
+            startupToggle.addEventListener('click', () => {
+                const fields = document.getElementById('startup-fields');
+                const chevron = document.getElementById('startup-chevron');
+                if (fields && chevron) {
+                    const isOpen = fields.classList.toggle('open');
+                    chevron.classList.toggle('open', isOpen);
+                    if (isOpen) vscode.postMessage({ type: 'getStartupCommands' });
+                    if (isOpen) vscode.postMessage({ type: 'getAccurateCodingSetting' });
+                }
             });
-            const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
-            vscode.postMessage({ type: 'saveStartupCommands', commands, accurateCodingEnabled });
-            const btn = document.getElementById('btn-save-startup');
-            btn.textContent = 'SAVED ✓';
-            setTimeout(() => { btn.textContent = 'SAVE STARTUP COMMANDS'; }, 1500);
-        });
-        document.getElementById('btn-complete-plan').addEventListener('click', () => {
-            const sessionId = runSheetSelect.value;
-            if (!sessionId) return;
-            vscode.postMessage({ type: 'completePlan', sessionId });
-        });
-        document.getElementById('btn-delete-plan').addEventListener('click', () => {
-            const sessionId = runSheetSelect.value;
-            if (!sessionId) return;
-            vscode.postMessage({ type: 'deletePlan', sessionId });
-        });
-        mergeAllPlansBtn.addEventListener('click', () => {
-            vscode.postMessage({ type: 'mergeAllPlans' });
-        });
-        archiveAllCompletedBtn.addEventListener('click', () => {
-            vscode.postMessage({ type: 'archiveAllCompleted' });
-        });
-        copyPlanLinkBtn.addEventListener('click', () => {
-            const sessionId = runSheetSelect.value;
-            if (!sessionId) return;
-            vscode.postMessage({ type: 'copyPlanLink', sessionId });
-        });
+        }
+        
+        const btnSaveStartup = document.getElementById('btn-save-startup');
+        if (btnSaveStartup) {
+            btnSaveStartup.addEventListener('click', () => {
+                const commands = { ...lastStartupCommands };
+                document.querySelectorAll('#startup-fields input[data-role]').forEach(input => {
+                    const role = input.dataset.role;
+                    const value = input.value.trim();
+                    if (!role) return;
+                    if (value) commands[role] = value;
+                    else delete commands[role];
+                });
+                const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
+                vscode.postMessage({ type: 'saveStartupCommands', commands, accurateCodingEnabled });
+                btnSaveStartup.textContent = 'SAVED ✓';
+                setTimeout(() => { btnSaveStartup.textContent = 'SAVE STARTUP COMMANDS'; }, 1500);
+            });
+        }
+        
+        const btnComplete = document.getElementById('btn-complete-plan');
+        if (btnComplete) {
+            btnComplete.addEventListener('click', () => {
+                const sessionId = runSheetSelect ? runSheetSelect.value : null;
+                if (!sessionId) return;
+                vscode.postMessage({ type: 'completePlan', sessionId });
+            });
+        }
+        
+        const btnDelete = document.getElementById('btn-delete-plan');
+        if (btnDelete) {
+            btnDelete.addEventListener('click', () => {
+                const sessionId = runSheetSelect ? runSheetSelect.value : null;
+                if (!sessionId) return;
+                vscode.postMessage({ type: 'deletePlan', sessionId });
+            });
+        }
+        
+        if (mergeAllPlansBtn) {
+            mergeAllPlansBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'mergeAllPlans' });
+            });
+        }
+        
+        if (archiveAllCompletedBtn) {
+            archiveAllCompletedBtn.addEventListener('click', () => {
+                vscode.postMessage({ type: 'archiveAllCompleted' });
+            });
+        }
+        
+        if (copyPlanLinkBtn) {
+            copyPlanLinkBtn.addEventListener('click', () => {
+                const sessionId = runSheetSelect ? runSheetSelect.value : null;
+                if (!sessionId) return;
+                vscode.postMessage({ type: 'copyPlanLink', sessionId });
+            });
+        }
 
         // State
         let currentRunSheets = [];
@@ -1660,27 +1703,29 @@
 
         if (tabAgentsBtn) tabAgentsBtn.addEventListener('click', () => setActiveTab('agents'));
         if (tabActivityBtn) tabActivityBtn.addEventListener('click', () => setActiveTab('activity'));
-        activityLoadMoreBtn.addEventListener('click', () => requestRecentActivity(true));
+        if (activityLoadMoreBtn) activityLoadMoreBtn.addEventListener('click', () => requestRecentActivity(true));
 
-        runSheetSelect.addEventListener('change', () => {
-            renderAgentList();
-            updatePlanActionStates();
-            const sessionId = runSheetSelect.value;
-            vscode.postMessage({ type: 'orchestratorSessionChange', sessionId: sessionId || null });
-            if (userInitiatedChange && sessionId) {
-                vscode.postMessage({ type: 'viewPlan', sessionId });
-            }
-            userInitiatedChange = false;
-        });
-        runSheetSelect.addEventListener('mousedown', () => {
-            userInitiatedChange = true;
-        });
-        runSheetSelect.addEventListener('keydown', () => {
-            userInitiatedChange = true;
-        });
-        runSheetSelect.addEventListener('blur', () => {
-            userInitiatedChange = false;
-        });
+        if (runSheetSelect) {
+            runSheetSelect.addEventListener('change', () => {
+                renderAgentList();
+                updatePlanActionStates();
+                const sessionId = runSheetSelect.value;
+                vscode.postMessage({ type: 'orchestratorSessionChange', sessionId: sessionId || null });
+                if (userInitiatedChange && sessionId) {
+                    vscode.postMessage({ type: 'viewPlan', sessionId });
+                }
+                userInitiatedChange = false;
+            });
+            runSheetSelect.addEventListener('mousedown', () => {
+                userInitiatedChange = true;
+            });
+            runSheetSelect.addEventListener('keydown', () => {
+                userInitiatedChange = true;
+            });
+            runSheetSelect.addEventListener('blur', () => {
+                userInitiatedChange = false;
+            });
+        }
 
         // --- Message Handling ---
 
@@ -1729,6 +1774,18 @@
                     break;
                 case 'recoverablePlans':
                     renderRecoverablePlans(message.plans || [], recoverSearchInput.value);
+                    break;
+                case 'restorePlanResult':
+                    if (message.success) {
+                        closeRecoverPlansModal();
+                    } else {
+                        recoverPlanList.querySelectorAll('.recover-restore-btn').forEach(btn => {
+                            if (btn.getAttribute('data-plan-id') === message.planId) {
+                                btn.disabled = false;
+                                btn.textContent = btn.closest('.recover-item')?.querySelector('.recover-status-chip.orphan') ? 'CLAIM' : 'RESTORE';
+                            }
+                        });
+                    }
                     break;
                 case 'startupCommands':
                     if (message.commands) {
@@ -1837,34 +1894,105 @@
                         renderAgentList();
                     }
                     break;
-                case 'notebookLmStatus': {
-                    const nlmCard = document.getElementById('nlm-status');
-                    const nlmBtn = document.getElementById('nlm-generate-btn');
-                    if (nlmCard) {
-                        nlmCard.innerText = message.message || message.status || '';
-                        nlmCard.style.display = 'block';
-                    }
-                    if (nlmBtn) {
-                        const isActive = message.status !== 'complete' && message.status !== 'error' && message.status !== 'idle';
-                        nlmBtn.disabled = isActive;
-                        nlmBtn.innerText = isActive ? 'WORKING...' : 'GENERATE SPEC';
-                        nlmBtn.classList.toggle('dispatching', isActive);
-                    }
-                    if (message.status === 'error' && nlmCard) {
-                        nlmCard.style.color = 'var(--accent-red)';
-                        setTimeout(() => { nlmCard.style.color = ''; }, 4000);
+                case 'nlm_notebookList': {
+                    const sel = document.getElementById('nlm-notebook-select');
+                    if (sel) {
+                        sel.innerHTML = '<option value="">— select notebook —</option>';
+                        (message.notebooks || []).forEach(nb => {
+                            const opt = document.createElement('option');
+                            opt.value = nb.id;
+                            opt.innerText = nb.title || nb.id;
+                            sel.appendChild(opt);
+                        });
+                        if (nlmSelectedNotebookId) sel.value = nlmSelectedNotebookId;
                     }
                     break;
                 }
-                case 'notebookLmResult': {
-                    const viewer = document.getElementById('nlm-spec-viewer');
-                    const content = document.getElementById('nlm-spec-content');
-                    const sendBtn = document.getElementById('nlm-send-btn');
-                    const nlmBtn2 = document.getElementById('nlm-generate-btn');
-                    if (viewer) viewer.style.display = 'block';
-                    if (content) content.innerText = message.spec || '(empty response)';
-                    if (sendBtn) sendBtn.style.display = 'block';
-                    if (nlmBtn2) { nlmBtn2.disabled = false; nlmBtn2.innerText = 'GENERATE SPEC'; nlmBtn2.classList.remove('dispatching'); }
+                case 'nlm_notebookCreated': {
+                    const createBtn = document.querySelector('#nlm-create-title + button');
+                    if (createBtn) createBtn.disabled = false;
+                    const titleInput = document.getElementById('nlm-create-title');
+                    if (titleInput) titleInput.value = '';
+                    // auto-refresh list
+                    vscode.postMessage({ type: 'nlm_listNotebooks' });
+                    break;
+                }
+                case 'nlm_uploadComplete': {
+                    const uploadBtn = document.getElementById('nlm-upload-btn');
+                    const uploadStatus = document.getElementById('nlm-upload-status');
+                    if (uploadBtn) { uploadBtn.disabled = false; uploadBtn.innerText = 'BUNDLE & UPLOAD'; uploadBtn.classList.remove('dispatching'); }
+                    if (uploadStatus) uploadStatus.innerText = 'Source ID: ' + (message.sourceId || '?') + ' — ' + new Date().toLocaleTimeString();
+                    break;
+                }
+                case 'nlm_queryResult': {
+                    const queryBtn = document.getElementById('nlm-query-btn');
+                    const resultArea = document.getElementById('nlm-query-result');
+                    const resultText = document.getElementById('nlm-query-result-text');
+                    if (queryBtn) { queryBtn.disabled = false; queryBtn.innerText = 'ASK NOTEBOOKLM'; queryBtn.classList.remove('dispatching'); }
+                    if (resultArea) resultArea.style.display = 'block';
+                    if (resultText) resultText.innerText = message.answer || '(empty response)';
+                    break;
+                }
+                case 'nlm_authError': {
+                    const banner = document.getElementById('nlm-auth-banner');
+                    if (banner) banner.style.display = 'block';
+                    // Reset any active buttons
+                    ['nlm-upload-btn', 'nlm-query-btn', 'nlm-drive-btn', 'nlm-sync-btn'].forEach(id => {
+                        const b = document.getElementById(id);
+                        if (b) { b.disabled = false; b.classList.remove('dispatching'); }
+                    });
+                    const uploadBtn2 = document.getElementById('nlm-upload-btn');
+                    if (uploadBtn2) uploadBtn2.innerText = 'BUNDLE & UPLOAD';
+                    const queryBtn2 = document.getElementById('nlm-query-btn');
+                    if (queryBtn2) queryBtn2.innerText = 'ASK NOTEBOOKLM';
+                    const syncBtn2 = document.getElementById('nlm-sync-btn');
+                    if (syncBtn2) syncBtn2.innerText = 'SYNC DRIVE / ONLINE SOURCES';
+                    break;
+                }
+                case 'nlm_error': {
+                    const errLine = document.getElementById('nlm-error-line');
+                    if (errLine) {
+                        errLine.innerText = message.message || 'Unknown error';
+                        errLine.style.display = 'block';
+                        setTimeout(() => { errLine.style.display = 'none'; }, 6000);
+                    }
+                    // Reset any active buttons
+                    ['nlm-upload-btn', 'nlm-query-btn', 'nlm-drive-btn', 'nlm-sync-btn'].forEach(id => {
+                        const b = document.getElementById(id);
+                        if (b) { b.disabled = false; b.classList.remove('dispatching'); }
+                    });
+                    const uploadBtn3 = document.getElementById('nlm-upload-btn');
+                    if (uploadBtn3) uploadBtn3.innerText = 'BUNDLE & UPLOAD';
+                    const queryBtn3 = document.getElementById('nlm-query-btn');
+                    if (queryBtn3) queryBtn3.innerText = 'ASK NOTEBOOKLM';
+                    const syncBtn3 = document.getElementById('nlm-sync-btn');
+                    if (syncBtn3) syncBtn3.innerText = 'SYNC DRIVE / ONLINE SOURCES';
+                    break;
+                }
+                case 'nlm_chatConfigured': {
+                    const pStatus = document.getElementById('nlm-persona-status');
+                    if (pStatus) pStatus.innerText = 'Active: ' + (message.persona || 'Custom');
+                    const pSelect = document.getElementById('nlm-persona-select');
+                    if (pSelect) nlmLastPersona = pSelect.value;
+                    break;
+                }
+                case 'nlm_personaRevert': {
+                    const pSelect2 = document.getElementById('nlm-persona-select');
+                    if (pSelect2) pSelect2.value = nlmLastPersona;
+                    break;
+                }
+                case 'nlm_driveLinkAdded': {
+                    const dBtn = document.getElementById('nlm-drive-btn');
+                    if (dBtn) dBtn.disabled = false;
+                    const dInput = document.getElementById('nlm-drive-url');
+                    if (dInput) dInput.value = '';
+                    const dStatus = document.getElementById('nlm-drive-status');
+                    if (dStatus) dStatus.innerText = 'Drive source added: ' + (message.sourceId || '?');
+                    break;
+                }
+                case 'nlm_syncComplete': {
+                    const sBtn = document.getElementById('nlm-sync-btn');
+                    if (sBtn) { sBtn.disabled = false; sBtn.innerText = 'SYNC DRIVE / ONLINE SOURCES'; }
                     break;
                 }
             }
@@ -1936,7 +2064,7 @@
         let currentAgentTab = 'agents';
         function switchAgentTab(tab) {
             currentAgentTab = tab;
-            const tabs = { agents: agentListStandard, auto: agentListAuto, cloud: agentListCloud };
+            const tabs = { agents: agentListStandard, auto: agentListAuto, notebooklm: agentListNotebooklm };
             document.querySelectorAll('.sub-tab-btn').forEach(btn => {
                 btn.classList.toggle('is-active', btn.dataset.tab === tab);
             });
@@ -1973,7 +2101,7 @@
 
             agentListStandard.innerHTML = '';
             agentListAuto.innerHTML = '';
-            agentListCloud.innerHTML = '';
+            agentListNotebooklm.innerHTML = '';
 
             // === AGENTS TAB: Lead Coder, Coder, Planner, Reviewer, Analyst ===
 
@@ -2016,6 +2144,13 @@
                 }
             }
 
+            // 6. Jules
+            agentListStandard.appendChild(createAgentRow('JULES PARALLEL CODER', 'jules',
+                'START JULES CODING',
+                terminals => Object.keys(terminals).find(key => terminals[key].role === 'jules'),
+                true
+            ));
+
             // === AUTO TAB: Auto-Agent, Lead Coder + Coder (Team) ===
 
             agentListAuto.appendChild(createAutoAgentRow());
@@ -2029,21 +2164,69 @@
 
             agentListAuto.appendChild(createCoderReviewerRow());
 
-            // === CLOUD TAB: Jules ===
+            // === NOTEBOOKLM TAB: Setup & Login ===
+            agentListNotebooklm.appendChild(createNotebookLmSetupSection());
 
-            agentListCloud.appendChild(createAgentRow('JULES PARALLEL CODER', 'jules',
-                'START CLOUD CODING',
-                terminals => Object.keys(terminals).find(key => terminals[key].role === 'jules'),
-                true
-            ));
-
-            // === CLOUD TAB: NotebookLM Planner ===
-            agentListCloud.appendChild(createNotebookLmCard());
+            // === NOTEBOOKLM TAB: NotebookLM Planner ===
+            agentListNotebooklm.appendChild(createNotebookLmCard());
 
             // Restore active tab visibility after re-render
             switchAgentTab(currentAgentTab);
         }
 
+        function createNotebookLmSetupSection() {
+            const container = document.createElement('div');
+            container.className = 'startup-section';
+            container.style.marginTop = '0';
+            container.style.borderTop = 'none';
+            container.style.borderBottom = '1px solid var(--border-color)';
+
+            const toggle = document.createElement('div');
+            toggle.className = 'startup-toggle';
+            toggle.innerHTML = '<div class="section-label" style="margin:0">NLM SETUP & LOGIN</div><span class="chevron">▶</span>';
+            
+            const fields = document.createElement('div');
+            fields.className = 'startup-fields';
+            fields.style.flexDirection = 'column';
+            fields.style.gap = '4px';
+
+            toggle.onclick = () => {
+                const isOpen = fields.classList.toggle('open');
+                toggle.querySelector('.chevron').classList.toggle('open', isOpen);
+            };
+
+            // Setup status hint area
+            const setupHint = document.createElement('div');
+            setupHint.id = 'nlm-setup-hint';
+            setupHint.style.cssText = 'font-size:10px; padding:4px 0; color:var(--text-secondary); font-family:var(--font-mono); display:none;';
+            fields.appendChild(setupHint);
+
+            const steps = [
+                { label: '1. CHECK PREREQUISITES', step: 'prereqs' },
+                { label: '2. INSTALL UV MANAGER', step: 'initial' },
+                { label: '3. REPAIR SHELL PATH', step: 'troubleshoot' },
+                { label: '4. NOTEBOOKLM LOGIN', step: 'login' },
+                { label: '5. VERIFY INSTALL', step: 'verify' }
+            ];
+
+            steps.forEach(s => {
+                const btn = document.createElement('button');
+                btn.className = 'secondary-btn';
+                btn.style.width = '100%';
+                btn.innerText = s.label;
+                btn.onclick = () => vscode.postMessage({ type: 'runNlmSetupStep', step: s.step });
+                fields.appendChild(btn);
+            });
+
+            container.appendChild(toggle);
+            container.appendChild(fields);
+            return container;
+        }
+
+
+        // --- NLM Command Centre State ---
+        let nlmSelectedNotebookId = '';
+        let nlmLastPersona = 'Default';
 
         function createNotebookLmCard() {
             const container = document.createElement('div');
@@ -2059,73 +2242,224 @@
             dot.className = 'status-dot green';
             const name = document.createElement('div');
             name.className = 'agent-name';
-            name.innerText = 'NOTEBOOKLM PLANNER';
+            name.innerText = 'NOTEBOOKLM COMMAND CENTRE';
             identity.appendChild(dot);
             identity.appendChild(name);
             header.appendChild(identity);
             container.appendChild(header);
 
-            // Status line
-            const statusLine = document.createElement('div');
-            statusLine.id = 'nlm-status';
-            statusLine.style.cssText = 'display:none; font-size:10px; padding:2px 8px; color:var(--text-secondary); font-family:var(--font-mono);';
-            container.appendChild(statusLine);
+            // Auth error banner (hidden by default)
+            const authBanner = document.createElement('div');
+            authBanner.id = 'nlm-auth-banner';
+            authBanner.style.cssText = 'display:none; padding:6px 8px; background:var(--accent-red,#c0392b); color:#fff; font-size:10px; font-family:var(--font-mono);';
+            authBanner.innerText = 'NotebookLM session expired. Run `nlm login` in a terminal to re-authenticate.';
+            container.appendChild(authBanner);
 
-            // Query input
-            const queryRow = document.createElement('div');
-            queryRow.style.cssText = 'padding:4px 8px;';
+            // Error line
+            const errorLine = document.createElement('div');
+            errorLine.id = 'nlm-error-line';
+            errorLine.style.cssText = 'display:none; padding:2px 8px; font-size:10px; color:var(--accent-red); font-family:var(--font-mono);';
+            container.appendChild(errorLine);
+
+            // ① Server section
+            const srvLabel = document.createElement('div');
+            srvLabel.className = 'section-label';
+            srvLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
+            srvLabel.innerText = '① SERVER';
+            container.appendChild(srvLabel);
+            const srvBtn = document.createElement('button');
+            srvBtn.className = 'secondary-btn';
+            srvBtn.style.width = '100%';
+            srvBtn.innerText = 'START NLM SERVER';
+            srvBtn.onclick = () => vscode.postMessage({ type: 'nlm_startServer' });
+            container.appendChild(srvBtn);
+
+            // ② Notebook section
+            const nbLabel = document.createElement('div');
+            nbLabel.className = 'section-label';
+            nbLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
+            nbLabel.innerText = '② NOTEBOOK';
+            container.appendChild(nbLabel);
+
+            const nbRow = document.createElement('div');
+            nbRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
+            const nbSelect = document.createElement('select');
+            nbSelect.id = 'nlm-notebook-select';
+            nbSelect.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
+            const defaultOpt = document.createElement('option');
+            defaultOpt.value = '';
+            defaultOpt.innerText = '— select notebook —';
+            nbSelect.appendChild(defaultOpt);
+            nbSelect.onchange = () => { nlmSelectedNotebookId = nbSelect.value; updateNlmDisabledState(); };
+            nbRow.appendChild(nbSelect);
+
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'secondary-btn';
+            refreshBtn.innerText = 'REFRESH';
+            refreshBtn.onclick = () => vscode.postMessage({ type: 'nlm_listNotebooks' });
+            nbRow.appendChild(refreshBtn);
+            container.appendChild(nbRow);
+
+            // Create notebook sub-row
+            const createRow = document.createElement('div');
+            createRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
+            const createInput = document.createElement('input');
+            createInput.id = 'nlm-create-title';
+            createInput.placeholder = 'New notebook title';
+            createInput.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
+            createRow.appendChild(createInput);
+            const createBtn = document.createElement('button');
+            createBtn.className = 'secondary-btn';
+            createBtn.innerText = 'CREATE';
+            createBtn.onclick = () => {
+                const title = createInput.value.trim();
+                if (!title) return;
+                createBtn.disabled = true;
+                vscode.postMessage({ type: 'nlm_createNotebook', title });
+            };
+            createRow.appendChild(createBtn);
+            container.appendChild(createRow);
+
+            // ③ Context Management
+            const uploadLabel = document.createElement('div');
+            uploadLabel.className = 'section-label';
+            uploadLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
+            uploadLabel.innerText = '③ CONTEXT MANAGEMENT';
+            container.appendChild(uploadLabel);
+            const uploadStatus = document.createElement('div');
+            uploadStatus.id = 'nlm-upload-status';
+            uploadStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
+            container.appendChild(uploadStatus);
+            const uploadBtn = document.createElement('button');
+            uploadBtn.className = 'action-btn';
+            uploadBtn.id = 'nlm-upload-btn';
+            uploadBtn.innerText = 'BUNDLE & UPLOAD';
+            uploadBtn.disabled = true;
+            uploadBtn.onclick = () => {
+                if (!nlmSelectedNotebookId) return;
+                uploadBtn.disabled = true;
+                uploadBtn.innerText = 'UPLOADING...';
+                uploadBtn.classList.add('dispatching');
+                vscode.postMessage({ type: 'nlm_bundleAndUpload', notebookId: nlmSelectedNotebookId });
+            };
+            container.appendChild(uploadBtn);
+
+            // Drive Link sub-row
+            const driveRow = document.createElement('div');
+            driveRow.style.cssText = 'padding:4px 8px; display:flex; gap:4px; align-items:center;';
+            const driveInput = document.createElement('input');
+            driveInput.id = 'nlm-drive-url';
+            driveInput.placeholder = 'Google Doc URL or ID';
+            driveInput.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
+            driveRow.appendChild(driveInput);
+            const driveBtn = document.createElement('button');
+            driveBtn.className = 'secondary-btn';
+            driveBtn.id = 'nlm-drive-btn';
+            driveBtn.innerText = 'ADD LINK';
+            driveBtn.disabled = true;
+            driveBtn.onclick = () => {
+                if (!nlmSelectedNotebookId || !driveInput.value.trim()) return;
+                driveBtn.disabled = true;
+                vscode.postMessage({ type: 'nlm_addDriveLink', notebookId: nlmSelectedNotebookId, url: driveInput.value.trim() });
+            };
+            driveRow.appendChild(driveBtn);
+            container.appendChild(driveRow);
+
+            // Drive link status
+            const driveStatus = document.createElement('div');
+            driveStatus.id = 'nlm-drive-status';
+            driveStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
+            container.appendChild(driveStatus);
+
+            // Sync button
+            const syncBtn = document.createElement('button');
+            syncBtn.className = 'secondary-btn';
+            syncBtn.id = 'nlm-sync-btn';
+            syncBtn.style.width = '100%';
+            syncBtn.innerText = 'SYNC DRIVE / ONLINE SOURCES';
+            syncBtn.disabled = true;
+            syncBtn.onclick = () => {
+                if (!nlmSelectedNotebookId) return;
+                syncBtn.disabled = true;
+                syncBtn.innerText = 'SYNCING...';
+                vscode.postMessage({ type: 'nlm_syncContext', notebookId: nlmSelectedNotebookId });
+            };
+            container.appendChild(syncBtn);
+
+            // ④ Arbitrage Personas & Query
+            const personaLabel = document.createElement('div');
+            personaLabel.className = 'section-label';
+            personaLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
+            personaLabel.innerText = '④ PERSONA & QUERY';
+            container.appendChild(personaLabel);
+
+            // Persona dropdown
+            const personaRow = document.createElement('div');
+            personaRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
+            const personaSelect = document.createElement('select');
+            personaSelect.id = 'nlm-persona-select';
+            personaSelect.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
+            ['Default', 'Research Assistant', 'Patch Generator', 'Custom'].forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p;
+                opt.innerText = p;
+                personaSelect.appendChild(opt);
+            });
+            personaSelect.onchange = () => {
+                if (!nlmSelectedNotebookId) { personaSelect.value = nlmLastPersona; return; }
+                vscode.postMessage({ type: 'nlm_configurePersona', notebookId: nlmSelectedNotebookId, persona: personaSelect.value });
+            };
+            personaRow.appendChild(personaSelect);
+            container.appendChild(personaRow);
+
+            // Persona status
+            const personaStatus = document.createElement('div');
+            personaStatus.id = 'nlm-persona-status';
+            personaStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
+            personaStatus.innerText = 'Active: Default';
+            container.appendChild(personaStatus);
             const queryInput = document.createElement('textarea');
             queryInput.id = 'nlm-query-input';
-            queryInput.placeholder = 'Describe what you want built... (or leave blank for default planning prompt)';
-            queryInput.style.cssText = 'width:100%; min-height:48px; max-height:120px; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-family); font-size:11px; padding:6px; resize:vertical; border-radius:2px;';
-            queryRow.appendChild(queryInput);
-            container.appendChild(queryRow);
-
-            // Generate button
-            const btn = document.createElement('button');
-            btn.className = 'action-btn';
-            btn.id = 'nlm-generate-btn';
-            btn.innerText = 'GENERATE SPEC';
-            btn.disabled = !isPlanSelected();
-            btn.onclick = () => {
-                const query = queryInput.value.trim();
-                btn.disabled = true;
-                btn.classList.add('dispatching');
-                btn.innerText = 'WORKING...';
-                vscode.postMessage({ type: 'triggerNotebookLm', query: query || '' });
+            queryInput.placeholder = 'Ask NotebookLM a question about your codebase...';
+            queryInput.style.cssText = 'width:100%; min-height:48px; max-height:120px; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-family); font-size:11px; padding:6px; resize:vertical; border-radius:2px; margin:0 8px; box-sizing:border-box;';
+            container.appendChild(queryInput);
+            const queryBtn = document.createElement('button');
+            queryBtn.className = 'action-btn';
+            queryBtn.id = 'nlm-query-btn';
+            queryBtn.innerText = 'ASK NOTEBOOKLM';
+            queryBtn.disabled = true;
+            queryBtn.onclick = () => {
+                if (!nlmSelectedNotebookId) return;
+                queryBtn.disabled = true;
+                queryBtn.innerText = 'QUERYING...';
+                queryBtn.classList.add('dispatching');
+                vscode.postMessage({ type: 'nlm_query', notebookId: nlmSelectedNotebookId, question: queryInput.value.trim() });
             };
-            container.appendChild(btn);
+            container.appendChild(queryBtn);
 
-            // Spec viewer (hidden until result)
-            const viewer = document.createElement('div');
-            viewer.id = 'nlm-spec-viewer';
-            viewer.style.cssText = 'display:none; margin:6px 8px; padding:8px; background:var(--panel-bg2); border:1px solid var(--border-color); border-radius:2px; max-height:300px; overflow-y:auto;';
-            const specContent = document.createElement('pre');
-            specContent.id = 'nlm-spec-content';
-            specContent.style.cssText = 'white-space:pre-wrap; word-break:break-word; font-size:11px; font-family:var(--font-mono); color:var(--text-primary); margin:0;';
-            viewer.appendChild(specContent);
-            container.appendChild(viewer);
-
-            // Send to Coder button (hidden until result)
-            const sendBtn = document.createElement('button');
-            sendBtn.className = 'action-btn';
-            sendBtn.id = 'nlm-send-btn';
-            sendBtn.innerText = 'SEND TO CODER';
-            sendBtn.style.cssText = 'display:none; background:var(--accent-cyan); color:#fff; border-color:var(--accent-cyan);';
-            sendBtn.onclick = () => {
-                sendBtn.disabled = true;
-                sendBtn.innerText = 'DISPATCHING...';
-                sendBtn.classList.add('dispatching');
-                vscode.postMessage({ type: 'sendSpecToCoder' });
-                setTimeout(() => {
-                    sendBtn.disabled = false;
-                    sendBtn.innerText = 'SEND TO CODER';
-                    sendBtn.classList.remove('dispatching');
-                }, 3000);
-            };
-            container.appendChild(sendBtn);
+            // Query result area
+            const resultArea = document.createElement('div');
+            resultArea.id = 'nlm-query-result';
+            resultArea.style.cssText = 'display:none; margin:6px 8px; padding:8px; background:var(--panel-bg2); border:1px solid var(--border-color); border-radius:2px; max-height:300px; overflow-y:auto;';
+            const resultPre = document.createElement('pre');
+            resultPre.id = 'nlm-query-result-text';
+            resultPre.style.cssText = 'white-space:pre-wrap; word-break:break-word; font-size:11px; font-family:var(--font-mono); color:var(--text-primary); margin:0;';
+            resultArea.appendChild(resultPre);
+            container.appendChild(resultArea);
 
             return container;
+        }
+
+        function updateNlmDisabledState() {
+            const hasNotebook = !!nlmSelectedNotebookId;
+            const uploadBtn = document.getElementById('nlm-upload-btn');
+            const queryBtn = document.getElementById('nlm-query-btn');
+            const driveBtn = document.getElementById('nlm-drive-btn');
+            const syncBtn = document.getElementById('nlm-sync-btn');
+            if (uploadBtn) uploadBtn.disabled = !hasNotebook;
+            if (queryBtn) queryBtn.disabled = !hasNotebook;
+            if (driveBtn) driveBtn.disabled = !hasNotebook;
+            if (syncBtn) syncBtn.disabled = !hasNotebook;
         }
 
         function createJulesHistoryList() {
@@ -2255,8 +2589,8 @@
                 const pauseBtn = document.createElement('button');
                 pauseBtn.className = 'action-btn';
                 pauseBtn.style.cssText = isPaused
-                    ? 'color:var(--accent-green);border-color:rgba(63,185,80,0.35);flex:0 0 auto;width:80px;'
-                    : 'color:var(--accent-orange);border-color:rgba(210,153,34,0.4);flex:0 0 auto;width:80px;';
+                    ? 'color:var(--accent-green);border-color:color-mix(in srgb, var(--accent-green) 350%, transparent);flex:0 0 auto;width:80px;'
+                    : 'color:var(--accent-orange);border-color:color-mix(in srgb, var(--accent-orange) 40%, transparent);flex:0 0 auto;width:80px;';
                 pauseBtn.innerText = isPaused ? 'RESUME' : 'PAUSE';
                 pauseBtn.addEventListener('click', () => {
                     vscode.postMessage({ type: isPaused ? 'pipelineUnpause' : 'pipelinePause' });
@@ -2265,7 +2599,7 @@
 
                 const stopBtn = document.createElement('button');
                 stopBtn.className = 'action-btn';
-                stopBtn.style.cssText = 'color:var(--accent-red);border-color:rgba(218,54,51,0.4);flex:1;';
+                stopBtn.style.cssText = 'color:var(--accent-red);border-color:color-mix(in srgb, var(--accent-red) 40%, transparent);flex:1;';
                 stopBtn.innerText = 'STOP';
                 stopBtn.addEventListener('click', () => {
                     vscode.postMessage({ type: 'pipelineStop' });
@@ -2420,9 +2754,9 @@
                 pauseBtn.style.width = '70px';
                 pauseBtn.innerText = isPaused ? 'RESUME' : 'PAUSE';
                 if (isPaused) {
-                    pauseBtn.style.cssText = 'color:var(--accent-green);border-color:rgba(63,185,80,0.35);';
+                    pauseBtn.style.cssText = 'color:var(--accent-green);border-color:color-mix(in srgb, var(--accent-green) 350%, transparent);';
                 } else {
-                    pauseBtn.style.cssText = 'color:var(--accent-orange);border-color:rgba(210,153,34,0.4);';
+                    pauseBtn.style.cssText = 'color:var(--accent-orange);border-color:color-mix(in srgb, var(--accent-orange) 40%, transparent);';
                 }
                 pauseBtn.addEventListener('click', () => {
                     if (isPaused) {
@@ -2444,7 +2778,7 @@
 
                 const stopBtn = document.createElement('button');
                 stopBtn.className = 'action-btn stop-btn';
-                stopBtn.style.cssText = 'color:var(--accent-red);border-color:rgba(218,54,51,0.4);width:70px;flex:0 0 auto;';
+                stopBtn.style.cssText = 'color:var(--accent-red);border-color:color-mix(in srgb, var(--accent-red) 40%, transparent);width:70px;flex:0 0 auto;';
                 stopBtn.innerText = 'STOP';
                 stopBtn.addEventListener('click', () => {
                     vscode.postMessage({ type: 'orchestratorStop' });

@@ -661,6 +661,11 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(completePlanFromKanbanDisposable);
 
+    const viewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.viewPlanFromKanban', async (sessionId: string) => {
+        taskViewerProvider.handleKanbanViewPlan(sessionId);
+    });
+    context.subscriptions.push(viewPlanFromKanbanDisposable);
+
     let degradedMcpStreak = 0;
     let autoHealInFlight = false;
     let lastAutoHealAt = 0;
@@ -749,6 +754,24 @@ export async function activate(context: vscode.ExtensionContext) {
             stateWatcher.onDidChange(() => { syncTerminalRegistryWithState(workspaceRoot); taskViewerProvider.refresh(); });
             stateWatcher.onDidCreate(() => { syncTerminalRegistryWithState(workspaceRoot); taskViewerProvider.refresh(); });
             context.subscriptions.push(stateWatcher);
+
+            // fs.watch fallback for state.json — VS Code's createFileSystemWatcher
+            // can miss changes in gitignored directories (.switchboard is gitignored).
+            const switchboardDir = path.join(workspaceRoot, '.switchboard');
+            try {
+                if (!fs.existsSync(switchboardDir)) {
+                    fs.mkdirSync(switchboardDir, { recursive: true });
+                }
+                const fsStateWatcher = fs.watch(switchboardDir, (_eventType, filename) => {
+                    if (filename && filename.toString() === 'state.json') {
+                        void syncTerminalRegistryWithState(workspaceRoot);
+                        taskViewerProvider.refresh();
+                    }
+                });
+                context.subscriptions.push({ dispose: () => { try { fsStateWatcher.close(); } catch { } } });
+            } catch (e) {
+                mcpOutputChannel?.appendLine(`[Extension] fs.watch fallback for state.json failed: ${e}`);
+            }
 
             mcpOutputChannel.appendLine('[Extension] InboxWatcher initialized successfully');
         } catch (e) {

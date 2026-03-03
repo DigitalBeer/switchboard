@@ -370,6 +370,30 @@ async function appendWorkflowAuditEvent(type, payload, workspaceRoot = getWorksp
     }
 }
 
+async function appendRunSheetEvent(sessionId, eventPayload, workspaceRoot = getWorkspaceRoot()) {
+    if (!sessionId) return;
+    try {
+        const filePath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        let sheet;
+        try {
+            const content = await fs.promises.readFile(filePath, 'utf8');
+            sheet = JSON.parse(content);
+        } catch {
+            return; // Only append if runsheet exists
+        }
+        if (!Array.isArray(sheet.events)) {
+            sheet.events = [];
+        }
+        sheet.events.push({
+            timestamp: new Date().toISOString(),
+            ...eventPayload
+        });
+        await fs.promises.writeFile(filePath, JSON.stringify(sheet, null, 2), 'utf8');
+    } catch (e) {
+        console.error(`[audit] Failed to append runsheet event to ${sessionId}: ${e?.message || e}`);
+    }
+}
+
 function resolveWorkspacePathToken(inputPath, workspaceRoot = getWorkspaceRoot()) {
     const token = sanitizePathToken(inputPath);
     if (!token) return null;
@@ -1431,6 +1455,8 @@ function registerTools(server) {
             let forcedStopWorkflow = null;
             let autoDetectedPlanPath = null;
 
+            let currentSessionId = null;
+
             await updateState((current) => {
                 const target = resolveWorkflowTarget(current, targetAgent);
                 if (!target) {
@@ -1493,7 +1519,8 @@ function registerTools(server) {
                 let normalizedInitialContext = typeof initialContext === 'string' ? initialContext : '';
 
                 if (target.kind === 'session') {
-                    target.node.id = `sess_${Date.now()}`;
+                    target.node.id = target.node.id || `sess_${Date.now()}`;
+                    currentSessionId = target.node.id;
                     target.node.status = "IN_PROGRESS";
                     target.node.startTime = now;
                 } else {
@@ -1521,6 +1548,10 @@ function registerTools(server) {
                 target: targetLabel,
                 forcedStopWorkflow: forcedStopWorkflow || null
             });
+
+            if (currentSessionId && targetLabel === 'session') {
+                await appendRunSheetEvent(currentSessionId, { action: 'start', workflow: workflowName });
+            }
 
             return {
                 content: [{

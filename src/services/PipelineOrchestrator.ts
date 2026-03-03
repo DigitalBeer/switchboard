@@ -29,7 +29,7 @@ function getNextStage(sheet: any): { role: string; instruction?: string; label: 
         return { role: 'lead', label: 'Lead Coder' };
     } else if (lastWorkflow === 'handoff-lead' || lastWorkflow === 'handoff') {
         return { role: 'reviewer', label: 'Reviewer' };
-    } else if (lastWorkflow === 'challenge') {
+    } else if (lastWorkflow === 'challenge' || lastWorkflow === 'reviewer-pass') {
         return 'done';
     } else {
         // Unknown last workflow — fall back to planner

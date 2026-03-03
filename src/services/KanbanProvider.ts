@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { SessionActionLog } from './SessionActionLog';
 
-export type KanbanColumn = 'CREATED' | 'REVIEWED' | 'CODED' | 'CODE REVIEWED';
+export type KanbanColumn = 'CREATED' | 'PLAN REVIEWED' | 'CODED' | 'CODE REVIEWED';
 
 export interface KanbanCard {
     sessionId: string;
@@ -193,7 +193,7 @@ export class KanbanProvider implements vscode.Disposable {
             const wf = (e.workflow || '').toLowerCase();
             if (wf.includes('reviewer') || wf === 'review') return 'CODE REVIEWED';
             if (wf === 'lead' || wf === 'coder' || wf === 'handoff' || wf === 'team' || wf === 'handoff-lead') return 'CODED';
-            if (wf === 'planner' || wf === 'challenge' || wf === 'enhance' || wf === 'accuracy') return 'REVIEWED';
+            if (wf === 'planner' || wf === 'challenge' || wf === 'enhance' || wf === 'accuracy' || wf === 'sidebar-review' || wf === 'enhanced plan') return 'PLAN REVIEWED';
         }
         return 'CREATED';
     }
@@ -227,7 +227,7 @@ export class KanbanProvider implements vscode.Disposable {
                 break;
             case 'viewPlan':
                 if (msg.sessionId) {
-                    await vscode.commands.executeCommand('switchboard.openPlan', msg.sessionId);
+                    await vscode.commands.executeCommand('switchboard.viewPlanFromKanban', msg.sessionId);
                 }
                 break;
         }
@@ -238,7 +238,7 @@ export class KanbanProvider implements vscode.Disposable {
      */
     private _columnToRole(column: string): string | null {
         switch (column) {
-            case 'REVIEWED': return 'planner';
+            case 'PLAN REVIEWED': return 'planner';
             case 'CODED': return this._codedColumnTarget;
             case 'CODE REVIEWED': return 'reviewer';
             default: return null;
