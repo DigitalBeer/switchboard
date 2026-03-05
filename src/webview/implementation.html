@@ -1124,14 +1124,12 @@ body {
                 <div class="select-arrow">▼</div>
             </div>
             <div class="flex gap-2" style="margin-top: 6px;">
-                <button id="btn-complete-plan" class="secondary-btn w-full">MARK COMPLETE</button>
+                <button id="btn-complete-plan" class="secondary-btn w-full">COMPLETE</button>
                 <button id="btn-copy-plan-link" class="secondary-btn w-full"
                     title="Copy Markdown link for active plan"
                     aria-label="Copy plan link"
-                    style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 30%, transparent);">COPY PLAN</button>
-            </div>
-            <div style="margin-top: 6px;">
-                <button id="btn-create-plan" class="secondary-btn w-full">CREATE PLAN</button>
+                    style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 30%, transparent);">COPY</button>
+                <button id="btn-create-plan" class="secondary-btn w-full">CREATE</button>
             </div>
             <div style="margin-top: 6px;">
                 <button id="btn-open-kanban" class="secondary-btn w-full" style="color: var(--accent-cyan); border-color: color-mix(in srgb, var(--accent-cyan) 30%, transparent);">OPEN KANBAN</button>
@@ -1143,7 +1141,7 @@ body {
             <div class="sub-tab-bar">
                 <button class="sub-tab-btn is-active" data-tab="agents">Agents</button>
                 <button class="sub-tab-btn" data-tab="auto">Auto</button>
-                <button class="sub-tab-btn" data-tab="notebooklm">NotebookLM</button>
+                <button class="sub-tab-btn" data-tab="webai">Airlock</button>
             </div>
             <div id="agent-list-standard" class="agent-list">
                 <div style="text-align: center; padding: 20px; color: var(--text-secondary);">
@@ -1151,7 +1149,7 @@ body {
                 </div>
             </div>
             <div id="agent-list-auto" class="agent-list hidden"></div>
-            <div id="agent-list-notebooklm" class="agent-list hidden"></div>
+            <div id="agent-list-webai" class="agent-list hidden"></div>
         </div>
 
         <!-- LIVE ACTIVITY FEED -->
@@ -1264,7 +1262,7 @@ body {
         const runSheetSelect = document.getElementById('run-sheet-select');
         const agentListStandard = document.getElementById('agent-list-standard');
         const agentListAuto = document.getElementById('agent-list-auto');
-        const agentListNotebooklm = document.getElementById('agent-list-notebooklm');
+        const agentListWebai = document.getElementById('agent-list-webai');
         const agentList = agentListStandard; // backward compat alias
         const activityList = document.getElementById('activity-list');
         const activityLoadMoreBtn = document.getElementById('btn-activity-load-more');
@@ -1894,105 +1892,46 @@ body {
                         renderAgentList();
                     }
                     break;
-                case 'nlm_notebookList': {
-                    const sel = document.getElementById('nlm-notebook-select');
-                    if (sel) {
-                        sel.innerHTML = '<option value="">— select notebook —</option>';
-                        (message.notebooks || []).forEach(nb => {
-                            const opt = document.createElement('option');
-                            opt.value = nb.id;
-                            opt.innerText = nb.title || nb.id;
-                            sel.appendChild(opt);
-                        });
-                        if (nlmSelectedNotebookId) sel.value = nlmSelectedNotebookId;
-                    }
+                case 'webai_exportComplete': {
+                    const expBtn = document.getElementById('webai-export-btn');
+                    const wStatus = document.getElementById('webai-status');
+                    if (expBtn) { expBtn.disabled = false; expBtn.innerText = 'BUNDLE CODE'; expBtn.classList.remove('dispatching'); }
+                    if (wStatus) wStatus.innerText = '✓ Bundled — ' + new Date().toLocaleTimeString();
                     break;
                 }
-                case 'nlm_notebookCreated': {
-                    const createBtn = document.querySelector('#nlm-create-title + button');
-                    if (createBtn) createBtn.disabled = false;
-                    const titleInput = document.getElementById('nlm-create-title');
-                    if (titleInput) titleInput.value = '';
-                    // auto-refresh list
-                    vscode.postMessage({ type: 'nlm_listNotebooks' });
+                case 'webai_exportError': {
+                    const expBtn2 = document.getElementById('webai-export-btn');
+                    const wStatus2 = document.getElementById('webai-status');
+                    if (expBtn2) { expBtn2.disabled = false; expBtn2.innerText = 'BUNDLE CODE'; expBtn2.classList.remove('dispatching'); }
+                    if (wStatus2) wStatus2.innerText = '⚠ ' + (message.message || 'Bundle failed');
                     break;
                 }
-                case 'nlm_uploadComplete': {
-                    const uploadBtn = document.getElementById('nlm-upload-btn');
-                    const uploadStatus = document.getElementById('nlm-upload-status');
-                    if (uploadBtn) { uploadBtn.disabled = false; uploadBtn.innerText = 'BUNDLE & UPLOAD'; uploadBtn.classList.remove('dispatching'); }
-                    if (uploadStatus) uploadStatus.innerText = 'Source ID: ' + (message.sourceId || '?') + ' — ' + new Date().toLocaleTimeString();
+                case 'airlock_planSaved': {
+                    const pBtn = document.getElementById('airlock-plan-btn');
+                    const pStatus = document.getElementById('webai-status');
+                    if (pBtn) { pBtn.disabled = false; pBtn.innerText = 'CONVERT TO PLAN'; }
+                    if (pStatus) pStatus.innerText = '✓ Plan saved — ' + new Date().toLocaleTimeString();
                     break;
                 }
-                case 'nlm_queryResult': {
-                    const queryBtn = document.getElementById('nlm-query-btn');
-                    const resultArea = document.getElementById('nlm-query-result');
-                    const resultText = document.getElementById('nlm-query-result-text');
-                    if (queryBtn) { queryBtn.disabled = false; queryBtn.innerText = 'ASK NOTEBOOKLM'; queryBtn.classList.remove('dispatching'); }
-                    if (resultArea) resultArea.style.display = 'block';
-                    if (resultText) resultText.innerText = message.answer || '(empty response)';
+                case 'airlock_planError': {
+                    const pBtn2 = document.getElementById('airlock-plan-btn');
+                    const pStatus2 = document.getElementById('webai-status');
+                    if (pBtn2) { pBtn2.disabled = false; pBtn2.innerText = 'CONVERT TO PLAN'; }
+                    if (pStatus2) pStatus2.innerText = '⚠ ' + (message.message || 'Plan save failed');
                     break;
                 }
-                case 'nlm_authError': {
-                    const banner = document.getElementById('nlm-auth-banner');
-                    if (banner) banner.style.display = 'block';
-                    // Reset any active buttons
-                    ['nlm-upload-btn', 'nlm-query-btn', 'nlm-drive-btn', 'nlm-sync-btn'].forEach(id => {
-                        const b = document.getElementById(id);
-                        if (b) { b.disabled = false; b.classList.remove('dispatching'); }
-                    });
-                    const uploadBtn2 = document.getElementById('nlm-upload-btn');
-                    if (uploadBtn2) uploadBtn2.innerText = 'BUNDLE & UPLOAD';
-                    const queryBtn2 = document.getElementById('nlm-query-btn');
-                    if (queryBtn2) queryBtn2.innerText = 'ASK NOTEBOOKLM';
-                    const syncBtn2 = document.getElementById('nlm-sync-btn');
-                    if (syncBtn2) syncBtn2.innerText = 'SYNC DRIVE / ONLINE SOURCES';
+                case 'airlock_coderSent': {
+                    const cBtn = document.getElementById('airlock-coder-btn');
+                    const cStatus = document.getElementById('webai-status');
+                    if (cBtn) { cBtn.disabled = false; cBtn.innerText = 'SEND TO CODER'; }
+                    if (cStatus) cStatus.innerText = '✓ Sent to coder — ' + new Date().toLocaleTimeString();
                     break;
                 }
-                case 'nlm_error': {
-                    const errLine = document.getElementById('nlm-error-line');
-                    if (errLine) {
-                        errLine.innerText = message.message || 'Unknown error';
-                        errLine.style.display = 'block';
-                        setTimeout(() => { errLine.style.display = 'none'; }, 6000);
-                    }
-                    // Reset any active buttons
-                    ['nlm-upload-btn', 'nlm-query-btn', 'nlm-drive-btn', 'nlm-sync-btn'].forEach(id => {
-                        const b = document.getElementById(id);
-                        if (b) { b.disabled = false; b.classList.remove('dispatching'); }
-                    });
-                    const uploadBtn3 = document.getElementById('nlm-upload-btn');
-                    if (uploadBtn3) uploadBtn3.innerText = 'BUNDLE & UPLOAD';
-                    const queryBtn3 = document.getElementById('nlm-query-btn');
-                    if (queryBtn3) queryBtn3.innerText = 'ASK NOTEBOOKLM';
-                    const syncBtn3 = document.getElementById('nlm-sync-btn');
-                    if (syncBtn3) syncBtn3.innerText = 'SYNC DRIVE / ONLINE SOURCES';
-                    break;
-                }
-                case 'nlm_chatConfigured': {
-                    const pStatus = document.getElementById('nlm-persona-status');
-                    if (pStatus) pStatus.innerText = 'Active: ' + (message.persona || 'Custom');
-                    const pSelect = document.getElementById('nlm-persona-select');
-                    if (pSelect) nlmLastPersona = pSelect.value;
-                    break;
-                }
-                case 'nlm_personaRevert': {
-                    const pSelect2 = document.getElementById('nlm-persona-select');
-                    if (pSelect2) pSelect2.value = nlmLastPersona;
-                    break;
-                }
-                case 'nlm_driveLinkAdded': {
-                    const dBtn = document.getElementById('nlm-drive-btn');
-                    if (dBtn) dBtn.disabled = false;
-                    const dInput = document.getElementById('nlm-drive-url');
-                    if (dInput) dInput.value = '';
-                    const dStatus = document.getElementById('nlm-drive-status');
-                    if (dStatus) dStatus.innerText = 'Drive source added: ' + (message.sourceId || '?');
-                    break;
-                }
-                case 'nlm_syncComplete': {
-                    const sBtn = document.getElementById('nlm-sync-btn');
-                    if (sBtn) { sBtn.disabled = false; sBtn.innerText = 'SYNC DRIVE / ONLINE SOURCES'; }
+                case 'airlock_coderError': {
+                    const cBtn2 = document.getElementById('airlock-coder-btn');
+                    const cStatus2 = document.getElementById('webai-status');
+                    if (cBtn2) { cBtn2.disabled = false; cBtn2.innerText = 'SEND TO CODER'; }
+                    if (cStatus2) cStatus2.innerText = '⚠ ' + (message.message || 'Send to coder failed');
                     break;
                 }
             }
@@ -2064,7 +2003,7 @@ body {
         let currentAgentTab = 'agents';
         function switchAgentTab(tab) {
             currentAgentTab = tab;
-            const tabs = { agents: agentListStandard, auto: agentListAuto, notebooklm: agentListNotebooklm };
+            const tabs = { agents: agentListStandard, auto: agentListAuto, webai: agentListWebai };
             document.querySelectorAll('.sub-tab-btn').forEach(btn => {
                 btn.classList.toggle('is-active', btn.dataset.tab === tab);
             });
@@ -2101,7 +2040,7 @@ body {
 
             agentListStandard.innerHTML = '';
             agentListAuto.innerHTML = '';
-            agentListNotebooklm.innerHTML = '';
+            agentListWebai.innerHTML = '';
 
             // === AGENTS TAB: Lead Coder, Coder, Planner, Reviewer, Analyst ===
 
@@ -2164,74 +2103,20 @@ body {
 
             agentListAuto.appendChild(createCoderReviewerRow());
 
-            // === NOTEBOOKLM TAB: Setup & Login ===
-            agentListNotebooklm.appendChild(createNotebookLmSetupSection());
-
-            // === NOTEBOOKLM TAB: NotebookLM Planner ===
-            agentListNotebooklm.appendChild(createNotebookLmCard());
+            // === AIRLOCK TAB: Bundle, Convert to Plan, Send to Coder ===
+            agentListWebai.appendChild(createWebAiAirlockPanel());
 
             // Restore active tab visibility after re-render
             switchAgentTab(currentAgentTab);
         }
 
-        function createNotebookLmSetupSection() {
-            const container = document.createElement('div');
-            container.className = 'startup-section';
-            container.style.marginTop = '0';
-            container.style.borderTop = 'none';
-            container.style.borderBottom = '1px solid var(--border-color)';
+        // Preserve airlock textarea content across re-renders
+        let _airlockTextareaValue = '';
 
-            const toggle = document.createElement('div');
-            toggle.className = 'startup-toggle';
-            toggle.innerHTML = '<div class="section-label" style="margin:0">NLM SETUP & LOGIN</div><span class="chevron">▶</span>';
-            
-            const fields = document.createElement('div');
-            fields.className = 'startup-fields';
-            fields.style.flexDirection = 'column';
-            fields.style.gap = '4px';
-
-            toggle.onclick = () => {
-                const isOpen = fields.classList.toggle('open');
-                toggle.querySelector('.chevron').classList.toggle('open', isOpen);
-            };
-
-            // Setup status hint area
-            const setupHint = document.createElement('div');
-            setupHint.id = 'nlm-setup-hint';
-            setupHint.style.cssText = 'font-size:10px; padding:4px 0; color:var(--text-secondary); font-family:var(--font-mono); display:none;';
-            fields.appendChild(setupHint);
-
-            const steps = [
-                { label: '1. CHECK PREREQUISITES', step: 'prereqs' },
-                { label: '2. INSTALL UV MANAGER', step: 'initial' },
-                { label: '3. REPAIR SHELL PATH', step: 'troubleshoot' },
-                { label: '4. NOTEBOOKLM LOGIN', step: 'login' },
-                { label: '5. VERIFY INSTALL', step: 'verify' }
-            ];
-
-            steps.forEach(s => {
-                const btn = document.createElement('button');
-                btn.className = 'secondary-btn';
-                btn.style.width = '100%';
-                btn.innerText = s.label;
-                btn.onclick = () => vscode.postMessage({ type: 'runNlmSetupStep', step: s.step });
-                fields.appendChild(btn);
-            });
-
-            container.appendChild(toggle);
-            container.appendChild(fields);
-            return container;
-        }
-
-
-        // --- NLM Command Centre State ---
-        let nlmSelectedNotebookId = '';
-        let nlmLastPersona = 'Default';
-
-        function createNotebookLmCard() {
+        function createWebAiAirlockPanel() {
             const container = document.createElement('div');
             container.className = 'agent-row';
-            container.style.borderLeft = '2px solid var(--accent-cyan)';
+            container.style.borderLeft = '2px solid var(--vscode-button-background)';
 
             // Header
             const header = document.createElement('div');
@@ -2242,224 +2127,99 @@ body {
             dot.className = 'status-dot green';
             const name = document.createElement('div');
             name.className = 'agent-name';
-            name.innerText = 'NOTEBOOKLM COMMAND CENTRE';
+            name.innerText = 'AIRLOCK';
             identity.appendChild(dot);
             identity.appendChild(name);
             header.appendChild(identity);
             container.appendChild(header);
 
-            // Auth error banner (hidden by default)
-            const authBanner = document.createElement('div');
-            authBanner.id = 'nlm-auth-banner';
-            authBanner.style.cssText = 'display:none; padding:6px 8px; background:var(--accent-red,#c0392b); color:#fff; font-size:10px; font-family:var(--font-mono);';
-            authBanner.innerText = 'NotebookLM session expired. Run `nlm login` in a terminal to re-authenticate.';
-            container.appendChild(authBanner);
+            // Description
+            const desc = document.createElement('div');
+            desc.style.cssText = 'padding:6px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono); line-height:1.5;';
+            desc.innerText = 'Bundle your codebase + plans for any external AI. Paste the response below to convert to a plan or send as a patch to your coder.';
+            container.appendChild(desc);
 
-            // Error line
-            const errorLine = document.createElement('div');
-            errorLine.id = 'nlm-error-line';
-            errorLine.style.cssText = 'display:none; padding:2px 8px; font-size:10px; color:var(--accent-red); font-family:var(--font-mono);';
-            container.appendChild(errorLine);
+            // Status line
+            const statusLine = document.createElement('div');
+            statusLine.id = 'webai-status';
+            statusLine.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
+            container.appendChild(statusLine);
 
-            // ① Server section
-            const srvLabel = document.createElement('div');
-            srvLabel.className = 'section-label';
-            srvLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
-            srvLabel.innerText = '① SERVER';
-            container.appendChild(srvLabel);
-            const srvBtn = document.createElement('button');
-            srvBtn.className = 'secondary-btn';
-            srvBtn.style.width = '100%';
-            srvBtn.innerText = 'START NLM SERVER';
-            srvBtn.onclick = () => vscode.postMessage({ type: 'nlm_startServer' });
-            container.appendChild(srvBtn);
-
-            // ② Notebook section
-            const nbLabel = document.createElement('div');
-            nbLabel.className = 'section-label';
-            nbLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
-            nbLabel.innerText = '② NOTEBOOK';
-            container.appendChild(nbLabel);
-
-            const nbRow = document.createElement('div');
-            nbRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
-            const nbSelect = document.createElement('select');
-            nbSelect.id = 'nlm-notebook-select';
-            nbSelect.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
-            const defaultOpt = document.createElement('option');
-            defaultOpt.value = '';
-            defaultOpt.innerText = '— select notebook —';
-            nbSelect.appendChild(defaultOpt);
-            nbSelect.onchange = () => { nlmSelectedNotebookId = nbSelect.value; updateNlmDisabledState(); };
-            nbRow.appendChild(nbSelect);
-
-            const refreshBtn = document.createElement('button');
-            refreshBtn.className = 'secondary-btn';
-            refreshBtn.innerText = 'REFRESH';
-            refreshBtn.onclick = () => vscode.postMessage({ type: 'nlm_listNotebooks' });
-            nbRow.appendChild(refreshBtn);
-            container.appendChild(nbRow);
-
-            // Create notebook sub-row
-            const createRow = document.createElement('div');
-            createRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
-            const createInput = document.createElement('input');
-            createInput.id = 'nlm-create-title';
-            createInput.placeholder = 'New notebook title';
-            createInput.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
-            createRow.appendChild(createInput);
-            const createBtn = document.createElement('button');
-            createBtn.className = 'secondary-btn';
-            createBtn.innerText = 'CREATE';
-            createBtn.onclick = () => {
-                const title = createInput.value.trim();
-                if (!title) return;
-                createBtn.disabled = true;
-                vscode.postMessage({ type: 'nlm_createNotebook', title });
+            // BUNDLE CODE button
+            const exportBtn = document.createElement('button');
+            exportBtn.className = 'action-btn';
+            exportBtn.id = 'webai-export-btn';
+            exportBtn.style.width = '100%';
+            exportBtn.innerText = 'BUNDLE CODE';
+            exportBtn.onclick = () => {
+                exportBtn.disabled = true;
+                exportBtn.innerText = 'BUNDLING...';
+                exportBtn.classList.add('dispatching');
+                vscode.postMessage({ type: 'webai_export' });
             };
-            createRow.appendChild(createBtn);
-            container.appendChild(createRow);
+            container.appendChild(exportBtn);
 
-            // ③ Context Management
-            const uploadLabel = document.createElement('div');
-            uploadLabel.className = 'section-label';
-            uploadLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
-            uploadLabel.innerText = '③ CONTEXT MANAGEMENT';
-            container.appendChild(uploadLabel);
-            const uploadStatus = document.createElement('div');
-            uploadStatus.id = 'nlm-upload-status';
-            uploadStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
-            container.appendChild(uploadStatus);
-            const uploadBtn = document.createElement('button');
-            uploadBtn.className = 'action-btn';
-            uploadBtn.id = 'nlm-upload-btn';
-            uploadBtn.innerText = 'BUNDLE & UPLOAD';
-            uploadBtn.disabled = true;
-            uploadBtn.onclick = () => {
-                if (!nlmSelectedNotebookId) return;
-                uploadBtn.disabled = true;
-                uploadBtn.innerText = 'UPLOADING...';
-                uploadBtn.classList.add('dispatching');
-                vscode.postMessage({ type: 'nlm_bundleAndUpload', notebookId: nlmSelectedNotebookId });
+            // Spacer
+            const spacer1 = document.createElement('div');
+            spacer1.style.height = '8px';
+            container.appendChild(spacer1);
+
+            // Textarea label
+            const taLabel = document.createElement('div');
+            taLabel.style.cssText = 'padding:2px 8px; font-size:9px; color:var(--text-secondary); font-family:var(--font-mono); letter-spacing:1px; text-transform:uppercase;';
+            taLabel.innerText = 'Paste AI response';
+            container.appendChild(taLabel);
+
+            // Textarea for pasting AI output
+            const textarea = document.createElement('textarea');
+            textarea.id = 'airlock-textarea';
+            textarea.style.cssText = 'width:calc(100% - 16px); margin:4px 8px; min-height:120px; max-height:300px; resize:vertical; background:var(--vscode-input-background, #1e1e1e); color:var(--vscode-input-foreground, #ccc); border:1px solid var(--vscode-input-border, #444); border-radius:3px; padding:6px; font-size:11px; font-family:var(--font-mono); line-height:1.4;';
+            textarea.placeholder = 'Paste the text output from ChatGPT, Claude, Gemini, etc.';
+            textarea.value = _airlockTextareaValue;
+            textarea.addEventListener('input', () => { _airlockTextareaValue = textarea.value; });
+            container.appendChild(textarea);
+
+            // Spacer
+            const spacer2 = document.createElement('div');
+            spacer2.style.height = '6px';
+            container.appendChild(spacer2);
+
+            // CONVERT TO PLAN button
+            const planBtn = document.createElement('button');
+            planBtn.className = 'action-btn';
+            planBtn.id = 'airlock-plan-btn';
+            planBtn.style.cssText = 'width:100%; background:var(--vscode-button-secondaryBackground, transparent); color:var(--vscode-button-secondaryForeground, var(--vscode-button-background)); border:1px solid var(--vscode-button-background);';
+            planBtn.innerText = 'CONVERT TO PLAN';
+            planBtn.onclick = () => {
+                const text = textarea.value.trim();
+                if (!text) { const s = document.getElementById('webai-status'); if (s) s.innerText = '⚠ Paste AI response first'; return; }
+                planBtn.disabled = true;
+                planBtn.innerText = 'SAVING PLAN...';
+                vscode.postMessage({ type: 'airlock_convertToPlan', text });
             };
-            container.appendChild(uploadBtn);
+            container.appendChild(planBtn);
 
-            // Drive Link sub-row
-            const driveRow = document.createElement('div');
-            driveRow.style.cssText = 'padding:4px 8px; display:flex; gap:4px; align-items:center;';
-            const driveInput = document.createElement('input');
-            driveInput.id = 'nlm-drive-url';
-            driveInput.placeholder = 'Google Doc URL or ID';
-            driveInput.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
-            driveRow.appendChild(driveInput);
-            const driveBtn = document.createElement('button');
-            driveBtn.className = 'secondary-btn';
-            driveBtn.id = 'nlm-drive-btn';
-            driveBtn.innerText = 'ADD LINK';
-            driveBtn.disabled = true;
-            driveBtn.onclick = () => {
-                if (!nlmSelectedNotebookId || !driveInput.value.trim()) return;
-                driveBtn.disabled = true;
-                vscode.postMessage({ type: 'nlm_addDriveLink', notebookId: nlmSelectedNotebookId, url: driveInput.value.trim() });
+            // Spacer
+            const spacer3 = document.createElement('div');
+            spacer3.style.height = '6px';
+            container.appendChild(spacer3);
+
+            // SEND TO CODER button
+            const coderBtn = document.createElement('button');
+            coderBtn.className = 'action-btn';
+            coderBtn.id = 'airlock-coder-btn';
+            coderBtn.style.cssText = 'width:100%; background:var(--vscode-button-secondaryBackground, transparent); color:var(--vscode-button-secondaryForeground, var(--vscode-button-background)); border:1px solid var(--vscode-button-background);';
+            coderBtn.innerText = 'SEND TO CODER';
+            coderBtn.onclick = () => {
+                const text = textarea.value.trim();
+                if (!text) { const s = document.getElementById('webai-status'); if (s) s.innerText = '⚠ Paste AI response first'; return; }
+                coderBtn.disabled = true;
+                coderBtn.innerText = 'SENDING...';
+                vscode.postMessage({ type: 'airlock_sendToCoder', text });
             };
-            driveRow.appendChild(driveBtn);
-            container.appendChild(driveRow);
-
-            // Drive link status
-            const driveStatus = document.createElement('div');
-            driveStatus.id = 'nlm-drive-status';
-            driveStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
-            container.appendChild(driveStatus);
-
-            // Sync button
-            const syncBtn = document.createElement('button');
-            syncBtn.className = 'secondary-btn';
-            syncBtn.id = 'nlm-sync-btn';
-            syncBtn.style.width = '100%';
-            syncBtn.innerText = 'SYNC DRIVE / ONLINE SOURCES';
-            syncBtn.disabled = true;
-            syncBtn.onclick = () => {
-                if (!nlmSelectedNotebookId) return;
-                syncBtn.disabled = true;
-                syncBtn.innerText = 'SYNCING...';
-                vscode.postMessage({ type: 'nlm_syncContext', notebookId: nlmSelectedNotebookId });
-            };
-            container.appendChild(syncBtn);
-
-            // ④ Arbitrage Personas & Query
-            const personaLabel = document.createElement('div');
-            personaLabel.className = 'section-label';
-            personaLabel.style.cssText = 'padding:6px 8px 2px; font-size:9px; opacity:0.7;';
-            personaLabel.innerText = '④ PERSONA & QUERY';
-            container.appendChild(personaLabel);
-
-            // Persona dropdown
-            const personaRow = document.createElement('div');
-            personaRow.style.cssText = 'padding:2px 8px; display:flex; gap:4px; align-items:center;';
-            const personaSelect = document.createElement('select');
-            personaSelect.id = 'nlm-persona-select';
-            personaSelect.style.cssText = 'flex:1; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-size:11px; padding:3px; font-family:var(--font-mono);';
-            ['Default', 'Research Assistant', 'Patch Generator', 'Custom'].forEach(p => {
-                const opt = document.createElement('option');
-                opt.value = p;
-                opt.innerText = p;
-                personaSelect.appendChild(opt);
-            });
-            personaSelect.onchange = () => {
-                if (!nlmSelectedNotebookId) { personaSelect.value = nlmLastPersona; return; }
-                vscode.postMessage({ type: 'nlm_configurePersona', notebookId: nlmSelectedNotebookId, persona: personaSelect.value });
-            };
-            personaRow.appendChild(personaSelect);
-            container.appendChild(personaRow);
-
-            // Persona status
-            const personaStatus = document.createElement('div');
-            personaStatus.id = 'nlm-persona-status';
-            personaStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
-            personaStatus.innerText = 'Active: Default';
-            container.appendChild(personaStatus);
-            const queryInput = document.createElement('textarea');
-            queryInput.id = 'nlm-query-input';
-            queryInput.placeholder = 'Ask NotebookLM a question about your codebase...';
-            queryInput.style.cssText = 'width:100%; min-height:48px; max-height:120px; background:var(--panel-bg); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-family); font-size:11px; padding:6px; resize:vertical; border-radius:2px; margin:0 8px; box-sizing:border-box;';
-            container.appendChild(queryInput);
-            const queryBtn = document.createElement('button');
-            queryBtn.className = 'action-btn';
-            queryBtn.id = 'nlm-query-btn';
-            queryBtn.innerText = 'ASK NOTEBOOKLM';
-            queryBtn.disabled = true;
-            queryBtn.onclick = () => {
-                if (!nlmSelectedNotebookId) return;
-                queryBtn.disabled = true;
-                queryBtn.innerText = 'QUERYING...';
-                queryBtn.classList.add('dispatching');
-                vscode.postMessage({ type: 'nlm_query', notebookId: nlmSelectedNotebookId, question: queryInput.value.trim() });
-            };
-            container.appendChild(queryBtn);
-
-            // Query result area
-            const resultArea = document.createElement('div');
-            resultArea.id = 'nlm-query-result';
-            resultArea.style.cssText = 'display:none; margin:6px 8px; padding:8px; background:var(--panel-bg2); border:1px solid var(--border-color); border-radius:2px; max-height:300px; overflow-y:auto;';
-            const resultPre = document.createElement('pre');
-            resultPre.id = 'nlm-query-result-text';
-            resultPre.style.cssText = 'white-space:pre-wrap; word-break:break-word; font-size:11px; font-family:var(--font-mono); color:var(--text-primary); margin:0;';
-            resultArea.appendChild(resultPre);
-            container.appendChild(resultArea);
+            container.appendChild(coderBtn);
 
             return container;
-        }
-
-        function updateNlmDisabledState() {
-            const hasNotebook = !!nlmSelectedNotebookId;
-            const uploadBtn = document.getElementById('nlm-upload-btn');
-            const queryBtn = document.getElementById('nlm-query-btn');
-            const driveBtn = document.getElementById('nlm-drive-btn');
-            const syncBtn = document.getElementById('nlm-sync-btn');
-            if (uploadBtn) uploadBtn.disabled = !hasNotebook;
-            if (queryBtn) queryBtn.disabled = !hasNotebook;
-            if (driveBtn) driveBtn.disabled = !hasNotebook;
-            if (syncBtn) syncBtn.disabled = !hasNotebook;
         }
 
         function createJulesHistoryList() {

@@ -5,12 +5,11 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as lockfile from 'proper-lockfile';
 import * as cp from 'child_process';
+import AdmZip = require('adm-zip');
 import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog';
 import { sendRobustText } from './terminalUtils';
 import { InteractiveOrchestrator } from './InteractiveOrchestrator';
 import { PipelineOrchestrator } from './PipelineOrchestrator';
-import * as NlmCli from './NlmCliRunner';
-import { NlmAuthError } from './NlmCliRunner';
 import { bundleWorkspaceContext } from './ContextBundler';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
     syncMirrorToBrain: (options: {
@@ -104,8 +103,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Persisted workspace blacklist: stable-path keys of brain plans present during setup.
     // Blacklisted plans are never auto-registered and never shown in the run sheet dropdown.
     private _brainPlanBlacklist = new Set<string>();
-
-    // (NlmCliRunner is stateless — no instance field needed)
+    private _gitCommitDisposable?: vscode.Disposable;
 
     // Hard workspace ownership scoping
     private _workspaceId: string | null = null;
@@ -161,6 +159,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         );
         this._setupStateWatcher();
         this._setupPlanWatcher();
+        this._setupGitCommitWatcher();
         // Initialize ownership registry before brain watcher (async, fire-and-forget)
         this._ensureOwnershipRegistryInitialized().then(() => {
             this._setupBrainWatcher();
@@ -819,39 +818,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             await this._handleTriggerAgentAction(data.role, data.sessionFile, data.instruction);
                         }
                         break;
-                    case 'nlm_startServer':
-                        this._handleNlmStartServer();
-                        break;
-                    case 'nlm_listNotebooks':
-                        await this._handleNlmListNotebooks();
-                        break;
-                    case 'nlm_createNotebook':
-                        await this._handleNlmCreateNotebook(data.title || '');
-                        break;
-                    case 'nlm_bundleAndUpload':
-                        await this._handleNlmBundleAndUpload(data.notebookId || '');
-                        break;
-                    case 'nlm_query':
-                        await this._handleNlmQuery(data.notebookId || '', data.question || '');
-                        break;
-                    case 'nlm_configurePersona':
-                        await this._handleNlmConfigurePersona(data.notebookId || '', data.persona || '');
-                        break;
-                    case 'nlm_addDriveLink':
-                        await this._handleNlmAddDriveLink(data.notebookId || '', data.url || '');
-                        break;
-                    case 'nlm_syncContext':
-                        await this._handleNlmSyncContext(data.notebookId || '');
-                        break;
-                    case 'runNlmSetupStep':
-                        await this._handleRunNlmSetupStep(data.step);
-                        break;
-                    case 'delegateNotebookLmSetup':
-                        await this._handleDelegateNotebookLmSetup();
-                        break;
-                    case 'copyNotebookLmSetupPrompt':
-                        await this._handleCopyNotebookLmSetupPrompt();
-                        break;
                     case 'sendAnalystMessage':
                         if (data.instruction) {
                             await this._handleSendAnalystMessage(data.instruction);
@@ -1013,6 +979,19 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             this._stopCoderReviewerWorkflow(data.sessionId);
                         }
                         break;
+                    case 'webai_export':
+                        this._handleWebAiExport();
+                        break;
+                    case 'airlock_convertToPlan':
+                        if (data.text) {
+                            this._handleAirlockConvertToPlan(data.text);
+                        }
+                        break;
+                    case 'airlock_sendToCoder':
+                        if (data.text) {
+                            this._handleAirlockSendToCoder(data.text);
+                        }
+                        break;
                 }
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1057,6 +1036,44 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 console.error('[TaskViewerProvider] fs.watch fallback failed:', e);
             }
         }
+    }
+
+    private _setupGitCommitWatcher() {
+        try {
+            const gitExtension = vscode.extensions.getExtension('vscode.git');
+            if (!gitExtension) return;
+
+            const git = gitExtension.isActive ? gitExtension.exports : undefined;
+            if (!git) {
+                // Extension not yet active; wait for it
+                Promise.resolve(gitExtension.activate()).then(api => {
+                    this._listenToGitCommits(api);
+                }).catch(() => { /* non-fatal */ });
+                return;
+            }
+            this._listenToGitCommits(git);
+        } catch { /* non-fatal */ }
+    }
+
+    private _listenToGitCommits(gitApi: any) {
+        try {
+            const api = gitApi.getAPI ? gitApi.getAPI(1) : gitApi;
+            if (!api || !api.repositories) return;
+
+            for (const repo of api.repositories) {
+                if (repo.state && repo.state.onDidChange) {
+                    let lastHead = repo.state.HEAD?.commit;
+                    this._gitCommitDisposable = repo.state.onDidChange(() => {
+                        const currentHead = repo.state.HEAD?.commit;
+                        if (currentHead && currentHead !== lastHead) {
+                            lastHead = currentHead;
+                            // Silently re-export on commit
+                            this._handleWebAiExport().catch(() => { /* silent */ });
+                        }
+                    });
+                }
+            }
+        } catch { /* non-fatal */ }
     }
 
     private _setupPlanWatcher() {
@@ -6003,207 +6020,256 @@ ${focusDirective}`);
         timers.push(delayTimer);
     }
 
-    // --- NotebookLM Planner Handlers ---
+    // ── Web AI Airlock ──────────────────────────────────────────────────
 
-    private _handleNlmStartServer(): void {
-        const terminal = vscode.window.createTerminal({ name: 'NotebookLM Server' });
-        terminal.sendText('uvx --from notebooklm-mcp-cli notebooklm-mcp');
-        terminal.show();
-    }
-
-    private async _handleNlmListNotebooks(): Promise<void> {
-        try {
-            const notebooks = await NlmCli.listNotebooks();
-            this._view?.webview.postMessage({ type: 'nlm_notebookList', notebooks });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private async _handleNlmCreateNotebook(title: string): Promise<void> {
-        try {
-            const notebookId = await NlmCli.createNotebook(title || 'Switchboard Session');
-            this._view?.webview.postMessage({ type: 'nlm_notebookCreated', notebookId });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private async _handleNlmBundleAndUpload(notebookId: string): Promise<void> {
+    private async _handleWebAiExport(): Promise<void> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) { vscode.window.showErrorMessage('No workspace open.'); return; }
-        try {
-            const contextPath = await bundleWorkspaceContext(workspaceFolders[0].uri.fsPath);
-            const sourceId = await NlmCli.uploadSource(notebookId, contextPath);
-            this._view?.webview.postMessage({ type: 'nlm_uploadComplete', sourceId, contextPath });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private async _handleNlmQuery(notebookId: string, question: string): Promise<void> {
-        try {
-            const result = await NlmCli.queryNotebook(notebookId, question);
-            this._view?.webview.postMessage({ type: 'nlm_queryResult', answer: result.answer || JSON.stringify(result) });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private _postNlmError(err: any): void {
-        if (err instanceof NlmAuthError) {
-            this._view?.webview.postMessage({ type: 'nlm_authError', message: err.message });
-        } else {
-            this._view?.webview.postMessage({ type: 'nlm_error', message: err.message || String(err) });
-        }
-    }
-
-    private static readonly NLM_PERSONA_PROMPTS: Record<string, { goal: string; prompt: string }> = {
-        'Research Assistant': {
-            goal: 'research',
-            prompt: 'Analyze the context and give me an extremely concise, bulleted brief of the files I need to modify. Do not write code.'
-        },
-        'Patch Generator': {
-            goal: 'patch',
-            prompt: 'You are a code diff engine. Output ONLY a raw, unified Git patch implementing the requested changes based on the context. No markdown wrapping.'
-        },
-        'Default': {
-            goal: 'default',
-            prompt: ''
-        }
-    };
-
-    private static _extractDocId(url: string): string | null {
-        // Match /d/<id> pattern (Google Docs, Sheets, etc.)
-        const dMatch = url.match(/\/d\/([a-zA-Z0-9_-]+)/);
-        if (dMatch) { return dMatch[1]; }
-        // Match id=<id> query param
-        const idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
-        if (idMatch) { return idMatch[1]; }
-        // If it looks like a raw doc ID already (no slashes, no protocol)
-        if (/^[a-zA-Z0-9_-]{10,}$/.test(url.trim())) { return url.trim(); }
-        return null;
-    }
-
-    private async _handleNlmConfigurePersona(notebookId: string, persona: string): Promise<void> {
-        try {
-            if (persona === 'Custom') {
-                const customPrompt = await vscode.window.showInputBox({
-                    prompt: 'Enter your custom system prompt for NotebookLM',
-                    placeHolder: 'e.g. Reply like a pirate.',
-                    ignoreFocusOut: true
-                });
-                if (customPrompt === undefined) {
-                    // User canceled — revert dropdown
-                    this._view?.webview.postMessage({ type: 'nlm_personaRevert' });
-                    return;
-                }
-                await NlmCli.configureChat(notebookId, 'custom', customPrompt);
-            } else {
-                const preset = TaskViewerProvider.NLM_PERSONA_PROMPTS[persona] || TaskViewerProvider.NLM_PERSONA_PROMPTS['Default'];
-                await NlmCli.configureChat(notebookId, preset.goal, preset.prompt || undefined);
-            }
-            this._view?.webview.postMessage({ type: 'nlm_chatConfigured', persona });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private async _handleNlmAddDriveLink(notebookId: string, url: string): Promise<void> {
-        const docId = TaskViewerProvider._extractDocId(url);
-        if (!docId) {
-            this._view?.webview.postMessage({ type: 'nlm_error', message: 'Could not extract a Google Doc ID from the provided URL.' });
+        if (!workspaceFolders) {
+            this._view?.webview.postMessage({ type: 'webai_exportError', message: 'No workspace open' });
             return;
         }
-        try {
-            const sourceId = await NlmCli.addDriveSource(notebookId, docId);
-            this._view?.webview.postMessage({ type: 'nlm_driveLinkAdded', sourceId });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private async _handleNlmSyncContext(notebookId: string): Promise<void> {
-        try {
-            await NlmCli.syncSources(notebookId);
-            this._view?.webview.postMessage({ type: 'nlm_syncComplete' });
-        } catch (err: any) {
-            this._postNlmError(err);
-        }
-    }
-
-    private static readonly NOTEBOOKLM_SETUP_PROMPT = `I am setting up the NotebookLM MCP server. I'm running setup commands in my terminal. Please stand by to help if I encounter any errors or need assistance with Python 3.11+, Google Chrome, or the 'uv' package manager. If 'uvx' is not found after installing uv, try running 'uv tool update-shell' then restart VS Code.`;
-
-    private _findOrCreateSetupTerminal(): vscode.Terminal {
-        const existing = vscode.window.terminals.find(t => t.name === 'Switchboard Setup');
-        if (existing) { return existing; }
-        return vscode.window.createTerminal({ name: 'Switchboard Setup' });
-    }
-
-    private async _handleRunNlmSetupStep(step: string): Promise<void> {
-        let command = '';
-        if (step === 'prereqs') {
-            command = 'python --version';
-        } else if (step === 'initial') {
-            command = process.platform === 'win32'
-                ? 'powershell -c "irm https://astral.sh/uv/install.ps1 | iex" && uv tool update-shell'
-                : 'curl -LsSf https://astral.sh/uv/install.sh | sh && uv tool update-shell';
-        } else if (step === 'troubleshoot') {
-            command = 'uv tool update-shell';
-        } else if (step === 'login') {
-            command = 'uvx --from notebooklm-mcp-cli notebooklm-mcp';
-        } else if (step === 'verify') {
-            command = 'uvx --version';
-        }
-
-        if (!command) { return; }
-
-        // Run the command in a dedicated setup terminal
-        const terminal = this._findOrCreateSetupTerminal();
-        terminal.show();
-        await sendRobustText(terminal, command, false);
-        vscode.window.showInformationMessage(`Running "${step}" step in Switchboard Setup terminal.`);
-
-        // Optionally notify assigned agent with a generic help prompt
-        const agentName = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('planner');
-        if (agentName) {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (workspaceFolders) {
-                await this._dispatchExecuteMessage(
-                    workspaceFolders[0].uri.fsPath,
-                    agentName,
-                    TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT,
-                    { source: 'notebooklm-setup', workflow: 'notebooklm-setup' }
-                );
-            }
-        }
-    }
-
-    private async _handleDelegateNotebookLmSetup(): Promise<void> {
-        const agentName = await this._getAgentNameForRole('coder') || await this._getAgentNameForRole('planner');
-        if (!agentName) {
-            // Fallback: copy prompt and tell user to paste it into their preferred AI assistant
-            await vscode.env.clipboard.writeText(TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT);
-            vscode.window.showInformationMessage('No agent terminal assigned. Setup prompt copied to clipboard — paste it into your AI assistant.');
-            return;
-        }
-
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) { return; }
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
-        await this._dispatchExecuteMessage(
-            workspaceRoot,
-            agentName,
-            TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT,
-            { source: 'notebooklm-setup', workflow: 'notebooklm-setup' }
-        );
-        vscode.window.showInformationMessage(`NotebookLM setup prompt sent to ${agentName}.`);
+        try {
+            // 1. Ensure .web-ai/ is in .gitignore
+            const gitignorePath = path.join(workspaceRoot, '.gitignore');
+            try {
+                const existing = fs.existsSync(gitignorePath) ? await fs.promises.readFile(gitignorePath, 'utf8') : '';
+                if (!existing.split('\n').some(l => l.trim() === '.web-ai/' || l.trim() === '.web-ai')) {
+                    await fs.promises.appendFile(gitignorePath, '\n.web-ai/\n');
+                }
+            } catch { /* non-fatal */ }
+
+            // 2. Scaffold directory structure
+            const outboxDir = path.join(workspaceRoot, '.web-ai', 'outbox');
+            const promptsDir = path.join(outboxDir, 'prompts');
+            await fs.promises.mkdir(promptsDir, { recursive: true });
+
+            // 3. Run the bundler (writes to .web-ai/outbox/codebase-bundle.md)
+            await bundleWorkspaceContext(workspaceRoot);
+
+            // 4. Serialize Kanban / plan state → active-plan.md
+            const activePlanPath = path.join(outboxDir, 'active-plan.md');
+            await this._serializeActivePlan(workspaceRoot, activePlanPath);
+
+            // 5. Write prompt templates
+            await this._writePromptTemplates(promptsDir);
+
+            // 6. Write inbox.md if it doesn't exist
+            const inboxPath = path.join(workspaceRoot, '.web-ai', 'inbox.md');
+            if (!fs.existsSync(inboxPath)) {
+                await fs.promises.writeFile(inboxPath,
+                    '<!-- WEB AI AIRLOCK — INBOX -->\n' +
+                    '<!-- Paste the Web AI\'s response below this line. -->\n' +
+                    '<!-- Then click EXECUTE INBOX in the Switchboard sidebar. -->\n\n',
+                    'utf8');
+            }
+
+            // 7. Create zip of outbox contents
+            const zipPath = path.join(outboxDir, 'switchboard-export.zip');
+            const zip = new AdmZip();
+            const bundlePath = path.join(outboxDir, 'codebase-bundle.md');
+            if (fs.existsSync(bundlePath)) zip.addLocalFile(bundlePath);
+            if (fs.existsSync(activePlanPath)) zip.addLocalFile(activePlanPath);
+            if (fs.existsSync(promptsDir)) {
+                const promptFiles = await fs.promises.readdir(promptsDir);
+                for (const pf of promptFiles) {
+                    zip.addLocalFile(path.join(promptsDir, pf), 'prompts');
+                }
+            }
+            zip.writeZip(zipPath);
+
+            this._view?.webview.postMessage({ type: 'webai_exportComplete' });
+            vscode.window.showInformationMessage('Web AI Airlock: Export complete → .web-ai/outbox/');
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            this._view?.webview.postMessage({ type: 'webai_exportError', message: msg });
+            vscode.window.showErrorMessage(`Web AI export failed: ${msg}`);
+        }
     }
 
-    private async _handleCopyNotebookLmSetupPrompt(): Promise<void> {
-        await vscode.env.clipboard.writeText(TaskViewerProvider.NOTEBOOKLM_SETUP_PROMPT);
-        vscode.window.showInformationMessage('NotebookLM setup prompt copied to clipboard.');
+    private async _serializeActivePlan(workspaceRoot: string, outputPath: string): Promise<void> {
+        const lines: string[] = ['# Switchboard Active Plan State', '', `*Exported: ${new Date().toISOString()}*`, ''];
+
+        try {
+            const log = this._getSessionLog(workspaceRoot);
+            const sheets = await log.getRunSheets();
+
+            if (sheets.length === 0) {
+                lines.push('*No active runsheets found.*');
+            } else {
+                lines.push('## Runsheets', '');
+                lines.push('| Session | Topic | Column | Last Activity |');
+                lines.push('|---------|-------|--------|---------------|');
+
+                for (const sheet of sheets) {
+                    const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
+                    const column = this._deriveKanbanColumn(events);
+                    let lastActivity = sheet.createdAt || '';
+                    for (const e of events) {
+                        if (e.timestamp && e.timestamp > lastActivity) lastActivity = e.timestamp;
+                    }
+                    const topic = (sheet.topic || sheet.planFile || 'Untitled').replace(/\|/g, '\\|');
+                    lines.push(`| ${sheet.sessionId || '?'} | ${topic} | ${column} | ${lastActivity} |`);
+                }
+            }
+
+            // Also include plan content if a plan is currently selected
+            const planEntries = Object.values(this._planRegistry.entries);
+            if (planEntries.length > 0) {
+                lines.push('', '## Plan Files', '');
+                for (const entry of planEntries as any[]) {
+                    const planPath = entry.path || entry.planFile;
+                    if (planPath && fs.existsSync(planPath)) {
+                        try {
+                            const content = await fs.promises.readFile(planPath, 'utf8');
+                            const name = path.basename(planPath);
+                            lines.push(`### ${name}`, '', '```markdown', content.substring(0, 8000), '```', '');
+                        } catch { /* skip unreadable plans */ }
+                    }
+                }
+            }
+        } catch (err) {
+            lines.push(`*Error serializing plan state: ${err}*`);
+        }
+
+        await fs.promises.writeFile(outputPath, lines.join('\n'), 'utf8');
+    }
+
+    private _deriveKanbanColumn(events: any[]): string {
+        for (let i = events.length - 1; i >= 0; i--) {
+            const wf = (events[i].workflow || '').toLowerCase();
+            if (wf.includes('reviewer') || wf === 'review') return 'CODE REVIEWED';
+            if (wf === 'lead' || wf === 'coder' || wf === 'handoff' || wf === 'team' || wf === 'handoff-lead') return 'CODED';
+            if (wf === 'planner' || wf === 'challenge' || wf === 'enhance' || wf === 'accuracy' || wf === 'sidebar-review' || wf === 'enhanced plan') return 'PLAN REVIEWED';
+        }
+        return 'CREATED';
+    }
+
+    private async _writePromptTemplates(promptsDir: string): Promise<void> {
+        const templates: Record<string, string> = {
+            '01-planning-spec.md': [
+                '# Planning Spec Prompt',
+                '',
+                'Read `active-plan.md` to understand the current project state and `codebase-bundle.md` for the full source code.',
+                '',
+                'Write a detailed implementation specification for the following feature/change:',
+                '',
+                '> [DESCRIBE YOUR FEATURE HERE]',
+                '',
+                'The spec should include:',
+                '- Exact files to create or modify',
+                '- Function signatures and data flow',
+                '- Edge cases and error handling',
+                '- A step-by-step implementation order',
+                '',
+                'Output the spec as a structured markdown document suitable for pasting into an IDE agent\'s inbox.',
+            ].join('\n'),
+            '02-bug-hunter.md': [
+                '# Bug Hunter Prompt',
+                '',
+                'Read `codebase-bundle.md` for the full source code.',
+                '',
+                'Identify the root cause of the following bug:',
+                '',
+                '> [DESCRIBE THE BUG / PASTE ERROR OUTPUT HERE]',
+                '',
+                'Provide:',
+                '- The exact file(s) and line(s) where the bug originates',
+                '- A clear explanation of why it fails',
+                '- A minimal fix (patch-style diff preferred)',
+            ].join('\n'),
+            '03-patch-generator.md': [
+                '# Patch Generator Prompt',
+                '',
+                'Read `codebase-bundle.md` for the full source code and `active-plan.md` for context.',
+                '',
+                'Write a strict code patch for the following change:',
+                '',
+                '> [DESCRIBE THE CHANGE HERE]',
+                '',
+                'Requirements:',
+                '- Output as a series of file edits (search/replace blocks or unified diff)',
+                '- Make the smallest possible changes',
+                '- Include only the affected files',
+                '- The output will be pasted into an IDE agent for execution, so be precise',
+            ].join('\n'),
+        };
+
+        for (const [name, content] of Object.entries(templates)) {
+            await fs.promises.writeFile(path.join(promptsDir, name), content, 'utf8');
+        }
+    }
+
+    private async _handleAirlockConvertToPlan(text: string): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            this._view?.webview.postMessage({ type: 'airlock_planError', message: 'No workspace open' });
+            return;
+        }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        try {
+            const plansDir = path.join(workspaceRoot, '.switchboard', 'plans', 'features');
+            fs.mkdirSync(plansDir, { recursive: true });
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').substring(0, 19);
+            const fileName = `airlock_plan_${stamp}.md`;
+            const planPath = path.join(plansDir, fileName);
+
+            await fs.promises.writeFile(planPath, text, 'utf8');
+
+            this._view?.webview.postMessage({ type: 'airlock_planSaved' });
+            vscode.window.showInformationMessage(`Airlock: Plan saved → .switchboard/plans/features/${fileName}`);
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            this._view?.webview.postMessage({ type: 'airlock_planError', message: msg });
+            vscode.window.showErrorMessage(`Airlock plan save failed: ${msg}`);
+        }
+    }
+
+    private async _handleAirlockSendToCoder(text: string): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No workspace open' });
+            return;
+        }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        try {
+            // Save the patch as a markdown file
+            const airlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
+            fs.mkdirSync(airlockDir, { recursive: true });
+
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').substring(0, 19);
+            const fileName = `patch_${stamp}.md`;
+            const patchPath = path.join(airlockDir, fileName);
+
+            await fs.promises.writeFile(patchPath, text, 'utf8');
+
+            // Find the coder agent terminal
+            const coderAgent = await this._getAgentNameForRole('coder');
+            const leadAgent = await this._getAgentNameForRole('lead');
+            const targetAgent = coderAgent || leadAgent;
+
+            if (!targetAgent) {
+                this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No Coder or Lead agent assigned. Assign a terminal role first.' });
+                return;
+            }
+
+            const payload = `This is a patch from the Airlock (external AI). Please manually integrate the following changes into the codebase:\n\nPatch file: ${patchPath}\n\n${text}`;
+            await this._dispatchExecuteMessage(workspaceRoot, targetAgent, payload, {
+                source: 'airlock',
+                patchFile: patchPath,
+            }, 'airlock');
+
+            this._view?.webview.postMessage({ type: 'airlock_coderSent' });
+            vscode.window.showInformationMessage(`Airlock: Patch dispatched to ${targetAgent}`);
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            this._view?.webview.postMessage({ type: 'airlock_coderError', message: msg });
+            vscode.window.showErrorMessage(`Airlock send to coder failed: ${msg}`);
+        }
     }
 
     public dispose() {
@@ -6218,6 +6284,7 @@ ${focusDirective}`);
         try { this._fsPlanRootWatcher?.close(); } catch { }
         try { this._brainWatcher?.dispose(); } catch { }
         try { this._stagingWatcher?.close(); } catch { }
+        this._gitCommitDisposable?.dispose();
         if (this._julesStatusPollTimer) {
             clearInterval(this._julesStatusPollTimer);
             this._julesStatusPollTimer = undefined;

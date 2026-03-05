@@ -8,7 +8,7 @@ const BINARY_EXTENSIONS = new Set([
     '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.so', '.dylib', '.bin',
     '.pdf', '.mp3', '.mp4', '.wav', '.avi', '.mov', '.vsix',
 ]);
-const EXCLUDED_DIRS = ['node_modules', 'dist', 'out', '.git', '.switchboard'];
+const EXCLUDED_DIRS = ['node_modules', 'dist', 'out', '.git', '.switchboard', '.web-ai'];
 
 function isBinary(filePath: string): boolean {
     return BINARY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -20,9 +20,9 @@ function isExcludedDir(relativePath: string): boolean {
 }
 
 export async function bundleWorkspaceContext(workspaceRoot: string): Promise<string> {
-    const outputDir = path.join(workspaceRoot, '.switchboard');
+    const outputDir = path.join(workspaceRoot, '.web-ai', 'outbox');
     await fs.promises.mkdir(outputDir, { recursive: true });
-    const outputPath = path.join(outputDir, 'notebooklm-context.md');
+    const outputPath = path.join(outputDir, 'codebase-bundle.md');
 
     // Use git ls-files for .gitignore-compliant listing
     let files: string[];
