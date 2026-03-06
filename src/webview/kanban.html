@@ -54,8 +54,8 @@
         }
 
         .btn-refresh {
-            background: none;
-            border: 1px solid var(--border-bright);
+            background: transparent;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 10px;
@@ -67,10 +67,9 @@
             transition: all 0.15s;
         }
         .btn-refresh:hover {
-            border-color: color-mix(in srgb, var(--accent-green) 65%, transparent);
-            color: var(--accent-green);
-            background: color-mix(in srgb, var(--accent-green) 10%, transparent);
-            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-green) 25%, transparent);
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
+            color: var(--text-primary);
         }
 
         .kanban-board {
@@ -122,7 +121,7 @@
         }
 
         .column-select {
-            background: var(--bg-color);
+            background: #0a0a0a;
             color: var(--text-primary);
             border: 1px solid var(--border-color);
             border-radius: 2px;
@@ -133,8 +132,9 @@
             margin-right: 8px;
             margin-left: auto;
         }
-        .column-select:hover {
-            border-color: var(--text-secondary);
+        .column-select:hover, .column-select:focus {
+            border-color: var(--border-bright);
+            outline: none;
         }
 
         .column-body {
@@ -204,7 +204,7 @@
         }
 
         .card-btn {
-            background: none;
+            background: transparent;
             border: 1px solid var(--border-color);
             color: var(--text-secondary);
             font-family: var(--font-mono);
@@ -217,7 +217,8 @@
             transition: all 0.15s;
         }
         .card-btn:hover {
-            border-color: var(--text-secondary);
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
             color: var(--text-primary);
         }
         .card-btn.complete:hover {

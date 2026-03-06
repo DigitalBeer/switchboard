@@ -125,9 +125,9 @@ body {
         .icon-btn {
             min-width: 20px;
             height: 20px;
-            border: 1px solid var(--border-bright);
+            background: transparent;
+            border: 1px solid var(--border-color);
             border-radius: 2px;
-            background: var(--vscode-input-background, var(--vscode-editor-background));
             color: var(--text-secondary);
             cursor: pointer;
             display: inline-flex;
@@ -141,9 +141,9 @@ body {
         }
 
         .icon-btn:hover:not(:disabled) {
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
             color: var(--text-primary);
-            border-color: var(--accent-cyan);
-            box-shadow: var(--glow-cyan);
         }
 
         .icon-btn:disabled {
@@ -169,9 +169,9 @@ body {
 
         .plan-select {
             width: 100%;
-            background: var(--vscode-dropdown-background, var(--vscode-input-background));
-            color: var(--vscode-dropdown-foreground, var(--text-primary));
-            border: 1px solid var(--vscode-dropdown-border, var(--vscode-contrastBorder, var(--border-bright)));
+            background: #0a0a0a;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
             padding: 7px 10px;
             font-size: 11px;
             font-family: var(--font-mono);
@@ -181,9 +181,9 @@ body {
             letter-spacing: 0.5px;
         }
 
-        .plan-select:focus {
-            border-color: var(--accent-green);
-            box-shadow: 0 0 4px color-mix(in srgb, var(--accent-green) 12%, transparent);
+        .plan-select:hover, .plan-select:focus {
+            border-color: var(--border-bright);
+            outline: none;
         }
 
         .select-arrow {
@@ -207,8 +207,8 @@ body {
 
         .tab-btn {
             flex: 1;
-            background: var(--vscode-input-background, var(--vscode-editor-background));
-            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
+            background: transparent;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 10px;
@@ -217,6 +217,11 @@ body {
             padding: 6px 8px;
             cursor: pointer;
             border-radius: 2px 2px 0 0;
+        }
+        .tab-btn:hover {
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
+            color: var(--text-primary);
         }
 
         .tab-btn.is-active {
@@ -235,8 +240,8 @@ body {
 
         .sub-tab-btn {
             flex: 1;
-            background: var(--vscode-input-background, var(--vscode-editor-background));
-            border: 1px solid var(--vscode-contrastBorder, var(--border-color));
+            background: transparent;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 9px;
@@ -248,8 +253,9 @@ body {
         }
 
         .sub-tab-btn:hover {
-            color: var(--text-primary);
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
             border-color: var(--border-bright);
+            color: var(--text-primary);
         }
 
         .sub-tab-btn.is-active {
@@ -546,8 +552,8 @@ body {
         }
 
         .mini-action-btn {
-            background: var(--vscode-input-background, var(--panel-bg));
-            border: 1px solid var(--border-bright);
+            background: transparent;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             font-family: var(--font-mono);
             font-size: 9px;
@@ -558,9 +564,9 @@ body {
         }
 
         .mini-action-btn:hover:not(:disabled) {
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
             color: var(--text-primary);
-            border-color: var(--accent-cyan);
-            box-shadow: var(--glow-cyan);
         }
 
         .mini-action-btn.is-active {
@@ -577,9 +583,9 @@ body {
         /* Standby Input Area */
         .agent-input {
             width: 100%;
-            background: var(--vscode-input-background, var(--panel-bg));
-            border: 1px solid var(--border-bright);
-            color: var(--text-secondary);
+            background: #0a0a0a;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
             font-family: var(--font-mono);
             font-size: 11px;
             padding: 6px 8px;
@@ -589,11 +595,9 @@ body {
             border-radius: 2px;
         }
 
-        .agent-input:focus {
+        .agent-input:focus, .agent-input:hover {
+            border-color: var(--border-bright);
             outline: none;
-            border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
-            color: var(--text-primary);
-            box-shadow: 0 0 4px color-mix(in srgb, var(--accent-green) 8%, transparent);
         }
 
         /* Scrollbar Styling */
@@ -691,9 +695,8 @@ body {
         }
 
         .secondary-btn {
-            background: var(--vscode-dropdown-background, var(--panel-bg));
-            border: 1px solid var(--border-bright);
-            border-bottom-color: var(--border-color);
+            background: transparent;
+            border: 1px solid var(--border-color);
             color: var(--text-secondary);
             padding: 6px;
             font-size: 10px;
@@ -707,9 +710,9 @@ body {
         }
 
         .secondary-btn:hover {
-            border-color: var(--text-secondary);
+            background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+            border-color: var(--border-bright);
             color: var(--text-primary);
-            background: var(--vscode-list-hoverBackground, var(--panel-bg2));
         }
 
         .secondary-btn.success {
@@ -765,13 +768,18 @@ body {
         .modal-input,
         .modal-textarea {
             width: 100%;
-            background: var(--vscode-input-background, var(--panel-bg));
+            background: #0a0a0a;
             color: var(--text-primary);
-            border: 1px solid var(--border-bright);
+            border: 1px solid var(--border-color);
             padding: 7px;
             font-family: var(--font-mono);
             font-size: 11px;
             margin-bottom: 10px;
+        }
+        .modal-input:hover, .modal-input:focus,
+        .modal-textarea:hover, .modal-textarea:focus {
+            border-color: var(--border-bright);
+            outline: none;
         }
 
         .modal-textarea {
@@ -880,17 +888,17 @@ body {
 
         .startup-row input {
             width: 100%;
-            background: var(--vscode-input-background, var(--panel-bg));
+            background: #0a0a0a;
             color: var(--text-primary);
-            border: 1px solid var(--border-bright);
+            border: 1px solid var(--border-color);
             padding: 5px 7px;
             font-family: var(--font-mono);
             font-size: 11px;
         }
 
-        .startup-row input:focus {
+        .startup-row input:focus, .startup-row input:hover {
+            border-color: var(--border-bright);
             outline: none;
-            border-color: var(--accent-green);
         }
 
         /* Action Button Feedback Animations */
@@ -1049,13 +1057,17 @@ body {
 
         .orchestrator-interval input {
             width: 60px;
-            background: var(--vscode-input-background, var(--panel-bg));
-            border: 1px solid var(--border-bright);
+            background: #0a0a0a;
             color: var(--text-primary);
+            border: 1px solid var(--border-color);
             font-family: var(--font-mono);
             font-size: 11px;
             padding: 3px 6px;
             text-align: center;
+        }
+        .orchestrator-interval input:hover, .orchestrator-interval input:focus {
+            border-color: var(--border-bright);
+            outline: none;
         }
         .onboard-step .startup-row {
             margin-bottom: 6px;
