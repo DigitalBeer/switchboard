@@ -394,6 +394,39 @@ async function appendRunSheetEvent(sessionId, eventPayload, workspaceRoot = getW
     }
 }
 
+/**
+ * Find the most recently active (non-completed) run sheet.
+ * Returns the sheet object, or null if none found.
+ */
+async function findMostRecentActiveRunSheet(workspaceRoot = getWorkspaceRoot()) {
+    try {
+        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
+        if (!fs.existsSync(sessionsDir)) return null;
+        const files = await fs.promises.readdir(sessionsDir);
+        const sheets = [];
+        for (const file of files) {
+            if (!file.endsWith('.json') || file === ACTIVITY_LOG_FILENAME) continue;
+            try {
+                const content = await fs.promises.readFile(path.join(sessionsDir, file), 'utf8');
+                const sheet = JSON.parse(content);
+                if (sheet.completed !== true && sheet.sessionId) {
+                    sheets.push(sheet);
+                }
+            } catch { }
+        }
+        if (sheets.length === 0) return null;
+        sheets.sort((a, b) => {
+            const aTime = a.lastActivity || a.createdAt || '';
+            const bTime = b.lastActivity || b.createdAt || '';
+            return bTime.localeCompare(aTime);
+        });
+        return sheets[0];
+    } catch (e) {
+        console.error(`[audit] Failed to find most recent run sheet: ${e?.message || e}`);
+        return null;
+    }
+}
+
 function resolveWorkspacePathToken(inputPath, workspaceRoot = getWorkspaceRoot()) {
     const token = sanitizePathToken(inputPath);
     if (!token) return null;
@@ -2653,6 +2686,19 @@ function registerTools(server) {
                     };
                 }
                 autoStopText = " (Workflow Auto-Stopped)";
+
+                // Auto-promote Kanban card: write a workflow event to the most recent run sheet.
+                // KanbanProvider's file watcher picks this up automatically.
+                if (workflow === 'challenge') {
+                    try {
+                        const activeSheet = await findMostRecentActiveRunSheet(workspaceRoot);
+                        if (activeSheet?.sessionId) {
+                            await appendRunSheetEvent(activeSheet.sessionId, { workflow: 'challenge' }, workspaceRoot);
+                        }
+                    } catch (e) {
+                        console.error(`[complete_workflow_phase] Failed to write kanban event: ${e?.message || e}`);
+                    }
+                }
             } else {
                 console.error(`[complete_workflow_phase] Auto-Stop NOT Triggered: ${phase} < ${totalSteps}`);
             }

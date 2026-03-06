@@ -645,6 +645,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Kanban Board
     const kanbanProvider = new KanbanProvider(context.extensionUri, context);
     context.subscriptions.push(kanbanProvider);
+    taskViewerProvider.setKanbanProvider(kanbanProvider);
     const openKanbanDisposable = vscode.commands.registerCommand('switchboard.openKanban', async () => {
         await kanbanProvider.open();
     });

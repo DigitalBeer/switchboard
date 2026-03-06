@@ -7,6 +7,7 @@ import * as lockfile from 'proper-lockfile';
 import * as cp from 'child_process';
 import AdmZip = require('adm-zip');
 import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog';
+import { KanbanProvider } from './KanbanProvider';
 import { sendRobustText } from './terminalUtils';
 import { InteractiveOrchestrator } from './InteractiveOrchestrator';
 import { PipelineOrchestrator } from './PipelineOrchestrator';
@@ -114,6 +115,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _lastSessionId: string | null = null;
     private _lastActiveWorkflow: string | null = null;
     private _sessionLog?: SessionActionLog;
+    private _kanbanProvider?: KanbanProvider;
     private _notifiedSessions = new Set<string>(); // Track sessions that have been notified of completion
 
     // Batched State Updates
@@ -493,6 +495,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     public setRegisteredTerminals(map: Map<string, vscode.Terminal>) {
         this._registeredTerminals = map;
+    }
+
+    public setKanbanProvider(provider: KanbanProvider) {
+        this._kanbanProvider = provider;
     }
 
     public refresh() {
@@ -992,6 +998,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'airlock_sendToCoder':
                         if (data.text) {
                             this._handleAirlockSendToCoder(data.text);
+                        }
+                        break;
+                    case 'airlock_syncRepo':
+                        this._handleAirlockSyncRepo();
+                        break;
+                    case 'kanban_workflowEvent':
+                        if (data.workflow) {
+                            this._handleKanbanWorkflowEvent(data.workflow, data.sessionId);
                         }
                         break;
                 }
@@ -6212,6 +6226,35 @@ ${focusDirective}`;
 
     private static readonly MAX_AIRLOCK_TEXT_BYTES = 2 * 1024 * 1024; // 2MB
 
+    private async _handleKanbanWorkflowEvent(workflow: string, sessionId?: string): Promise<void> {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) return;
+        try {
+            const log = this._getSessionLog(workspaceRoot);
+            let targetSessionId = sessionId;
+            if (!targetSessionId) {
+                const sheets = await log.getRunSheets();
+                const active = sheets.filter((s: any) => s?.completed !== true && s?.sessionId);
+                if (active.length > 0) {
+                    // Pick the most recently active sheet
+                    active.sort((a: any, b: any) => {
+                        return (b.lastActivity || b.createdAt || '').localeCompare(a.lastActivity || a.createdAt || '');
+                    });
+                    targetSessionId = active[0].sessionId;
+                }
+            }
+            if (!targetSessionId) return;
+            await log.updateRunSheet(targetSessionId, (sheet: any) => {
+                if (!Array.isArray(sheet.events)) sheet.events = [];
+                sheet.events.push({ timestamp: new Date().toISOString(), workflow });
+                return sheet;
+            });
+            await this._kanbanProvider?.refresh();
+        } catch (err: any) {
+            console.error('[TaskViewerProvider] kanban_workflowEvent failed:', err?.message || err);
+        }
+    }
+
     private async _handleAirlockConvertToPlan(text: string): Promise<void> {
         if (Buffer.byteLength(text, 'utf8') > TaskViewerProvider.MAX_AIRLOCK_TEXT_BYTES) {
             this._view?.webview.postMessage({ type: 'airlock_planError', message: 'Text exceeds 2MB limit. Please reduce the size.' });
@@ -6266,13 +6309,11 @@ ${focusDirective}`;
 
             await fs.promises.writeFile(patchPath, text, 'utf8');
 
-            // Find the coder agent terminal (Lead Coder takes priority)
-            const leadAgent = await this._getAgentNameForRole('lead');
-            const coderAgent = await this._getAgentNameForRole('coder');
-            const targetAgent = leadAgent || coderAgent;
+            // Find the coder agent terminal
+            const targetAgent = await this._getAgentNameForRole('coder');
 
             if (!targetAgent) {
-                this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No Coder or Lead agent assigned. Assign a terminal role first.' });
+                this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No Coder agent assigned. Assign a terminal role first.' });
                 return;
             }
 
@@ -6288,6 +6329,56 @@ ${focusDirective}`;
             const msg = err?.message || String(err);
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: msg });
             vscode.window.showErrorMessage(`Airlock send to coder failed: ${msg}`);
+        }
+    }
+
+    private async _handleAirlockSyncRepo(): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            this._view?.webview.postMessage({ type: 'airlock_syncError', message: 'No workspace open' });
+            return;
+        }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        try {
+            const gitExtension = vscode.extensions.getExtension('vscode.git');
+            if (!gitExtension) {
+                throw new Error('VS Code Git extension is not available.');
+            }
+            
+            const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
+            const api = git.getAPI(1);
+            
+            if (!api || api.repositories.length === 0) {
+                throw new Error('No Git repositories found in the workspace.');
+            }
+
+            // Find matching repo or fallback to primary
+            let repo = api.repositories.find((r: any) => this._getStablePath(r.rootUri.fsPath) === this._getStablePath(workspaceRoot));
+            if (!repo) {
+                repo = api.repositories[0];
+            }
+
+            // Stage all untracked/modified files
+            const changesToStage = repo.state.workingTreeChanges.map((c: any) => c.uri.fsPath);
+            if (changesToStage.length > 0) {
+                await repo.add(changesToStage);
+            }
+
+            // Commit only if there are actually staged files
+            if (repo.state.indexChanges.length > 0) {
+                await repo.commit('chore: airlock context sync');
+            }
+
+            // Push to remote
+            await repo.push();
+
+            this._view?.webview.postMessage({ type: 'airlock_syncComplete' });
+            vscode.window.showInformationMessage('Airlock: Repository synced to cloud successfully.');
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            this._view?.webview.postMessage({ type: 'airlock_syncError', message: msg });
+            vscode.window.showErrorMessage(`Airlock sync failed: ${msg}`);
         }
     }
 

@@ -1910,6 +1910,20 @@ body {
                     if (wStatus2) wStatus2.innerText = '⚠ ' + (message.message || 'Bundle failed');
                     break;
                 }
+                case 'airlock_syncComplete': {
+                    const sBtn = document.getElementById('airlock-sync-btn');
+                    const wStatus = document.getElementById('webai-status');
+                    if (sBtn) { sBtn.disabled = false; sBtn.innerText = 'SYNC REPO'; sBtn.classList.remove('dispatching'); }
+                    if (wStatus) wStatus.innerText = '✓ Synced to cloud — ' + new Date().toLocaleTimeString();
+                    break;
+                }
+                case 'airlock_syncError': {
+                    const sBtn2 = document.getElementById('airlock-sync-btn');
+                    const wStatus2 = document.getElementById('webai-status');
+                    if (sBtn2) { sBtn2.disabled = false; sBtn2.innerText = 'SYNC REPO'; sBtn2.classList.remove('dispatching'); }
+                    if (wStatus2) wStatus2.innerText = '⚠ ' + (message.message || 'Sync failed');
+                    break;
+                }
                 case 'airlock_planSaved': {
                     const pBtn = document.getElementById('airlock-plan-btn');
                     const pStatus = document.getElementById('webai-status');
@@ -2168,11 +2182,16 @@ body {
             statusLine.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
             container.appendChild(statusLine);
 
+            // Action buttons row (Bundle + Sync)
+            const topActions = document.createElement('div');
+            topActions.style.cssText = 'display:flex; gap:8px;';
+
             // BUNDLE CODE button
             const exportBtn = document.createElement('button');
             exportBtn.className = 'action-btn';
             exportBtn.id = 'webai-export-btn';
-            exportBtn.style.width = '100%';
+            exportBtn.style.flex = '1';
+            exportBtn.style.minWidth = '0';
             exportBtn.innerText = 'BUNDLE CODE';
             exportBtn.onclick = () => {
                 exportBtn.disabled = true;
@@ -2180,7 +2199,27 @@ body {
                 exportBtn.classList.add('dispatching');
                 vscode.postMessage({ type: 'webai_export' });
             };
-            container.appendChild(exportBtn);
+
+            // SYNC REPO button
+            const syncBtn = document.createElement('button');
+            syncBtn.className = 'action-btn';
+            syncBtn.id = 'airlock-sync-btn';
+            syncBtn.style.flex = '1';
+            syncBtn.style.minWidth = '0';
+            syncBtn.style.background = 'var(--vscode-button-secondaryBackground, transparent)';
+            syncBtn.style.color = 'var(--vscode-button-secondaryForeground, var(--vscode-button-background))';
+            syncBtn.style.border = '1px solid var(--vscode-button-background)';
+            syncBtn.innerText = 'SYNC REPO';
+            syncBtn.onclick = () => {
+                syncBtn.disabled = true;
+                syncBtn.innerText = 'SYNCING...';
+                syncBtn.classList.add('dispatching');
+                vscode.postMessage({ type: 'airlock_syncRepo' });
+            };
+
+            topActions.appendChild(exportBtn);
+            topActions.appendChild(syncBtn);
+            container.appendChild(topActions);
 
             // Spacer
             const spacer1 = document.createElement('div');

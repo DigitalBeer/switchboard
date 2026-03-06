@@ -66,6 +66,7 @@ Use this for:
      - Read `.switchboard/sessions/` to find the most recent session JSON and extract `planFile` (the absolute path to the Feature Plan).
      - Edit the Feature Plan to integrate the approved Action Plan items. This is a permitted write under the CRITICAL CONSTRAINTS block — it is orchestration, not implementation.
    - Call `complete_workflow_phase(phase: 5, workflow: "challenge", artifacts: [{ path: "<balancedPath>", description: "Final internal review output" }, { path: "<feature_plan_absolute_path>", description: "Feature Plan updated with review findings" }])`.
+   - **Kanban**: `complete_workflow_phase(phase: 5)` automatically promotes the most recently active Kanban card to **PLAN REVIEWED**. No additional tool call is required.
 
 ## Final-Phase Recovery Rule
 - Phase 5 is terminal for `challenge`. Do NOT call phase 6.
