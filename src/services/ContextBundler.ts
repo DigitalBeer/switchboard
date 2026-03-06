@@ -19,6 +19,16 @@ function isExcludedDir(relativePath: string): boolean {
     return parts.some(p => EXCLUDED_DIRS.includes(p));
 }
 
+function getLanguageId(filePath: string): string {
+    const ext = path.extname(filePath).toLowerCase();
+    const map: Record<string, string> = {
+        '.ts': 'typescript', '.js': 'javascript', '.tsx': 'tsx', '.jsx': 'jsx',
+        '.json': 'json', '.md': 'markdown', '.html': 'html', '.css': 'css',
+        '.py': 'python', '.sh': 'bash', '.yml': 'yaml', '.yaml': 'yaml'
+    };
+    return map[ext] || '';
+}
+
 export async function bundleWorkspaceContext(workspaceRoot: string): Promise<string> {
     const outputDir = path.join(workspaceRoot, '.web-ai', 'outbox');
     await fs.promises.mkdir(outputDir, { recursive: true });
@@ -39,10 +49,16 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
         files = await walkDirectory(workspaceRoot, workspaceRoot);
     }
 
-    // Filter
-    files = files.filter(f => !isBinary(f) && !isExcludedDir(f));
+    // Filter and sort by directory depth (root files first)
+    files = files.filter(f => !isBinary(f) && !isExcludedDir(f))
+        .sort((a, b) => {
+            const depthA = a.split(/[\\/]/).length;
+            const depthB = b.split(/[\\/]/).length;
+            if (depthA !== depthB) return depthA - depthB;
+            return a.localeCompare(b);
+        });
 
-    let bundle = `# Workspace Context Bundle\n\nGenerated: ${new Date().toISOString()}\nFiles: ${files.length}\n\n---\n\n`;
+    let bundle = `# Workspace Context Bundle\n\nGenerated: ${new Date().toISOString()}\nFiles: ${files.length}\n\n## Project Structure\n\`\`\`text\n${files.join('\n')}\n\`\`\`\n\n---\n\n`;
     let totalBytes = Buffer.byteLength(bundle, 'utf8');
     let truncated = false;
 
@@ -52,7 +68,8 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
             const stat = await fs.promises.stat(absPath);
             if (!stat.isFile() || stat.size > 512 * 1024) { continue; } // skip files > 512KB individually
             const content = await fs.promises.readFile(absPath, 'utf8');
-            const section = `## File: ${file}\n\n\`\`\`\n${content}\n\`\`\`\n\n`;
+            const lang = getLanguageId(file);
+            const section = `## File: ${file}\n\n\`\`\`${lang}\n${content}\n\`\`\`\n\n`;
             const sectionBytes = Buffer.byteLength(section, 'utf8');
             if (totalBytes + sectionBytes > MAX_BUNDLE_BYTES) {
                 bundle += `\n\n> ⚠️ Bundle truncated at ${(totalBytes / 1024 / 1024).toFixed(1)}MB limit. ${files.length - files.indexOf(file)} files omitted.\n`;

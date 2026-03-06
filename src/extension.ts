@@ -1206,6 +1206,7 @@ export async function activate(context: vscode.ExtensionContext) {
             { name: 'Reviewer', role: 'reviewer' },
             { name: 'Planner', role: 'planner' },
             { name: 'Analyst', role: 'analyst' },
+            { name: 'Librarian', role: 'librarian' },
             { name: 'Jules Monitor', role: 'jules_monitor' }
         ];
 
@@ -2110,7 +2111,7 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
  * Configure CLI agent role-to-command mappings
  */
 async function configureCliAgents(switchboardConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
-    const roles = ['lead', 'coder', 'analyst', 'reviewer'];
+    const roles = ['lead', 'coder', 'analyst', 'reviewer', 'librarian'];
     const currentAgents = switchboardConfig.get<Record<string, string>>('cliAgents', {});
     const staged: Record<string, string> = { ...currentAgents };
 

@@ -317,6 +317,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 return ['planner'];
             case 'analyst':
                 return ['analyst'];
+            case 'librarian':
+                return ['librarian'];
             default:
                 return [role];
         }
@@ -346,7 +348,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         terminalsMap: Record<string, any>,
         activeTerminals: readonly vscode.Terminal[]
     ): Record<string, DispatchReadinessEntry> {
-        const roles = ['lead', 'coder', 'reviewer', 'planner', 'analyst'];
+        const roles = ['lead', 'coder', 'reviewer', 'planner', 'analyst', 'librarian'];
         const readiness: Record<string, DispatchReadinessEntry> = {};
 
         for (const role of roles) {
@@ -3685,6 +3687,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 else if (lowerName.includes('planner')) autoRole = 'planner';
                 else if (lowerName.includes('lead')) autoRole = 'lead';
                 else if (lowerName.includes('analyst')) autoRole = 'analyst';
+                else if (lowerName.includes('librarian')) autoRole = 'librarian';
 
                 // Register new
                 state.terminals[uniqueName] = {
@@ -4473,6 +4476,11 @@ ${planAnchor}
 
 ${focusDirective}`);
             }
+        } else if (role === 'librarian') {
+            messagePayload = `Please write or update the 'context map' markdown document for the codebase.
+This context map should outline the structure of the repo bundle document, serving as a table of contents to help web agents traverse the repo and locate relevant code sections quickly.
+
+${focusDirective}`;
         } else {
             clearDispatchLock();
             vscode.window.showErrorMessage(`Unknown role: ${role}`);
@@ -4490,6 +4498,7 @@ ${focusDirective}`);
                 'reviewer': 'reviewer-pass',
                 'lead': 'handoff-lead',
                 'coder': 'handoff',
+                'librarian': 'librarian-map',
                 'jules': 'jules'
             };
             workflowName = workflowMap[role];
@@ -6201,7 +6210,13 @@ ${focusDirective}`);
         }
     }
 
+    private static readonly MAX_AIRLOCK_TEXT_BYTES = 2 * 1024 * 1024; // 2MB
+
     private async _handleAirlockConvertToPlan(text: string): Promise<void> {
+        if (Buffer.byteLength(text, 'utf8') > TaskViewerProvider.MAX_AIRLOCK_TEXT_BYTES) {
+            this._view?.webview.postMessage({ type: 'airlock_planError', message: 'Text exceeds 2MB limit. Please reduce the size.' });
+            return;
+        }
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {
             this._view?.webview.postMessage({ type: 'airlock_planError', message: 'No workspace open' });
@@ -6229,6 +6244,10 @@ ${focusDirective}`);
     }
 
     private async _handleAirlockSendToCoder(text: string): Promise<void> {
+        if (Buffer.byteLength(text, 'utf8') > TaskViewerProvider.MAX_AIRLOCK_TEXT_BYTES) {
+            this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'Text exceeds 2MB limit. Please reduce the size.' });
+            return;
+        }
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) {
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No workspace open' });
@@ -6247,17 +6266,17 @@ ${focusDirective}`);
 
             await fs.promises.writeFile(patchPath, text, 'utf8');
 
-            // Find the coder agent terminal
-            const coderAgent = await this._getAgentNameForRole('coder');
+            // Find the coder agent terminal (Lead Coder takes priority)
             const leadAgent = await this._getAgentNameForRole('lead');
-            const targetAgent = coderAgent || leadAgent;
+            const coderAgent = await this._getAgentNameForRole('coder');
+            const targetAgent = leadAgent || coderAgent;
 
             if (!targetAgent) {
                 this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No Coder or Lead agent assigned. Assign a terminal role first.' });
                 return;
             }
 
-            const payload = `This is a patch from the Airlock (external AI). Please manually integrate the following changes into the codebase:\n\nPatch file: ${patchPath}\n\n${text}`;
+            const payload = `This is a patch from the Airlock. Please manually apply the patch file:\n\n${patchPath}\n\nUse the \`apply_patch\` skill or read the file and apply changes manually.`;
             await this._dispatchExecuteMessage(workspaceRoot, targetAgent, payload, {
                 source: 'airlock',
                 patchFile: patchPath,
