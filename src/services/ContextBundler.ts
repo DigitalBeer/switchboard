@@ -3,18 +3,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 
-// 20MB — heuristic upper bound for web LLM context windows (GPT-4, Claude, Gemini)
-const MAX_BUNDLE_BYTES = 20 * 1024 * 1024;
-// 500KB — threshold for a top-level directory to earn its own dedicated bundle file
-const SIZE_THRESHOLD_BYTES = 500 * 1024;
+// Each bundle chunk is capped at 500KB of raw text — keeps AI context per-file manageable.
+const CHUNK_LIMIT_BYTES = 500 * 1024;
+// Max docx writes in flight simultaneously — balances I/O throughput vs. memory pressure.
+const MAX_CONCURRENT_WRITES = 5;
+
 const BINARY_EXTENSIONS = new Set([
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.svg', '.woff', '.woff2', '.ttf', '.eot',
     '.zip', '.tar', '.gz', '.7z', '.exe', '.dll', '.so', '.dylib', '.bin',
     '.pdf', '.mp3', '.mp4', '.wav', '.avi', '.mov', '.vsix',
 ]);
 // Used only for the non-git fallback to prevent infinite traversal of node_modules etc.
-// `dist` and `out` are intentionally omitted — plugin projects may need compiled assets,
-// and .gitignore is the correct mechanism for excluding them.
 const EXCLUDED_DIRS = ['node_modules', '.git', '.switchboard'];
 
 function formatTimestamp(date: Date): string {
@@ -27,9 +26,7 @@ async function saveAsDocx(filePath: string, content: string): Promise<void> {
     const paragraphs: Paragraph[] = [];
 
     for (const line of lines) {
-        const isHeader = line.startsWith('REPO:') || line.startsWith('WORKSPACE MANIFEST') ||
-            line.startsWith('Generated:') || line.startsWith('Files:') ||
-            line.startsWith('DIRECTORY STRUCTURE') || line.startsWith('BUNDLE TRUNCATED');
+        const isHeader = line.startsWith('REPO:') || line.startsWith('Generated:');
         const isSeparator = line.startsWith('--- BEGIN FILE:') || line.startsWith('--- END FILE:');
 
         if (isHeader) {
@@ -62,12 +59,6 @@ function isBinary(filePath: string): boolean {
 function isExcludedDir(relativePath: string): boolean {
     const parts = relativePath.split(/[\\/]/);
     return parts.some(p => EXCLUDED_DIRS.includes(p));
-}
-
-
-function getTopLevelDir(filePath: string): string {
-    const parts = filePath.replace(/\\/g, '/').split('/');
-    return parts.length > 1 ? parts[0] : '_root';
 }
 
 export async function bundleWorkspaceContext(workspaceRoot: string): Promise<string> {
@@ -114,78 +105,89 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
             return a.localeCompare(b);
         });
 
-    // 4. Stat pass: measure per-directory total sizes to determine categorization
-    const dirSizes = new Map<string, number>();
-    const fileStatCache = new Map<string, number>();
-
-    for (const file of files) {
-        try {
-            const stat = await fs.promises.stat(path.join(workspaceRoot, file));
-            if (!stat.isFile()) { continue; }
-            fileStatCache.set(file, stat.size);
-            const dir = getTopLevelDir(file);
-            dirSizes.set(dir, (dirSizes.get(dir) ?? 0) + stat.size);
-        } catch { /* skip unreadable */ }
-    }
-
-    // 5. Directories exceeding the threshold earn a dedicated bundle; the rest consolidate into misc
-    const dedicatedDirs = new Set<string>();
-    for (const [dir, size] of dirSizes) {
-        if (dir !== '_root' && size > SIZE_THRESHOLD_BYTES) {
-            dedicatedDirs.add(dir);
-        }
-    }
-
-    // 6. Single read pass: route each file into the appropriate category buffer
-    const categoryBuffers = new Map<string, string>();
-    const categorySizes = new Map<string, number>();
-
-    for (const file of files) {
-        const size = fileStatCache.get(file);
-        if (size === undefined) { continue; }
-        if (size > 512 * 1024) { continue; } // skip individually oversized files
-
-        const topDir = getTopLevelDir(file);
-        const category = dedicatedDirs.has(topDir) ? topDir : 'misc';
-        const currentBytes = categorySizes.get(category) ?? 0;
-        if (currentBytes >= MAX_BUNDLE_BYTES) { continue; }
-
-        try {
-            const content = await fs.promises.readFile(path.join(workspaceRoot, file), 'utf8');
-            const section = `--- BEGIN FILE: ${file} ---\n${content}\n--- END FILE: ${file} ---\n\n`;
-            const sectionBytes = Buffer.byteLength(section, 'utf8');
-
-            if (currentBytes + sectionBytes > MAX_BUNDLE_BYTES) {
-                categoryBuffers.set(category, (categoryBuffers.get(category) ?? '') +
-                    `\nBUNDLE TRUNCATED at ${(currentBytes / 1024 / 1024).toFixed(1)}MB limit.\n`);
-                categorySizes.set(category, MAX_BUNDLE_BYTES);
-                continue;
-            }
-
-            categoryBuffers.set(category, (categoryBuffers.get(category) ?? '') + section);
-            categorySizes.set(category, currentBytes + sectionBytes);
-        } catch { /* skip unreadable */ }
-    }
-
-    // 7. Write all bundles and manifest concurrently as .docx
+    // 4. Rolling size-based chunking pass
     const now = new Date();
     const generatedAt = now.toISOString();
     const timestamp = formatTimestamp(now);
+
+    let chunkIndex = 1;
+    let currentBuffer = '';
+    let currentBytes = 0;
+    const manifestLines: string[] = [
+        `# Workspace Manifest`,
+        ``,
+        `Generated: ${generatedAt}`,
+        `Repo: ${repoName}`,
+        `Files: ${files.length}`,
+        ``,
+        `## File → Bundle Mapping`,
+        ``,
+    ];
+
+    // Pending write promises; drained every MAX_CONCURRENT_WRITES to bound memory.
     const writePromises: Promise<void>[] = [];
 
-    for (const [category, content] of categoryBuffers) {
-        const header = `REPO: ${repoName} — ${category}\nGenerated: ${generatedAt}\n\n`;
-        writePromises.push(
-            saveAsDocx(path.join(outputDir, `${timestamp}-${repoName}-${category}.docx`), header + content)
-        );
+    const scheduleChunkWrite = async (buffer: string, index: number) => {
+        const header = `REPO: ${repoName} — part-${index}\nGenerated: ${generatedAt}\n\n`;
+        const chunkPath = path.join(outputDir, `${timestamp}-bundle-part-${index}.docx`);
+        const p = saveAsDocx(chunkPath, header + buffer);
+        p.catch(() => {}); // Prevent unhandled rejection crash; Promise.all will still catch and bubble it.
+        writePromises.push(p);
+        if (writePromises.length >= MAX_CONCURRENT_WRITES) {
+            await Promise.all(writePromises);
+            writePromises.length = 0;
+        }
+    };
+
+    for (const file of files) {
+        let content: string;
+        try {
+            content = await fs.promises.readFile(path.join(workspaceRoot, file), 'utf8');
+        } catch { continue; }
+
+        const section = `--- BEGIN FILE: ${file} ---\n${content}\n--- END FILE: ${file} ---\n\n`;
+        const sectionBytes = Buffer.byteLength(section, 'utf8');
+        const sizeKB = (sectionBytes / 1024).toFixed(1);
+
+        if (sectionBytes > CHUNK_LIMIT_BYTES) {
+            // Large file: flush any pending buffer first, then write this file as its own dedicated chunk.
+            if (currentBytes > 0) {
+                await scheduleChunkWrite(currentBuffer, chunkIndex++);
+                currentBuffer = '';
+                currentBytes = 0;
+            }
+            const dedicatedIndex = chunkIndex++;
+            await scheduleChunkWrite(section, dedicatedIndex);
+            manifestLines.push(`- **${file}** (${sizeKB}KB) -> \`${timestamp}-bundle-part-${dedicatedIndex}.docx\``);
+        } else {
+            // Normal file: flush current buffer if this file would push it over the limit.
+            if (currentBytes > 0 && currentBytes + sectionBytes > CHUNK_LIMIT_BYTES) {
+                await scheduleChunkWrite(currentBuffer, chunkIndex++);
+                currentBuffer = '';
+                currentBytes = 0;
+            }
+            const targetIndex = chunkIndex;
+            currentBuffer += section;
+            currentBytes += sectionBytes;
+            manifestLines.push(`- **${file}** (${sizeKB}KB) -> \`${timestamp}-bundle-part-${targetIndex}.docx\``);
+        }
     }
 
-    const manifestContent = `WORKSPACE MANIFEST\nGenerated: ${generatedAt}\nFiles: ${files.length}\n\nDIRECTORY STRUCTURE\n${files.join('\n')}\n`;
-    writePromises.push(
-        saveAsDocx(path.join(outputDir, `${timestamp}-manifest.docx`), manifestContent)
-    );
+    // Final flush of any remaining buffered content.
+    if (currentBytes > 0) {
+        await scheduleChunkWrite(currentBuffer, chunkIndex);
+    }
 
-    await Promise.all(writePromises);
+    // Drain any remaining in-flight writes.
+    if (writePromises.length > 0) {
+        await Promise.all(writePromises);
+        writePromises.length = 0;
+    }
+
+    // 5. Write manifest as clean markdown (not docx — human-readable in VS Code).
+    const manifestPath = path.join(outputDir, 'manifest.md');
+    await fs.promises.writeFile(manifestPath, manifestLines.join('\n') + '\n', 'utf8');
+
     return outputDir;
 }
 

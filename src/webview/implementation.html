@@ -1633,7 +1633,7 @@
                 });
                 const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
                 vscode.postMessage({ type: 'saveStartupCommands', commands, accurateCodingEnabled });
-                btnSaveStartup.textContent = 'SAVED ✓';
+                btnSaveStartup.textContent = 'SAVED';
                 setTimeout(() => { btnSaveStartup.textContent = 'SAVE STARTUP COMMANDS'; }, 1500);
             });
         }
@@ -1947,7 +1947,7 @@
                     clearDispatchPending(role);
                     if (role === 'analyst') {
                         analystButtonFeedback = {
-                            text: success ? 'DISPATCHED ✓' : 'FAILED ✗',
+                            text: success ? 'DISPATCHED' : 'FAILED',
                             className: success ? 'success' : 'error',
                             expiresAt: Date.now() + 2000
                         };
@@ -1965,7 +1965,7 @@
                     }
                     if (role === 'analystMap') {
                         analystMapFeedback = {
-                            text: success ? 'DISPATCHED ✓' : 'FAILED ✗',
+                            text: success ? 'DISPATCHED' : 'FAILED',
                             className: success ? 'success' : 'error',
                             expiresAt: Date.now() + 2000
                         };
@@ -1986,10 +1986,10 @@
                         btn.classList.remove('dispatching');
                         if (success) {
                             btn.classList.add('success');
-                            btn.innerText = 'DISPATCHED ✓';
+                            btn.innerText = 'DISPATCHED';
                         } else {
                             btn.classList.add('error');
-                            btn.innerText = 'FAILED ✗';
+                            btn.innerText = 'FAILED';
                         }
                         setTimeout(() => {
                             if (document.body.contains(btn)) {
