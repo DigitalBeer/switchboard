@@ -2050,9 +2050,11 @@
                     break;
                 }
                 case 'airlock_planSaved': {
+                    const pBtn = document.getElementById('airlock-plan-btn');
                     const pStatus = document.getElementById('webai-status');
                     const pTa = document.getElementById('airlock-textarea');
                     const pTitle = document.getElementById('airlock-title-input');
+                    if (pBtn) { pBtn.disabled = false; pBtn.innerText = 'SAVE PLAN'; }
                     if (pStatus) pStatus.innerText = '✓ Plan saved — ' + new Date().toLocaleTimeString();
                     if (pTa) { pTa.value = ''; }
                     if (pTitle) { pTitle.value = ''; }
@@ -2063,7 +2065,7 @@
                     const pBtn2 = document.getElementById('airlock-plan-btn');
                     const pStatus2 = document.getElementById('webai-status');
                     const pTa = document.getElementById('airlock-textarea');
-                    if (pBtn2) { pBtn2.disabled = false; pBtn2.innerText = 'PLAN'; }
+                    if (pBtn2) { pBtn2.disabled = false; pBtn2.innerText = 'SAVE PLAN'; }
                     if (pStatus2) pStatus2.innerText = '⚠ ' + (message.message || 'Plan save failed');
                     if (_airlockLastText) { _airlockTextareaValue = _airlockLastText; if (pTa) pTa.value = _airlockLastText; }
                     break;
@@ -2394,6 +2396,9 @@
                 const status = document.getElementById('webai-status');
                 if (!title) { if (status) status.innerText = '⚠ Enter a plan title'; return; }
                 if (!text) { if (status) status.innerText = '⚠ Paste AI response first'; return; }
+                planBtn.disabled = true;
+                planBtn.innerText = 'SAVING...';
+                if (status) status.innerText = 'Saving plan...';
                 vscode.postMessage({ type: 'initiatePlan', title, idea: text, mode: 'local' });
             };
 
@@ -2670,15 +2675,16 @@
                 intervalRow.className = 'orchestrator-interval';
                 const intervalLabel = document.createElement('label');
                 intervalLabel.htmlFor = 'orch-interval-input';
-                intervalLabel.innerText = 'Interval (s)';
+                intervalLabel.innerText = 'Interval (m)';
                 const intervalInput = document.createElement('input');
                 intervalInput.id = 'orch-interval-input';
                 intervalInput.type = 'number';
-                intervalInput.value = String(orchIntervalSeconds);
-                intervalInput.min = '10';
-                intervalInput.max = '3600';
+                intervalInput.value = String(Math.round(orchIntervalSeconds / 60));
+                intervalInput.min = '1';
+                intervalInput.max = '60';
                 intervalInput.addEventListener('change', () => {
-                    const interval = parseInt(intervalInput.value, 10) || 300;
+                    const intervalMinutes = parseInt(intervalInput.value, 10) || 5;
+                    const interval = intervalMinutes * 60;
                     orchIntervalSeconds = interval;
                     vscode.postMessage({ type: 'orchestratorSetInterval', intervalSeconds: interval });
                 });
@@ -2740,7 +2746,8 @@
                     const sessionId = runSheetSelect.value;
                     if (!sessionId) return;
                     const currentIntervalInput = document.getElementById('orch-interval-input');
-                    const interval = parseInt((currentIntervalInput || {}).value, 10) || orchIntervalSeconds || 300;
+                    const intervalMinutes = parseInt((currentIntervalInput || {}).value, 10) || Math.round((orchIntervalSeconds || 300) / 60);
+                    const interval = intervalMinutes * 60;
                     orchIntervalSeconds = interval;
                     vscode.postMessage({ type: 'orchestratorStart', sessionId, intervalSeconds: interval });
                 });

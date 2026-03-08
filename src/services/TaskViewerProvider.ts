@@ -4724,7 +4724,10 @@ ${focusDirective}`);
         const stablePlanPath = this._normalizePendingPlanPath(planFileAbsolute);
         this._pendingPlanCreations.add(stablePlanPath);
         try {
-            const content = `# ${title}\n\n## Problem\n${idea}\n\n## Goals\n- Clarify expected outcome and scope.\n\n## Constraints\n- Preserve existing behavior outside this change.\n\n## Task Split\n- Band A (routine, low-risk): refine acceptance criteria and implementation details.\n- Band B (complex, architectural): identify any systemic or cross-module impact.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
+            const isFullPlan = idea.trim().startsWith('# ');
+            const content = isFullPlan
+                ? idea
+                : `# ${title}\n\n## Problem\n${idea}\n\n## Goals\n- Clarify expected outcome and scope.\n\n## Constraints\n- Preserve existing behavior outside this change.\n\n## Task Split\n- Band A (routine, low-risk): refine acceptance criteria and implementation details.\n- Band B (complex, architectural): identify any systemic or cross-module impact.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
             await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
 
             const sessionId = `sess_${Date.now()}`;
@@ -6083,27 +6086,92 @@ ${focusDirective}`);
                 await fs.promises.writeFile(howToPlanPath, [
                     '# How to Plan',
                     '',
-                    'Follow these four steps strictly and in order.',
+                    'Follow these five steps strictly and in order. Each step builds on the last.',
                     '',
-                    '## 1. Review',
-                    'Find the most recent `codebase-bundle-*.md` file in this folder (sort by timestamp in the filename, use the latest).',
-                    'Use it as the sole source of truth for the current codebase state. Do not use older bundles.',
+                    '## 1. Context Loading',
+                    'Open `manifest.md` in this folder to get the complete workspace file listing and understand the project structure.',
+                    'Then open the relevant segmented bundle files (e.g., `{repo-name}-src.md`, `{repo-name}-misc.md`) to read file contents.',
+                    'Use these as the sole source of truth for the current codebase state. Do not rely on prior knowledge.',
                     '',
-                    '## 2. Plan',
-                    'Draft a comprehensive technical plan that covers:',
-                    '- Exact files to create or modify',
-                    '- Function signatures and data flow',
-                    '- Edge cases and error handling',
-                    '- A step-by-step implementation order',
+                    '## 2. Strategy Formulation',
+                    'Identify the high-level problem space and define the proposed approach. Cover:',
+                    '- What the core problem or goal is',
+                    '- Which modules or layers are affected',
+                    '- The sequence of changes required at a high level',
+                    '- Any assumptions being made',
                     '',
-                    '## 3. Adversarial Review',
-                    'Self-critique the plan for:',
-                    '- Missed edge cases and race conditions',
-                    '- Architectural alignment with existing patterns',
-                    '- Unnecessary complexity or scope creep',
+                    '## 3. Structural Enhancement (`/enhance`)',
+                    'Audit the strategy for structural completeness:',
+                    '- Identify missing pieces, implicit dependencies, or assumptions that need hardening',
+                    '- Flag any cross-module impact or architectural concerns',
+                    '- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks',
+                    '- Expand the plan with concrete file paths, function signatures, and data flow',
                     '',
-                    '## 4. Implementation',
-                    'Output the exact code changes in high detail (search/replace blocks or unified diffs).',
+                    '## 4. Adversarial Review (`/challenge`)',
+                    'Stress-test the plan using two personas:',
+                    '- **Grumpy**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.',
+                    '- **Balanced**: Synthesize the critique. Confirm which concerns are real blockers vs. noise. Finalize the plan.',
+                    '',
+                    '## 5. Exhaustive Implementation Spec',
+                    'Produce a complete, copy-paste-ready implementation spec. Use your full context window. Include:',
+                    '- Exact search/replace blocks or unified diffs for every file change',
+                    '- New file contents in full where applicable',
+                    '- Inline comments explaining non-obvious logic',
+                    '- A short verification checklist (manual steps to confirm the change works)',
+                    '',
+                    '---',
+                    '',
+                    '## Plan Template',
+                    '',
+                    'Use this template when producing the plan in Step 5. Fill in every section — do not omit or abbreviate.',
+                    '',
+                    '```markdown',
+                    '# [Highly Descriptive Title: What Is Being Changed and Why]',
+                    '',
+                    '## Goal',
+                    '',
+                    '[One to two sentences describing the desired outcome and why it matters to the user or system.]',
+                    '',
+                    '## User Review Required',
+                    '',
+                    '> [!NOTE]',
+                    '> [State any assumptions or decisions that need user confirmation before implementation begins.]',
+                    '',
+                    '> [!WARNING]',
+                    '> [Call out any irreversible actions, data migrations, schema changes, or breaking API changes.]',
+                    '',
+                    '## Complexity Audit',
+                    '',
+                    '### Band A — Routine',
+                    '- [List straightforward, low-risk, mechanical changes here (e.g., rename, add field, update copy).]',
+                    '',
+                    '### Band B — Complex / Risky',
+                    '- [List changes that involve architectural decisions, cross-module coupling, concurrency, or significant risk.]',
+                    '',
+                    '## Edge-Case Audit',
+                    '',
+                    '- **Race Conditions**: [Describe any concurrency or ordering concerns (e.g., async writes, shared state).]',
+                    '- **Security**: [Describe any auth gaps, injection vectors, or data exposure risks.]',
+                    '- **Side Effects**: [Describe unintended state mutations, file system changes, or downstream service calls.]',
+                    '',
+                    '## Proposed Changes',
+                    '',
+                    '### [Component Name]',
+                    '',
+                    '#### [MODIFY] [filename.ts](path/to/filename.ts)',
+                    '- [Describe each change with specifics: which function, what logic changes, new behavior vs. old.]',
+                    '',
+                    '#### [ADD] [filename.ts](path/to/filename.ts)',
+                    '- [Describe the new file, its exported interface, and its purpose within the system.]',
+                    '',
+                    '## Verification Plan',
+                    '',
+                    '### Automated Tests',
+                    '- [List test files or suites to add/update and what invariants they must assert.]',
+                    '',
+                    '### Manual Verification',
+                    '1. [Step-by-step instructions to confirm the feature works end-to-end in the running application.]',
+                    '```',
                 ].join('\n'), 'utf8');
             }
 
@@ -6206,10 +6274,10 @@ ${focusDirective}`);
             if (!gitExtension) {
                 throw new Error('VS Code Git extension is not available.');
             }
-            
+
             const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
             const api = git.getAPI(1);
-            
+
             if (!api || api.repositories.length === 0) {
                 throw new Error('No Git repositories found in the workspace.');
             }
@@ -6254,7 +6322,12 @@ ${focusDirective}`);
             vscode.window.showWarningMessage('Airlock: Folder does not exist yet. Click BUNDLE CODE first.');
             return;
         }
-        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(airlockDir));
+        // Target a file inside the folder so the OS explorer focuses INSIDE the directory
+        const files = fs.readdirSync(airlockDir);
+        const firstFile = files.find(f => fs.statSync(path.join(airlockDir, f)).isFile());
+        const uri = firstFile ? vscode.Uri.file(path.join(airlockDir, firstFile)) : vscode.Uri.file(airlockDir);
+
+        await vscode.commands.executeCommand('revealFileInOS', uri);
     }
 
     public dispose() {
