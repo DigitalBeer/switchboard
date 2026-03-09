@@ -49,7 +49,7 @@ async function run() {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-mirror-sync-'));
         try {
             const brainSessionDir = path.join(root, 'brain', 'session-1');
-            const mirrorDir = path.join(root, 'workspace', '.switchboard', 'plans', 'antigravity_plans');
+            const mirrorDir = path.join(root, 'workspace', '.switchboard', 'plans');
             fs.mkdirSync(brainSessionDir, { recursive: true });
             fs.mkdirSync(mirrorDir, { recursive: true });
 
@@ -85,7 +85,7 @@ async function run() {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'switchboard-mirror-sync-'));
         try {
             const brainSessionDir = path.join(root, 'brain', 'session-2');
-            const mirrorDir = path.join(root, 'workspace', '.switchboard', 'plans', 'antigravity_plans');
+            const mirrorDir = path.join(root, 'workspace', '.switchboard', 'plans');
             fs.mkdirSync(brainSessionDir, { recursive: true });
             fs.mkdirSync(mirrorDir, { recursive: true });
 

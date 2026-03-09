@@ -324,7 +324,6 @@
 
         .activity-row {
             border: 1px solid var(--border-color);
-            border-left: 2px solid var(--accent-cyan);
             background: var(--panel-bg);
             padding: 8px;
             border-radius: 2px;
@@ -362,7 +361,6 @@
         }
 
         .activity-row.summary {
-            border-left-color: var(--accent-green);
             border-color: color-mix(in srgb, var(--accent-green) 30%, transparent);
             background: color-mix(in srgb, var(--accent-green) 5%, var(--panel-bg));
             box-shadow: 0 0 6px color-mix(in srgb, var(--accent-green) 8%, transparent);
@@ -392,26 +390,22 @@
             gap: 5px;
             background: var(--panel-bg);
             border: 1px solid var(--vscode-contrastBorder, var(--border-color));
-            border-left: 2px solid var(--border-bright);
             padding: 8px 10px;
             border-radius: 2px;
             transition: border-color 0.3s ease;
         }
 
         .agent-row:has(.status-dot.green) {
-            border-left-color: var(--accent-green);
             box-shadow: -2px 0 6px color-mix(in srgb, var(--accent-green) 10%, transparent);
             background: color-mix(in srgb, var(--accent-green) 2%, var(--panel-bg));
         }
 
         .agent-row:has(.status-dot.green-pulse) {
-            border-left-color: var(--accent-green);
             box-shadow: -2px 0 8px color-mix(in srgb, var(--accent-green) 16%, transparent);
             background: color-mix(in srgb, var(--accent-green) 3%, var(--panel-bg));
         }
 
         .agent-row:has(.status-dot.red) {
-            border-left-color: var(--accent-red);
             box-shadow: -2px 0 6px color-mix(in srgb, var(--accent-red) 10%, transparent);
             background: color-mix(in srgb, var(--accent-red) 2%, var(--panel-bg));
         }
@@ -1233,7 +1227,7 @@
                 <button id="btn-create-plan" class="secondary-btn w-full">CREATE</button>
             </div>
             <div style="margin-top: 6px;">
-                <button id="btn-open-kanban" class="secondary-btn w-full">OPEN KANBAN</button>
+                <button id="btn-open-kanban" class="secondary-btn w-full">OPEN CLI-BAN</button>
             </div>
         </div>
 

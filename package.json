@@ -74,7 +74,7 @@
       },
       {
         "command": "switchboard.openKanban",
-        "title": "Switchboard: Open Kanban Board"
+        "title": "Switchboard: Open CLI-BAN"
       }
     ],
     "configuration": {

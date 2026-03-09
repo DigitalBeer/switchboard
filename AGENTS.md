@@ -59,7 +59,7 @@ Sending to non-existent recipients is always rejected (even when auto-routed).
 
 ```
 User ──► Switchboard Operator (chat.md)
-              │  Plans captured in .switchboard/plans/features/
+              │  Plans captured in .switchboard/plans/
               │
               ├──► /challenge      Internal adversarial review (grumpy + synthesis)
               ├──► /handoff-lead   One-shot Lead Coder execution (large features)

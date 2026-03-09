@@ -1,6 +1,7 @@
 <!-- Switchboard Kanban Board -->
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -24,7 +25,11 @@
             --font-mono: var(--vscode-editor-font-family, 'Consolas', 'Courier New', monospace);
         }
 
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
         body {
             font-family: var(--font-family);
@@ -65,6 +70,7 @@
             border-radius: 2px;
             transition: all 0.15s;
         }
+
         .btn-refresh:hover {
             background: color-mix(in srgb, var(--accent-teal) 8%, transparent);
             border-color: var(--accent-teal-dim);
@@ -111,12 +117,14 @@
         .column-count {
             font-family: var(--font-mono);
             font-size: 10px;
-            color: var(--text-secondary);
-            background: var(--bg-color);
+            color: var(--accent-teal);
+            background: color-mix(in srgb, var(--accent-teal) 15%, transparent);
+            border: 1px solid color-mix(in srgb, var(--accent-teal) 30%, transparent);
             padding: 1px 6px;
             border-radius: 8px;
             min-width: 20px;
             text-align: center;
+            box-shadow: var(--glow-teal);
         }
 
         .column-select {
@@ -131,7 +139,9 @@
             margin-right: 8px;
             margin-left: auto;
         }
-        .column-select:hover, .column-select:focus {
+
+        .column-select:hover,
+        .column-select:focus {
             border-color: var(--border-bright);
             outline: none;
         }
@@ -151,8 +161,11 @@
         }
 
         .kanban-card {
-            background: linear-gradient(180deg, var(--panel-bg2) 0%, var(--panel-bg) 100%);
+            /* Mix 12% teal into the top, fading to 4% teal at the bottom */
+            background: linear-gradient(180deg, color-mix(in srgb, var(--accent-teal) 12%, var(--panel-bg2)) 0%, color-mix(in srgb, var(--accent-teal) 4%, var(--panel-bg)) 100%);
             border: 1px solid var(--vscode-contrastBorder, var(--border-color));
+            border-left: 3px solid var(--accent-teal-dim);
+            /* Persistent teal edge */
             border-radius: 3px;
             padding: 10px 12px;
             margin-bottom: 8px;
@@ -161,12 +174,15 @@
             position: relative;
         }
 
-        .kanban-card:active { cursor: grabbing; }
+        .kanban-card:active {
+            cursor: grabbing;
+        }
 
         .kanban-card:hover {
-            border-color: var(--border-bright);
+            border-color: color-mix(in srgb, var(--accent-teal) 50%, transparent);
             border-left-color: var(--accent-teal);
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+            /* Replace black shadow with a glowing teal bloom */
+            box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-teal) 20%, transparent);
         }
 
         .kanban-card.dragging {
@@ -193,7 +209,7 @@
         .card-meta {
             font-family: var(--font-mono);
             font-size: 9px;
-            color: var(--text-secondary);
+            color: color-mix(in srgb, var(--text-secondary) 50%, var(--accent-teal-dim));
             letter-spacing: 0.5px;
         }
 
@@ -216,11 +232,13 @@
             border-radius: 2px;
             transition: all 0.15s;
         }
+
         .card-btn:hover {
             background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
             border-color: var(--border-bright);
             color: var(--text-primary);
         }
+
         .card-btn.complete:hover {
             border-color: var(--accent-teal-dim);
             color: var(--accent-teal);
@@ -236,15 +254,29 @@
         }
 
         /* Scrollbar styling */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background, var(--border-bright)); border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground, var(--text-secondary)); }
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--vscode-scrollbarSlider-background, var(--border-bright));
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--vscode-scrollbarSlider-hoverBackground, var(--text-secondary));
+        }
     </style>
 </head>
+
 <body>
     <div class="kanban-header">
-        <div class="kanban-title">⚡ CLI Kanban</div>
+        <div class="kanban-title">⚡ CLI-BAN</div>
         <button class="btn-refresh" id="btn-refresh">Refresh</button>
     </div>
     <div class="kanban-board" id="kanban-board">
@@ -477,4 +509,5 @@
         renderBoard([]);
     </script>
 </body>
-</html>
+
+</html>

@@ -1756,6 +1756,139 @@ async function ensureAgentsProtocol(
 }
 
 /**
+ * Migrate legacy plan subdirectories (features/, antigravity_plans/) into the
+ * unified .switchboard/plans/ root. Collision-safe: appends a suffix on name
+ * clash. Backs up plan_registry.json before mutating it.
+ */
+async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
+    const plansRoot = path.join(workspaceRoot, '.switchboard', 'plans');
+    const legacyDirs = [
+        path.join(plansRoot, 'features'),
+        path.join(plansRoot, 'antigravity_plans'),
+    ];
+
+    const registryPath = path.join(workspaceRoot, '.switchboard', 'plan_registry.json');
+    let registryBackedUp = false;
+    let registryModified = false;
+    let registry: { version: number; entries: Record<string, any> } | undefined;
+
+    for (const legacyDir of legacyDirs) {
+        if (!fs.existsSync(legacyDir)) continue;
+        let entries: fs.Dirent[];
+        try {
+            entries = await fs.promises.readdir(legacyDir, { withFileTypes: true });
+        } catch { continue; }
+
+        const files = entries.filter(e => e.isFile());
+        if (files.length === 0) {
+            try { await fs.promises.rmdir(legacyDir); } catch { }
+            continue;
+        }
+
+        // Backup registry once before any moves
+        if (!registryBackedUp && fs.existsSync(registryPath)) {
+            try {
+                await fs.promises.copyFile(registryPath, registryPath + '.pre-migration.bak');
+                registryBackedUp = true;
+            } catch { }
+        }
+
+        // Lazy-load registry
+        if (!registry && fs.existsSync(registryPath)) {
+            try {
+                registry = JSON.parse(await fs.promises.readFile(registryPath, 'utf8'));
+            } catch { registry = undefined; }
+        }
+
+        const subDirName = path.basename(legacyDir); // 'features' or 'antigravity_plans'
+        const renamedFilesMap = new Map<string, string>();
+
+        for (const file of files) {
+            const srcPath = path.join(legacyDir, file.name);
+            let destName = file.name;
+            let destPath = path.join(plansRoot, destName);
+
+            // Collision-safe rename
+            if (fs.existsSync(destPath)) {
+                const ext = path.extname(destName);
+                const base = path.basename(destName, ext);
+                let suffix = 1;
+                do {
+                    destName = `${base}_migrated${suffix}${ext}`;
+                    destPath = path.join(plansRoot, destName);
+                    suffix++;
+                } while (fs.existsSync(destPath));
+            }
+
+            try {
+                await fs.promises.rename(srcPath, destPath);
+                renamedFilesMap.set(file.name, destName);
+            } catch {
+                // If rename fails (cross-device), fall back to copy+unlink
+                try {
+                    await fs.promises.copyFile(srcPath, destPath);
+                    await fs.promises.unlink(srcPath);
+                    renamedFilesMap.set(file.name, destName);
+                } catch { continue; }
+            }
+
+            // Update registry entries pointing to old paths
+            if (registry?.entries) {
+                const oldRelative = `.switchboard/plans/${subDirName}/${file.name}`;
+                const newRelative = `.switchboard/plans/${destName}`;
+                for (const entry of Object.values(registry.entries)) {
+                    if (entry.localPlanPath === oldRelative) {
+                        entry.localPlanPath = newRelative;
+                        registryModified = true;
+                    }
+                    if (entry.mirrorPath === oldRelative) {
+                        entry.mirrorPath = newRelative;
+                        registryModified = true;
+                    }
+                }
+            }
+        }
+
+        // Also update runsheet planFile references
+        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
+        if (fs.existsSync(sessionsDir)) {
+            try {
+                const sessionFiles = await fs.promises.readdir(sessionsDir);
+                for (const sf of sessionFiles) {
+                    if (!sf.endsWith('.json')) continue;
+                    const sfPath = path.join(sessionsDir, sf);
+                    try {
+                        const raw = await fs.promises.readFile(sfPath, 'utf8');
+                        const sheet = JSON.parse(raw);
+                        if (typeof sheet.planFile === 'string' && sheet.planFile.includes(`plans/${subDirName}/`)) {
+                            const oldFile = path.basename(sheet.planFile);
+                            // Use the collision-safe name from our map
+                            const movedName = renamedFilesMap.get(oldFile);
+                            if (movedName) {
+                                sheet.planFile = sheet.planFile.replace(`plans/${subDirName}/${oldFile}`, `plans/${movedName}`);
+                                await fs.promises.writeFile(sfPath, JSON.stringify(sheet, null, 2));
+                            }
+                        }
+                    } catch { /* non-fatal per runsheet */ }
+                }
+            } catch { /* non-fatal */ }
+        }
+
+        // Remove empty legacy dir
+        try { await fs.promises.rmdir(legacyDir); } catch { }
+    }
+
+    // Persist updated registry
+    if (registryModified && registry) {
+        try {
+            const tmpPath = registryPath + `.${Date.now()}.tmp`;
+            await fs.promises.writeFile(tmpPath, JSON.stringify(registry, null, 2));
+            await fs.promises.rename(tmpPath, registryPath);
+        } catch { }
+    }
+}
+
+/**
  * Perform actual setup logic (Unified)
  */
 async function performSetup(workspaceUri: vscode.Uri, extensionUri: vscode.Uri, options: { silent: boolean }) {
@@ -1763,7 +1896,7 @@ async function performSetup(workspaceUri: vscode.Uri, extensionUri: vscode.Uri, 
     const dirs = [
         '.agent',
         '.switchboard/inbox',
-        '.switchboard/plans/features',
+        '.switchboard/plans',
         '.switchboard/handoff',
         '.switchboard/archive'
     ];
@@ -1771,6 +1904,9 @@ async function performSetup(workspaceUri: vscode.Uri, extensionUri: vscode.Uri, 
     for (const dir of dirs) {
         await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(workspaceUri, dir));
     }
+
+    // Migrate legacy plan subdirectories into unified .switchboard/plans/ root
+    await migrateLegacyPlans(workspaceUri.fsPath);
 
     await ensureWorkspaceMcpServerFiles(extensionUri.fsPath, workspaceUri.fsPath);
 

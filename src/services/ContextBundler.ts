@@ -61,7 +61,7 @@ function isExcludedDir(relativePath: string): boolean {
     return parts.some(p => EXCLUDED_DIRS.includes(p));
 }
 
-export async function bundleWorkspaceContext(workspaceRoot: string): Promise<string> {
+export async function bundleWorkspaceContext(workspaceRoot: string): Promise<{ outputDir: string; timestamp: string }> {
     const outputDir = path.join(workspaceRoot, '.switchboard', 'airlock');
 
     // 1. Purge old bundles to prevent disk bloat, but preserve the directory handle for OS Explorer
@@ -95,15 +95,24 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
         files = await walkDirectory(workspaceRoot, workspaceRoot);
     }
 
-    // 3. Filter binary files and sort by depth (root files first)
-    files = files
-        .filter(f => !isBinary(f))
-        .sort((a, b) => {
-            const depthA = a.split(/[\\/]/).length;
-            const depthB = b.split(/[\\/]/).length;
-            if (depthA !== depthB) return depthA - depthB;
-            return a.localeCompare(b);
-        });
+    // 3. Separate binary files into exclusion registry; sort remaining by depth (root files first)
+    const excludedFiles: { file: string; sizeKB?: string; reason: string }[] = [];
+    const validFiles: string[] = [];
+
+    for (const f of files) {
+        if (isBinary(f)) {
+            excludedFiles.push({ file: f, reason: 'Binary' });
+        } else {
+            validFiles.push(f);
+        }
+    }
+
+    files = validFiles.sort((a, b) => {
+        const depthA = a.split(/[\\/]/).length;
+        const depthB = b.split(/[\\/]/).length;
+        if (depthA !== depthB) return depthA - depthB;
+        return a.localeCompare(b);
+    });
 
     // 4. Rolling size-based chunking pass
     const now = new Date();
@@ -140,36 +149,44 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
     };
 
     for (const file of files) {
-        let content: string;
+        let sizeKB: string | undefined;
         try {
-            content = await fs.promises.readFile(path.join(workspaceRoot, file), 'utf8');
-        } catch { continue; }
+            const stat = await fs.promises.stat(path.join(workspaceRoot, file));
+            sizeKB = (stat.size / 1024).toFixed(1);
 
-        const section = `--- BEGIN FILE: ${file} ---\n${content}\n--- END FILE: ${file} ---\n\n`;
-        const sectionBytes = Buffer.byteLength(section, 'utf8');
-        const sizeKB = (sectionBytes / 1024).toFixed(1);
-
-        if (sectionBytes > CHUNK_LIMIT_BYTES) {
-            // Large file: flush any pending buffer first, then write this file as its own dedicated chunk.
-            if (currentBytes > 0) {
-                await scheduleChunkWrite(currentBuffer, chunkIndex++);
-                currentBuffer = '';
-                currentBytes = 0;
+            if (stat.size > CHUNK_LIMIT_BYTES) {
+                excludedFiles.push({ file, sizeKB, reason: 'Exceeds 500KB limit' });
+                continue;
             }
-            const dedicatedIndex = chunkIndex++;
-            await scheduleChunkWrite(section, dedicatedIndex);
-            manifestLines.push(`- **${file}** (${sizeKB}KB) -> \`${timestamp}-bundle-part-${dedicatedIndex}.docx\``);
-        } else {
-            // Normal file: flush current buffer if this file would push it over the limit.
+
+            const content = await fs.promises.readFile(path.join(workspaceRoot, file), 'utf8');
+
+            // Extract description safely (slice to protect event loop from ReDoS)
+            let desc = '';
+            const headerSlice = content.slice(0, 1000);
+            const commentMatch = headerSlice.match(/^\s*(?:\/\*([\s\S]*?)\*\/|\/\/([^\n]+))/);
+            if (commentMatch) {
+                desc = (commentMatch[1] || commentMatch[2] || '').replace(/[\r\n]+/g, ' ').replace(/\*/g, '').trim();
+                if (desc.length > 150) desc = desc.substring(0, 147) + '...';
+                if (desc) desc = ` — *${desc}*`;
+            }
+
+            const section = `--- BEGIN FILE: ${file} ---\n${content}\n--- END FILE: ${file} ---\n\n`;
+            const sectionBytes = Buffer.byteLength(section, 'utf8');
+
             if (currentBytes > 0 && currentBytes + sectionBytes > CHUNK_LIMIT_BYTES) {
                 await scheduleChunkWrite(currentBuffer, chunkIndex++);
                 currentBuffer = '';
                 currentBytes = 0;
             }
+
             const targetIndex = chunkIndex;
             currentBuffer += section;
             currentBytes += sectionBytes;
-            manifestLines.push(`- **${file}** (${sizeKB}KB) -> \`${timestamp}-bundle-part-${targetIndex}.docx\``);
+
+            manifestLines.push(`- **${file}** (${sizeKB}KB) -> \`${timestamp}-bundle-part-${targetIndex}.docx\`${desc}`);
+        } catch (e: any) {
+            excludedFiles.push({ file, sizeKB, reason: `Unreadable (${e.code || e.message})` });
         }
     }
 
@@ -184,16 +201,31 @@ export async function bundleWorkspaceContext(workspaceRoot: string): Promise<str
         writePromises.length = 0;
     }
 
+    if (excludedFiles.length > 0) {
+        manifestLines.push(``);
+        manifestLines.push(`## Excluded Files`);
+        manifestLines.push(``);
+        for (const ef of excludedFiles) {
+            const sizeStr = ef.sizeKB ? ` (${ef.sizeKB}KB)` : '';
+            manifestLines.push(`- **${ef.file}**${sizeStr} *(Excluded: ${ef.reason})*`);
+        }
+    }
+
     // 5. Write manifest as clean markdown (not docx — human-readable in VS Code).
-    const manifestPath = path.join(outputDir, 'manifest.md');
+    const manifestPath = path.join(outputDir, `${timestamp}-manifest.md`);
     await fs.promises.writeFile(manifestPath, manifestLines.join('\n') + '\n', 'utf8');
 
-    return outputDir;
+    return { outputDir, timestamp };
 }
 
 async function walkDirectory(dir: string, root: string): Promise<string[]> {
     const results: string[] = [];
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    let entries;
+    try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+        return results;
+    }
     for (const entry of entries) {
         const fullPath = path.join(dir, entry.name);
         const rel = path.relative(root, fullPath);

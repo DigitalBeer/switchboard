@@ -55,7 +55,7 @@ export class KanbanProvider implements vscode.Disposable {
 
         this._panel = vscode.window.createWebviewPanel(
             'switchboard-kanban',
-            'CLI Kanban',
+            'CLI-BAN',
             vscode.ViewColumn.One,
             {
                 enableScripts: true,

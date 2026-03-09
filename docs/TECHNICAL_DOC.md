@@ -31,8 +31,7 @@ At runtime:
 - `inbox/<agent>/`: incoming durable messages (JSON)
 - `outbox/<agent>/`: legacy/deprecated path still referenced by some tooling
 - `sessions/`: run sheets and `activity.jsonl` audit stream
-- `plans/features/`: locally created feature plans
-- `plans/antigravity_plans/`: mirrored Antigravity brain plans
+- `plans/`: locally created feature plans and mirrored Antigravity brain plans (unified root)
 - `brain_plan_blacklist.json`: setup-seeded blacklist of pre-existing Antigravity brain plan stable paths (hard excluded from mirror adoption and sidebar visibility)
   - persisted schema: `{ version, generatedAt, entries[] }` where `entries` are stable canonical base-plan paths
 - `context-maps/`: analyst-generated context map artifacts for planner handoff
@@ -287,8 +286,8 @@ Webview layout/runtime notes:
 
 Switchboard supports two major plan sources:
 
-1. Local plan creation under `.switchboard/plans/features`
-2. Mirrored Antigravity brain plans under `.switchboard/plans/antigravity_plans`
+1. Local plan creation under `.switchboard/plans/`
+2. Mirrored Antigravity brain plans under `.switchboard/plans/` (unified with local plans)
 
 Run sheets (`.switchboard/sessions/*.json`) track:
 

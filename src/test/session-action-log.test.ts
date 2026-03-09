@@ -72,7 +72,7 @@ async function run() {
     // Test 4: plan_management summary/truncation behavior
     await log.logEvent('plan_management', {
         operation: 'update_plan',
-        planFile: '.switchboard/plans/features/demo.md',
+        planFile: '.switchboard/plans/demo.md',
         content: 'line1\nline2\nline3',
         beforeContent: 'line1',
         afterContent: 'line1\nline2'

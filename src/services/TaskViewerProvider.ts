@@ -70,10 +70,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _view?: vscode.WebviewView;
     private _stateWatcher?: vscode.FileSystemWatcher;
     private _planWatcher?: vscode.FileSystemWatcher;
-    private _planRootWatcher?: vscode.FileSystemWatcher;
     private _fsStateWatcher?: fs.FSWatcher;
-    private _fsPlanFeaturesWatcher?: fs.FSWatcher;
-    private _fsPlanRootWatcher?: fs.FSWatcher;
+    private _fsPlansWatcher?: fs.FSWatcher;
     private _brainWatcher?: vscode.FileSystemWatcher;
     private _stagingWatcher?: fs.FSWatcher;
     // TTL-based sets for reliable loop prevention (boolean flags reset before async watcher callbacks fire)
@@ -1091,20 +1089,15 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (this._planWatcher) {
             this._planWatcher.dispose();
         }
-        if (this._planRootWatcher) {
-            this._planRootWatcher.dispose();
-        }
-        try { this._fsPlanFeaturesWatcher?.close(); } catch { }
-        try { this._fsPlanRootWatcher?.close(); } catch { }
+        try { this._fsPlansWatcher?.close(); } catch { }
 
         // Initialize plan + sessions directories
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return;
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const plansRootDir = path.join(workspaceRoot, '.switchboard', 'plans');
-        const featuresDir = path.join(plansRootDir, 'features');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        for (const dir of [plansRootDir, featuresDir, sessionsDir]) {
+        for (const dir of [plansRootDir, sessionsDir]) {
             if (!fs.existsSync(dir)) {
                 try {
                     fs.mkdirSync(dir, { recursive: true });
@@ -1121,15 +1114,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             titleSyncTimer = setTimeout(() => this._handlePlanTitleSync(uri), 300);
         };
 
-        // Watch feature plans (creation + H1 edits)
-        this._planWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/plans/features/*.md');
+        // Unified watcher for all plans at the plans root
+        this._planWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/plans/*.md');
         this._planWatcher.onDidCreate((uri) => this._handlePlanCreation(uri));
         this._planWatcher.onDidChange((uri) => debouncedTitleSync(uri));
-
-        // Also watch vanilla timestamped plans at the plans root
-        this._planRootWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/plans/*.md');
-        this._planRootWatcher.onDidCreate((uri) => this._handlePlanCreation(uri));
-        this._planRootWatcher.onDidChange((uri) => debouncedTitleSync(uri));
 
         // Native fs.watch fallback — VS Code's createFileSystemWatcher can miss .switchboard
         // events depending on workspace watcher exclusions and gitignore behavior.
@@ -1168,8 +1156,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
         };
 
-        this._fsPlanFeaturesWatcher = watchPlanDirectory(featuresDir);
-        this._fsPlanRootWatcher = watchPlanDirectory(plansRootDir);
+        this._fsPlansWatcher = watchPlanDirectory(plansRootDir);
     }
 
     private _setupBrainWatcher() {
@@ -1179,7 +1166,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return;
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'plans', 'antigravity_plans');
+        const stagingDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'plans');
         if (!fs.existsSync(stagingDir)) {
             try { fs.mkdirSync(stagingDir, { recursive: true }); } catch { }
         }
@@ -1444,7 +1431,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _getRecoverablePlans(): Array<{ planId: string; topic: string; sourceType: string; status: string; brainSourcePath?: string; localPlanPath?: string; updatedAt: string }> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         const workspaceRoot = workspaceFolders ? workspaceFolders[0].uri.fsPath : '';
-        const mirrorDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'plans', 'antigravity_plans') : '';
+        const mirrorDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'plans') : '';
 
         // Pre-scan archive plans directory once for efficiency
         const archivePlansDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'archive', 'plans') : '';
@@ -2096,7 +2083,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const switchboardDir = path.join(workspaceRoot, '.switchboard');
         const sessionsDir = path.join(switchboardDir, 'sessions');
         const archiveSessionsDir = path.join(switchboardDir, 'archive', 'sessions');
-        const stagingDir = path.join(switchboardDir, 'plans', 'antigravity_plans');
+        const stagingDir = path.join(switchboardDir, 'plans');
         const archivePlansDir = path.join(switchboardDir, 'archive', 'plans');
         const orphanPlansDir = path.join(switchboardDir, 'archive', 'orphan_plans');
 
@@ -2411,7 +2398,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return;
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans', 'antigravity_plans');
+        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
 
         try {
@@ -2917,7 +2904,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const timestamp = new Date();
             const pad = (n: number) => String(n).padStart(2, '0');
             const stamp = `${timestamp.getFullYear()}${pad(timestamp.getMonth() + 1)}${pad(timestamp.getDate())}_${pad(timestamp.getHours())}${pad(timestamp.getMinutes())}${pad(timestamp.getSeconds())}`;
-            const mergedRelativePath = path.join('.switchboard', 'plans', 'features', `feature_plan_batch_${stamp}.md`);
+            const mergedRelativePath = path.join('.switchboard', 'plans', `feature_plan_batch_${stamp}.md`);
             const mergedAbsolutePath = path.join(workspaceRoot, mergedRelativePath);
             await fs.promises.mkdir(path.dirname(mergedAbsolutePath), { recursive: true });
 
@@ -3062,7 +3049,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const switchboardDir = path.join(workspaceRoot, '.switchboard');
         const archiveDir = path.join(switchboardDir, 'archive');
         const sessionsDir = path.join(switchboardDir, 'sessions');
-        const plansDir = path.join(switchboardDir, 'plans', 'antigravity_plans');
+        const plansDir = path.join(switchboardDir, 'plans');
         const reviewsDir = path.join(switchboardDir, 'reviews');
         const specs: ArchiveSpec[] = [];
         const seenSources = new Set<string>();
@@ -4709,7 +4696,7 @@ ${focusDirective}`);
         }
 
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const plansDir = path.join(workspaceRoot, '.switchboard', 'plans', 'features');
+        const plansDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         fs.mkdirSync(plansDir, { recursive: true });
         fs.mkdirSync(sessionsDir, { recursive: true });
@@ -4724,10 +4711,10 @@ ${focusDirective}`);
         const stablePlanPath = this._normalizePendingPlanPath(planFileAbsolute);
         this._pendingPlanCreations.add(stablePlanPath);
         try {
-            const isFullPlan = idea.trim().startsWith('# ');
+            const isFullPlan = idea.includes('## Proposed Changes') || idea.includes('## Goal');
             const content = isFullPlan
                 ? idea
-                : `# ${title}\n\n## Problem\n${idea}\n\n## Goals\n- Clarify expected outcome and scope.\n\n## Constraints\n- Preserve existing behavior outside this change.\n\n## Task Split\n- Band A (routine, low-risk): refine acceptance criteria and implementation details.\n- Band B (complex, architectural): identify any systemic or cross-module impact.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
+                : `# ${title}\n\n## Notebook Plan\n\n${idea}\n\n## Goal\n- Clarify expected outcome and scope.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
             await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
 
             const sessionId = `sess_${Date.now()}`;
@@ -4768,10 +4755,37 @@ ${focusDirective}`);
             await this._refreshRunSheets();
             this._view?.webview.postMessage({ type: 'selectSession', sessionId });
 
+            // Non-blocking auto-promotion: copy plan to Antigravity brain
+            void this._promotePlanToBrain(planFileAbsolute, fileName).catch((e) => {
+                console.error('[TaskViewerProvider] Auto-promotion to brain failed (non-fatal):', e);
+            });
+
             return { sessionId, planFileAbsolute };
         } finally {
             setTimeout(() => this._pendingPlanCreations.delete(stablePlanPath), 2000);
         }
+    }
+
+    /**
+     * Copy a locally-created plan to the Antigravity brain directory so it is
+     * available cross-workspace. Fire-and-forget; failures are logged but never
+     * block the UI.
+     */
+    private async _promotePlanToBrain(planFileAbsolute: string, fileName: string): Promise<void> {
+        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        if (!fs.existsSync(brainDir)) return;
+
+        const destPath = path.join(brainDir, fileName);
+        // Mark as our own write so the brain watcher doesn't re-mirror it
+        const stableDest = this._getStablePath(destPath);
+        const existingTimer = this._recentBrainWrites.get(stableDest);
+        if (existingTimer) clearTimeout(existingTimer);
+        this._recentBrainWrites.set(stableDest, setTimeout(() => {
+            this._recentBrainWrites.delete(stableDest);
+        }, 3000));
+
+        await fs.promises.copyFile(planFileAbsolute, destPath);
+        console.log(`[TaskViewerProvider] Auto-promoted plan to brain: ${fileName}`);
     }
 
     private async _handleInitiatePlan(title: string, idea: string, mode: 'send' | 'copy' | 'local' | 'review') {
@@ -6074,46 +6088,45 @@ ${focusDirective}`);
 
         try {
             // 1. Scaffold airlock directory
-            const airlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
-            await fs.promises.mkdir(airlockDir, { recursive: true });
+            const baseAirlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
+            await fs.promises.mkdir(baseAirlockDir, { recursive: true });
 
             // 2. Run the bundler (writes timestamped bundle to .switchboard/airlock/)
-            await bundleWorkspaceContext(workspaceRoot);
+            const { outputDir: airlockDir, timestamp } = await bundleWorkspaceContext(workspaceRoot);
 
-            // 3. Write how_to_plan.md (skip if already present)
-            const howToPlanPath = path.join(airlockDir, 'how_to_plan.md');
-            if (!fs.existsSync(howToPlanPath)) {
-                await fs.promises.writeFile(howToPlanPath, [
-                    '# How to Plan',
-                    '',
-                    'Follow these five steps strictly and in order. Each step builds on the last.',
-                    '',
-                    '## 1. Context Loading',
-                    'Open `manifest.md` in this folder to get the complete workspace file listing and understand the project structure.',
-                    'Then open the relevant segmented bundle files (e.g., `{repo-name}-src.md`, `{repo-name}-misc.md`) to read file contents.',
-                    'Use these as the sole source of truth for the current codebase state. Do not rely on prior knowledge.',
-                    '',
-                    '## 2. Strategy Formulation',
-                    'Identify the high-level problem space and define the proposed approach. Cover:',
-                    '- What the core problem or goal is',
-                    '- Which modules or layers are affected',
-                    '- The sequence of changes required at a high level',
-                    '- Any assumptions being made',
-                    '',
-                    '## 3. Structural Enhancement (`/enhance`)',
-                    'Audit the strategy for structural completeness:',
-                    '- Identify missing pieces, implicit dependencies, or assumptions that need hardening',
-                    '- Flag any cross-module impact or architectural concerns',
-                    '- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks',
-                    '- Expand the plan with concrete file paths, function signatures, and data flow',
-                    '',
-                    '## 4. Adversarial Review (`/challenge`)',
-                    'Stress-test the plan using two personas:',
-                    '- **Grumpy**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.',
-                    '- **Balanced**: Synthesize the critique. Confirm which concerns are real blockers vs. noise. Finalize the plan.',
-                    '',
-                    '## 5. Exhaustive Implementation Spec',
-                    'Produce a complete, copy-paste-ready implementation spec. Use your full context window. Include:',
+            // 3. Write timestamped how_to_plan.md
+            const howToPlanPath = path.join(airlockDir, `${timestamp}-how_to_plan.md`);
+            await fs.promises.writeFile(howToPlanPath, [
+                '# How to Plan',
+                '',
+                'Follow these five steps strictly and in order. Each step builds on the last.',
+                '',
+                '## 1. Context Loading',
+                `Open \`${timestamp}-manifest.md\` in this folder to get the complete workspace file listing and understand the project structure.`,
+                `Then open the relevant segmented bundle files (e.g., \`${timestamp}-bundle-part-1.docx\`) to read file contents.`,
+                'Use these as the sole source of truth for the current codebase state. Do not rely on prior knowledge.',
+                '',
+                '## 2. Strategy Formulation',
+                'Identify the high-level problem space and define the proposed approach. Cover:',
+                '- What the core problem or goal is',
+                '- Which modules or layers are affected',
+                '- The sequence of changes required at a high level',
+                '- Any assumptions being made',
+                '',
+                '## 3. Structural Enhancement (`/enhance`)',
+                'Audit the strategy for structural completeness:',
+                '- Identify missing pieces, implicit dependencies, or assumptions that need hardening',
+                '- Flag any cross-module impact or architectural concerns',
+                '- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks',
+                '- Expand the plan with concrete file paths, function signatures, and data flow',
+                '',
+                '## 4. Adversarial Review (`/challenge`)',
+                'Stress-test the plan using two personas:',
+                '- **Grumpy**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.',
+                '- **Balanced**: Synthesize the critique. Confirm which concerns are real blockers vs. noise. Finalize the plan.',
+                '',
+                '## 5. Exhaustive Implementation Spec',
+                    'Produce a complete, copy-paste-ready implementation spec. You must create plans in raw markdown formatting in a single block. Use your full context window. Include:',
                     '- Exact search/replace blocks or unified diffs for every file change',
                     '- New file contents in full where applicable',
                     '- Inline comments explaining non-obvious logic',
@@ -6173,7 +6186,6 @@ ${focusDirective}`);
                     '1. [Step-by-step instructions to confirm the feature works end-to-end in the running application.]',
                     '```',
                 ].join('\n'), 'utf8');
-            }
 
             this._view?.webview.postMessage({ type: 'airlock_exportComplete' });
             vscode.window.showInformationMessage('Airlock: Bundle exported → .switchboard/airlock/');
@@ -6336,10 +6348,8 @@ ${focusDirective}`);
         this._pipeline.dispose();
         this._stateWatcher?.dispose();
         this._planWatcher?.dispose();
-        this._planRootWatcher?.dispose();
         try { this._fsStateWatcher?.close(); } catch { }
-        try { this._fsPlanFeaturesWatcher?.close(); } catch { }
-        try { this._fsPlanRootWatcher?.close(); } catch { }
+        try { this._fsPlansWatcher?.close(); } catch { }
         try { this._brainWatcher?.dispose(); } catch { }
         try { this._stagingWatcher?.close(); } catch { }
         this._gitCommitDisposable?.dispose();
