@@ -676,6 +676,11 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(completePlanFromKanbanDisposable);
 
+    const copyPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.copyPlanFromKanban', async (sessionId: string) => {
+        return await taskViewerProvider.handleKanbanCopyPlan(sessionId);
+    });
+    context.subscriptions.push(copyPlanFromKanbanDisposable);
+
     const viewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.viewPlanFromKanban', async (sessionId: string) => {
         taskViewerProvider.handleKanbanViewPlan(sessionId);
     });
@@ -1218,8 +1223,8 @@ export async function activate(context: vscode.ExtensionContext) {
         const agents: { name: string; role: string }[] = [
             { name: 'Lead Coder', role: 'lead' },
             { name: 'Coder', role: 'coder' },
-            { name: 'Reviewer', role: 'reviewer' },
             { name: 'Planner', role: 'planner' },
+            { name: 'Reviewer', role: 'reviewer' },
             { name: 'Analyst', role: 'analyst' },
             { name: 'Jules Monitor', role: 'jules_monitor' }
         ];
@@ -2090,12 +2095,6 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
                 detail: ide.description
             };
         }),
-        { label: '', kind: vscode.QuickPickItemKind.Separator },
-        {
-            label: '$(terminal) Configure CLI Agents',
-            description: 'Set command paths for CLI-based agent roles',
-            detail: 'Configure Lead, Coder, Analyst, and Reviewer CLI commands'
-        }
     ];
 
     const selected = await vscode.window.showQuickPick(items, {
@@ -2110,7 +2109,6 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
     const selectedLabels = new Set(selected.map(s => s.label));
     const autoDetectSelected = [...selectedLabels].some(label => label.includes('Auto-Detect'));
     const allPlatformsSelected = [...selectedLabels].some(label => label.includes('All Platforms'));
-    const cliAgentsSelected = [...selectedLabels].some(label => label.includes('Configure CLI Agents'));
 
     // Determine IDE targets based on selection
     const targetSet = new Set<string>();
@@ -2121,7 +2119,7 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
         for (const ide of allIDEs) targetSet.add(ide.key);
     }
     for (const item of selected) {
-        if (item.label.includes('Auto-Detect') || item.label.includes('All Platforms') || item.label.includes('Configure CLI Agents')) {
+        if (item.label.includes('Auto-Detect') || item.label.includes('All Platforms')) {
             continue;
         }
         const ideName = item.label.replace(/\$\([^)]+\)\s*/, '');
@@ -2130,7 +2128,7 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
     }
     const targets = [...targetSet];
 
-    if (targets.length === 0 && !cliAgentsSelected) {
+    if (targets.length === 0) {
         vscode.window.showInformationMessage('No IDEs selected for configuration');
         return;
     }
@@ -2142,20 +2140,6 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
         await switchboardConfig.update('review.strictPrompts', false, vscode.ConfigurationTarget.Workspace);
         mcpOutputChannel?.appendLine(`[Setup] Team prompt rigor set to light (workspace).`);
     };
-
-    if (cliAgentsSelected) {
-        const cliAgentsConfigured = await configureCliAgents(switchboardConfig);
-        if (!cliAgentsConfigured) {
-            // Cancelled during CLI role input: do not persist rigor or partial setup changes.
-            return;
-        }
-    }
-
-    if (targets.length === 0) {
-        // CLI-only setup: persist rigor after successful CLI save.
-        await persistTeamRigor();
-        return;
-    }
 
     // Show progress
     await vscode.window.withProgress({
@@ -2264,59 +2248,6 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
         // Refresh the webview to update UI
         vscode.commands.executeCommand('switchboard.refresh');
     });
-}
-
-/**
- * Configure CLI agent role-to-command mappings
- */
-async function configureCliAgents(switchboardConfig: vscode.WorkspaceConfiguration): Promise<boolean> {
-    const roles = ['lead', 'coder', 'analyst', 'reviewer'];
-    const currentAgents = switchboardConfig.get<Record<string, string>>('cliAgents', {});
-    const staged: Record<string, string> = { ...currentAgents };
-
-    for (const role of roles) {
-        const currentValue = staged[role] || '';
-        const input = await vscode.window.showInputBox({
-            prompt: `Command/path for ${role} agent (leave empty to skip)`,
-            placeHolder: `e.g. claude, aider, /usr/local/bin/my-agent`,
-            value: currentValue,
-            title: `Switchboard CLI Agents — ${role.charAt(0).toUpperCase() + role.slice(1)}`
-        });
-
-        if (input === undefined) {
-            // User pressed Escape — abort entire flow without partial writes
-            vscode.window.showInformationMessage('CLI agent configuration cancelled. No changes saved.');
-            return false;
-        }
-
-        const trimmed = input.trim();
-        if (!trimmed) {
-            delete staged[role];
-            continue;
-        }
-
-        const basicCommandPattern = /^[A-Za-z0-9._:/\\\- ]+$/;
-        const hasTraversalSegment = /(^|[\\/])\.\.([\\/]|$)/.test(trimmed);
-        const hasControlChars = /[\r\n\t]/.test(trimmed);
-        const looksSane = basicCommandPattern.test(trimmed) && !hasTraversalSegment && !hasControlChars;
-        if (!looksSane) {
-            vscode.window.showErrorMessage(`Invalid command/path for ${role}. Use a simple executable name or path.`);
-            return false;
-        }
-
-        staged[role] = trimmed;
-    }
-
-    await switchboardConfig.update('cliAgents', staged, vscode.ConfigurationTarget.Workspace);
-    mcpOutputChannel?.appendLine(`[Setup] CLI agents configured: ${JSON.stringify(staged)}`);
-
-    const configuredRoles = Object.keys(staged);
-    if (configuredRoles.length > 0) {
-        vscode.window.showInformationMessage(`✅ CLI agents configured: ${configuredRoles.join(', ')}`);
-    } else {
-        vscode.window.showInformationMessage('CLI agent configuration cleared.');
-    }
-    return true;
 }
 
 /**

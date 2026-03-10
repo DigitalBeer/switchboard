@@ -271,6 +271,27 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--vscode-scrollbarSlider-hoverBackground, var(--text-secondary));
         }
+
+        /* Card Drop Animation */
+        @keyframes dropPulse {
+            0% { transform: scale(1.05); box-shadow: 0 4px 20px var(--accent-teal); }
+            100% { transform: scale(1); box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-teal) 20%, transparent); }
+        }
+        .card-dropped {
+            animation: dropPulse 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        /* Card Complete / Delete Animation */
+        @keyframes cardComplete {
+            0% { transform: scale(1); opacity: 1; }
+            40% { transform: scale(1.05); opacity: 0.9; background: color-mix(in srgb, var(--accent-teal) 20%, var(--panel-bg)); border-color: var(--accent-teal); }
+            100% { transform: scale(0.8) translateX(40px); opacity: 0; padding-top: 0; padding-bottom: 0; margin: 0; height: 0; border-width: 0; }
+        }
+        .card-completing {
+            animation: cardComplete 0.4s ease-out forwards;
+            pointer-events: none;
+            overflow: hidden;
+        }
     </style>
 </head>
 
@@ -361,8 +382,25 @@
             });
 
             document.querySelectorAll('.card-btn.complete').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const cardEl = e.target.closest('.kanban-card');
+                    if (cardEl) {
+                        // Optimistic UI: Animate out before sending to backend
+                        cardEl.classList.add('card-completing');
+                        setTimeout(() => {
+                            vscode.postMessage({ type: 'completePlan', sessionId: btn.dataset.session });
+                        }, 350); // Slightly less than 400ms to ensure smooth handoff to the backend redraw
+                    } else {
+                        // Fallback if DOM traversal fails
+                        vscode.postMessage({ type: 'completePlan', sessionId: btn.dataset.session });
+                    }
+                });
+            });
+
+            document.querySelectorAll('.card-btn.copy').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    vscode.postMessage({ type: 'completePlan', sessionId: btn.dataset.session });
+                    btn.disabled = true;
+                    vscode.postMessage({ type: 'copyPlanLink', sessionId: btn.dataset.session });
                 });
             });
         }
@@ -375,6 +413,7 @@
                     <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
                     <div class="card-meta">${timeAgo}</div>
                     <div class="card-actions">
+                        <button class="card-btn copy" data-session="${card.sessionId}">Copy</button>
                         <button class="card-btn view" data-session="${card.sessionId}">View</button>
                         <button class="card-btn complete" data-session="${card.sessionId}">Complete</button>
                     </div>
@@ -468,14 +507,24 @@
 
                 // Update in-memory state
                 card.column = targetColumn;
+
+                // Trigger drop animation
+                cardEl.classList.remove('card-dropped'); 
+                void cardEl.offsetWidth; // Trigger reflow to restart animation
+                cardEl.classList.add('card-dropped');
+                cardEl.addEventListener('animationend', () => {
+                    cardEl.classList.remove('card-dropped');
+                }, { once: true });
             }
 
-            // Post message to extension to trigger the appropriate agent
-            vscode.postMessage({
-                type: 'triggerAction',
-                sessionId: sessionId,
-                targetColumn: targetColumn
-            });
+            // Optimistic UI: Delay backend update so animation finishes before DOM is wiped
+            setTimeout(() => {
+                vscode.postMessage({
+                    type: 'triggerAction',
+                    sessionId: sessionId,
+                    targetColumn: targetColumn
+                });
+            }, 350);
         }
 
         // Listen for messages from the extension
@@ -489,6 +538,27 @@
                     if (msg.column === 'CODED' && msg.target) {
                         const selectEl = document.getElementById('coded-target-select');
                         if (selectEl) selectEl.value = msg.target;
+                    }
+                    break;
+                case 'copyPlanLinkResult':
+                    const btn = document.querySelector(`.card-btn.copy[data-session="${msg.sessionId}"]`);
+                    if (btn) {
+                        if (msg.success) {
+                            const originalText = btn.textContent;
+                            btn.textContent = 'Copied!';
+                            const originalBg = btn.style.backgroundColor;
+                            const originalColor = btn.style.color;
+                            btn.style.backgroundColor = 'var(--vscode-testing-iconPassed, #73c991)';
+                            btn.style.color = 'var(--vscode-editor-background, #1e1e1e)';
+                            setTimeout(() => {
+                                btn.textContent = originalText;
+                                btn.style.backgroundColor = originalBg;
+                                btn.style.color = originalColor;
+                                btn.disabled = false;
+                            }, 1500);
+                        } else {
+                            btn.disabled = false;
+                        }
                     }
                     break;
             }

@@ -155,14 +155,6 @@
           "description": "Deprecated: use team.strictPrompts instead. Kept for backward compatibility.",
           "deprecationMessage": "Use switchboard.team.strictPrompts instead."
         },
-        "switchboard.cliAgents": {
-          "type": "object",
-          "default": {},
-          "description": "CLI agent role-to-command mappings. Keys are role names (lead, coder, analyst, reviewer), values are command paths.",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
         "switchboard.plans.defaultOpenMode": {
           "type": "string",
           "enum": [

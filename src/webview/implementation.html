@@ -1193,7 +1193,7 @@
                 <div class="startup-row"><label>Lead Coder</label><input type="text" id="onboard-cli-lead"
                         placeholder="e.g. copilot --allow-all-tools"></div>
                 <div class="startup-row"><label>Coder</label><input type="text" id="onboard-cli-coder"
-                        placeholder="e.g. codex --full-auto"></div>
+                        placeholder="e.g. gemini --approval-mode auto_edit"></div>
                 <div class="startup-row"><label>Reviewer</label><input type="text" id="onboard-cli-reviewer"
                         placeholder="e.g. gemini --approval-mode auto_edit"></div>
                 <div class="startup-row"><label>Analyst</label><input type="text" id="onboard-cli-analyst"
@@ -1298,13 +1298,12 @@
             </div>
             <div class="startup-fields" id="startup-fields">
                 <div class="flex gap-2">
-                    <button id="btn-initialize" class="secondary-btn w-full">INIT PROTOCOLS</button>
-                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
-                </div>
-                <div class="startup-row"><label>Lead Coder</label><input type="text" data-role="lead"
+                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>       
+                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>      
+                </div>                <div class="startup-row"><label>Lead Coder</label><input type="text" data-role="lead"
                         placeholder="e.g. copilot --allow-all-tools"></div>
                 <div class="startup-row"><label>Coder</label><input type="text" data-role="coder"
-                        placeholder="e.g. codex --full-auto"></div>
+                        placeholder="e.g. gemini --approval-mode auto_edit"></div>
                 <div class="startup-row"><label>Reviewer</label><input type="text" data-role="reviewer"
                         placeholder="e.g. gemini --approval-mode auto_edit"></div>
                 <div class="startup-row"><label>Planner</label><input type="text" data-role="planner"
@@ -1319,8 +1318,7 @@
                     style="margin-top:4px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 250%, transparent);">SAVE
                     STARTUP
                     COMMANDS</button>
-                <button id="btn-archive-all-completed" class="secondary-btn w-full" style="margin-top:4px;">🗄 Archive
-                    All Completed</button>
+
             </div>
         </div>
 
@@ -1391,7 +1389,7 @@
         const mcpText = document.getElementById('mcp-text');
         const copyPlanLinkBtn = document.getElementById('btn-copy-plan-link');
         const mergeAllPlansBtn = document.getElementById('btn-merge-all-plans');
-        const archiveAllCompletedBtn = document.getElementById('btn-archive-all-completed');
+
         const initiatePlanModal = document.getElementById('initiate-plan-modal');
         const initiatePlanTitleInput = document.getElementById('init-plan-title');
         const initiatePlanIdeaInput = document.getElementById('init-plan-idea');
@@ -1668,12 +1666,6 @@
         if (mergeAllPlansBtn) {
             mergeAllPlansBtn.addEventListener('click', () => {
                 vscode.postMessage({ type: 'mergeAllPlans' });
-            });
-        }
-
-        if (archiveAllCompletedBtn) {
-            archiveAllCompletedBtn.addEventListener('click', () => {
-                vscode.postMessage({ type: 'archiveAllCompleted' });
             });
         }
 
@@ -2103,10 +2095,6 @@
         function renderRunSheetDropdown(sheets) {
             const lastSelected = runSheetSelect.value;
             runSheetSelect.innerHTML = '';
-            if (archiveAllCompletedBtn) {
-                archiveAllCompletedBtn.disabled = false;
-                archiveAllCompletedBtn.title = '';
-            }
 
             if (!sheets || sheets.length === 0) {
                 const opt = document.createElement('option');
@@ -3292,7 +3280,10 @@
                 reviewer: document.getElementById('onboard-cli-reviewer').value,
                 analyst: document.getElementById('onboard-cli-analyst').value
             };
-            vscode.postMessage({ type: 'saveCliAgents', agents });
+            vscode.postMessage({ type: 'saveStartupCommands', commands: agents, accurateCodingEnabled: false });
+            setTimeout(() => {
+                vscode.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
+            }, 100);
         });
 
         document.getElementById('btn-onboard-skip').addEventListener('click', () => {

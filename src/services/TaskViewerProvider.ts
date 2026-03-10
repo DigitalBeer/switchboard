@@ -659,7 +659,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         this._refreshRunSheets(),
                         this.housekeepStaleTerminals(),
                         this._refreshJulesStatus(),
-                        this._postRecentActivity(50)
+                        this._postRecentActivity(50),
+                        this._sweepOrphanedReviews()
                     ]);
                     await this._tryRestoreOrchestrator();
                     this._postOrchestratorState();
@@ -708,11 +709,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'initializeProtocols':
                         await this._handleInitializeProtocols();
-                        break;
-                    case 'saveCliAgents':
-                        if (data.agents && typeof data.agents === 'object') {
-                            await this._handleSaveCliAgents(data.agents);
-                        }
                         break;
                     case 'finishOnboarding':
                         await this._handleFinishOnboarding();
@@ -863,9 +859,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'mergeAllPlans':
                         await this._handleMergeAllPlans();
-                        break;
-                    case 'archiveAllCompleted':
-                        await this._handleArchiveAllCompleted();
                         break;
                     case 'getRecoverablePlans': {
                         const plans = this._getRecoverablePlans();
@@ -2683,9 +2676,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _handleCopyPlanLink(sessionId: string) {
+    /** Called by the Kanban board to copy a plan link to clipboard. Returns true on success. */
+    public async handleKanbanCopyPlan(sessionId: string): Promise<boolean> {
+        return await this._handleCopyPlanLink(sessionId);
+    }
+
+    private async _handleCopyPlanLink(sessionId: string): Promise<boolean> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
+        if (!workspaceFolders) return false;
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
 
@@ -2714,10 +2712,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const markdownLink = `[${topic}](${planUri})`;
             await vscode.env.clipboard.writeText(markdownLink);
             this._view?.webview.postMessage({ type: 'copyPlanLinkResult', success: true });
+            return true;
         } catch (e: any) {
             const errorMessage = e?.message || String(e);
             this._view?.webview.postMessage({ type: 'copyPlanLinkResult', success: false, error: errorMessage });
             vscode.window.showErrorMessage(`Failed to copy plan link: ${errorMessage}`);
+            return false;
         }
     }
 
@@ -3124,112 +3124,46 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return await log.archiveFiles(specs);
     }
 
-    private async _handleArchiveAllCompleted() {
+    /**
+     * Sweep orphaned review files that cannot be attributed to any session.
+     * Files older than 10 minutes are moved to .switchboard/archive/reviews/.
+     */
+    private async _sweepOrphanedReviews() {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return;
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const log = this._getSessionLog(workspaceRoot);
 
-        const completedSheets = await log.getCompletedRunSheets();
-        if (completedSheets.length === 0) {
-            vscode.window.showInformationMessage('No completed sessions to archive.');
-            return;
+        const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
+        const archiveReviewsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'reviews');
+        const unscopedReviews = await this._findUnscopedReviewFiles(reviewsDir);
+        if (unscopedReviews.length === 0) return;
+
+        const safeUnscoped: ArchiveSpec[] = [];
+        const now = Date.now();
+        for (const reviewPath of unscopedReviews) {
+            try {
+                const stat = await fs.promises.stat(reviewPath);
+                const ageMs = now - stat.mtimeMs;
+                if (ageMs < 10 * 60 * 1000) continue;
+            } catch {
+                continue;
+            }
+            safeUnscoped.push({
+                sourcePath: reviewPath,
+                destPath: path.join(archiveReviewsDir, path.basename(reviewPath))
+            });
         }
 
-        const answer = await vscode.window.showWarningMessage(
-            `Archive ${completedSheets.length} completed session${completedSheets.length > 1 ? 's' : ''}? This moves files to .switchboard/archive/ and cannot be undone.`,
-            { modal: true },
-            'Archive',
-            'Cancel'
-        );
-        if (answer !== 'Archive') return;
-
-        await vscode.window.withProgress(
-            { location: vscode.ProgressLocation.Notification, title: 'Archiving completed sessions...' },
-            async (progress) => {
-                const allResults: ArchiveResult[] = [];
-                for (let i = 0; i < completedSheets.length; i++) {
-                    const sheet = completedSheets[i];
-                    progress.report({ message: `${i + 1}/${completedSheets.length}`, increment: (100 / completedSheets.length) });
-
-                    // Register in archivedBrainPaths before archiving session files
-                    if (sheet.brainSourcePath) {
-                        // brainSourcePath may already point to the completed/ subfolder if the plan was
-                        // previously completed via _handleCompletePlan (which patches brainSourcePath before
-                        // saving the runsheet). Recover the original path so the stablePath hash matches
-                        // what _mirrorBrainPlan would compute from the original brain location.
-                        let originalBrainPath = sheet.brainSourcePath;
-                        if (path.basename(path.dirname(originalBrainPath)) === 'completed') {
-                            originalBrainPath = path.join(
-                                path.dirname(path.dirname(originalBrainPath)),
-                                path.basename(originalBrainPath)
-                            );
-                        }
-                        const stablePath = this._getStablePath(this._getBaseBrainPath(originalBrainPath));
-                        const archived = this._context.workspaceState.get<string[]>('switchboard.archivedBrainPaths', []);
-                        if (!archived.includes(stablePath)) {
-                            await this._context.workspaceState.update(
-                                'switchboard.archivedBrainPaths', [...archived, stablePath]
-                            );
-                        }
-                        const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                        await this._addTombstone(workspaceRoot, pathHash);
-                        // Update plan registry status
-                        await this._updatePlanRegistryStatus(workspaceRoot, pathHash, 'archived');
-                    } else if (sheet.sessionId) {
-                        // Local plan: use sessionId as planId
-                        await this._updatePlanRegistryStatus(workspaceRoot, sheet.sessionId, 'archived');
-                    }
-
-                    const results = await this._archiveCompletedSession(sheet.sessionId, log, workspaceRoot);
-                    allResults.push(...results);
-                }
-
-                // Archive generic/unscoped review artifacts that cannot be attributed to a specific session.
-                // Safety: if there are active sessions, skip files touched in the last 10 minutes.
-                const activeSheets = (await log.getRunSheets()).filter((s: any) => s?.completed !== true);
-                const hasActiveSessions = activeSheets.length > 0;
-                const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
-                const archiveReviewsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'reviews');
-                const unscopedReviews = await this._findUnscopedReviewFiles(reviewsDir);
-                const safeUnscoped: ArchiveSpec[] = [];
-                const now = Date.now();
-                for (const reviewPath of unscopedReviews) {
-                    if (hasActiveSessions) {
-                        try {
-                            const stat = await fs.promises.stat(reviewPath);
-                            const ageMs = now - stat.mtimeMs;
-                            if (ageMs < 10 * 60 * 1000) continue;
-                        } catch {
-                            continue;
-                        }
-                    }
-                    safeUnscoped.push({
-                        sourcePath: reviewPath,
-                        destPath: path.join(archiveReviewsDir, path.basename(reviewPath))
-                    });
-                }
-                if (safeUnscoped.length > 0) {
-                    const genericResults = await log.archiveFiles(safeUnscoped);
-                    allResults.push(...genericResults);
-                }
-
-                const failures = allResults.filter(r => !r.success);
-                if (failures.length > 0) {
-                    console.warn('[TaskViewerProvider] Archive warnings:', failures);
-                    vscode.window.showWarningMessage(
-                        `Archived ${completedSheets.length} session${completedSheets.length > 1 ? 's' : ''} with ${failures.length} warning${failures.length > 1 ? 's' : ''}. See Output > Switchboard.`
-                    );
-                } else {
-                    vscode.window.showInformationMessage(
-                        `Archived ${completedSheets.length} session${completedSheets.length > 1 ? 's' : ''} successfully.`
-                    );
-                }
+        if (safeUnscoped.length > 0) {
+            const results = await log.archiveFiles(safeUnscoped);
+            const failures = results.filter((r: ArchiveResult) => !r.success);
+            if (failures.length > 0) {
+                console.warn('[TaskViewerProvider] Orphaned review sweep warnings:', failures);
+            } else {
+                console.log(`[TaskViewerProvider] Swept ${safeUnscoped.length} orphaned review file(s) to archive.`);
             }
-        );
-
-        await this._reconcileAntigravityPlanMirrors(workspaceRoot);
-        await this._refreshRunSheets();
+        }
     }
 
     private async _handleDeletePlan(sessionId: string) {
@@ -4306,11 +4240,17 @@ Use the explicit two-stage review process:
   Stage 1 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
   Stage 2 — Write a balanced synthesis to ${balancedReviewPath}
 
-Delivery requirement (chat-first UX):
+Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat.
-2. Post Stage 2 (Balanced) synthesis directly in chat.
-3. Only then provide the final enhancement assessment in chat.
+2. Immediately after, post Stage 2 (Balanced) synthesis directly in chat.
+3. Update the original plan and provide the final enhancement assessment in chat.
 4. Keep file outputs as archival artifacts, not the primary user-facing output.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
+
+At the very end of your response, explicitly recommend which agent should execute this plan:
+- If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
+- If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
 IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the enhancement findings.
 
@@ -4322,11 +4262,17 @@ You may add clarifying implementation detail only if strictly implied by existin
 
 ${planAnchor}
 
-Light mode rules:
+Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Do NOT write plan/review artifact files for this pass.
 2. Stage 1 (Grumpy): post adversarial critique directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-3. Stage 2 (Balanced): post synthesis directly in chat.
-4. Then update the original plan with the enhancement findings and provide the final assessment in chat.
+3. Stage 2 (Balanced): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
+4. Stage 3 (Action): Update the original plan with the enhancement findings and provide the final assessment in chat.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
+
+At the very end of your response, explicitly recommend which agent should execute this plan:
+- If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
+- If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
 ${focusDirective}`;
                 }
@@ -4342,11 +4288,17 @@ Use the explicit two-stage review process:
   Stage 1 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
   Stage 2 — Write a balanced synthesis to ${balancedReviewPath}
 
-Delivery requirement (chat-first UX):
+Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat.
-2. Post Stage 2 (Balanced) synthesis directly in chat.
-3. Only then provide the final plan assessment in chat.
+2. Immediately after, post Stage 2 (Balanced) synthesis directly in chat.
+3. Update the original plan and provide the final plan assessment in chat.
 4. Keep file outputs as archival artifacts, not the primary user-facing output.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
+
+At the very end of your response, explicitly recommend which agent should execute this plan:
+- If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
+- If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
 IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \`[ ]\` to \`[x]\`).
 
@@ -4356,11 +4308,17 @@ ${focusDirective}`;
 
 ${planAnchor}
 
-Light mode rules:
+Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Do NOT write plan/review artifact files for this pass.
 2. Stage 1 (Grumpy): post adversarial critique directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-3. Stage 2 (Balanced): post synthesis directly in chat.
-4. Then update the original plan with review feedback and completed items, and provide the final assessment in chat.
+3. Stage 2 (Balanced): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
+4. Stage 3 (Action): Update the original plan with review feedback and completed items, and provide the final assessment in chat.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
+
+At the very end of your response, explicitly recommend which agent should execute this plan:
+- If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
+- If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
 ${focusDirective}`;
                 }
@@ -4393,11 +4351,13 @@ Required outputs:
 3. Run verification checks (typecheck/tests as applicable) and include results in the balanced review.
 4. Update the original plan file with what was fixed, files changed, validation results, and any remaining risks.
 
-Delivery requirement (chat-first UX):
+Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.
-2. Post Stage 2 (Balanced) synthesis directly in chat before final verdict.
-3. Then provide final assessment.
+2. Immediately after, post Stage 2 (Balanced) synthesis directly in chat before final verdict.
+3. Execute the necessary code fixes and plan update, then provide final assessment.
 4. Keep file outputs as archival artifacts, not the primary user-facing output.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, the code fixes, and the File Update all in one continuous response.
 
 Strict format for balanced review:
 - Implemented Well
@@ -4430,11 +4390,13 @@ Required outputs:
 3. Run focused verification checks (typecheck/tests as applicable) and include results in the balanced review.
 4. Update the original plan file with fixed items, files changed, validation results, and remaining risks.
 
-Delivery requirement (chat-first UX):
+Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.
-2. Post Stage 2 (Balanced) synthesis directly in chat before final verdict.
-3. Then provide final assessment.
+2. Immediately after, post Stage 2 (Balanced) synthesis directly in chat before final verdict.
+3. Execute the necessary code fixes and plan update, then provide final assessment.
 4. Keep file outputs as archival artifacts, not the primary user-facing output.
+
+CRITICAL: Do not stop after Stage 1. You must complete the Grumpy review, the Balanced synthesis, the code fixes, and the File Update all in one continuous response.
 
 Suggested format for balanced review:
 - Implemented Well
@@ -4928,31 +4890,6 @@ ${focusDirective}`);
             this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'initialized' });
         } catch (e) {
             console.error('[TaskViewerProvider] initializeProtocols failed:', e);
-            this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'error', message: String(e) });
-        }
-    }
-
-    /**
-     * Sidebar onboarding: batch-save CLI agent commands from the onboarding form.
-     */
-    private async _handleSaveCliAgents(agents: Record<string, string>) {
-        try {
-            const config = vscode.workspace.getConfiguration('switchboard');
-            const sanitized: Record<string, string> = {};
-            const basicCommandPattern = /^[A-Za-z0-9._:/\\\- ]+$/;
-            for (const [role, cmd] of Object.entries(agents)) {
-                const trimmed = (cmd || '').trim();
-                if (!trimmed) continue;
-                if (!basicCommandPattern.test(trimmed) || /(^|[\\/])\.\.([\\/]|$)/.test(trimmed) || /[\r\n\t]/.test(trimmed)) {
-                    this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'error', message: `Invalid command for ${role}` });
-                    return;
-                }
-                sanitized[role] = trimmed;
-            }
-            await config.update('cliAgents', sanitized, vscode.ConfigurationTarget.Workspace);
-            this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
-        } catch (e) {
-            console.error('[TaskViewerProvider] saveCliAgents failed:', e);
             this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'error', message: String(e) });
         }
     }
@@ -6100,95 +6037,74 @@ ${focusDirective}`);
             // 3. Write timestamped how_to_plan.md
             const howToPlanPath = path.join(airlockDir, `${timestamp}-how_to_plan.md`);
             await fs.promises.writeFile(howToPlanPath, [
-                '# How to Plan',
+                '# How to Plan: The Switchboard Standard',
                 '',
-                'Follow these five steps strictly and in order. Each step builds on the last.',
+                '**🚨 STRICT DIRECTIVE FOR AI AGENTS 🚨**',
+                'Do NOT skip straight to writing code or outputting a generic implementation plan. You must perform internal cognitive reasoning first. To guarantee this, you must output your plan EXACTLY matching the "Plan Template" at the bottom of this document. The template requires you to simulate an internal adversarial review before you write the proposed changes.',
                 '',
-                '## 1. Context Loading',
-                `Open \`${timestamp}-manifest.md\` in this folder to get the complete workspace file listing and understand the project structure.`,
-                `Then open the relevant segmented bundle files (e.g., \`${timestamp}-bundle-part-1.docx\`) to read file contents.`,
-                'Use these as the sole source of truth for the current codebase state. Do not rely on prior knowledge.',
+                'Follow these steps sequentially to formulate your plan:',
                 '',
-                '## 2. Strategy Formulation',
-                'Identify the high-level problem space and define the proposed approach. Cover:',
-                '- What the core problem or goal is',
-                '- Which modules or layers are affected',
-                '- The sequence of changes required at a high level',
-                '- Any assumptions being made',
+                '## Step 1: Understand the Goal',
+                'Identify the core problem or feature. Clarify what success looks like. If the user\'s request is ambiguous, stop and ask clarifying questions before generating a plan.',
                 '',
-                '## 3. Structural Enhancement (`/enhance`)',
-                'Audit the strategy for structural completeness:',
-                '- Identify missing pieces, implicit dependencies, or assumptions that need hardening',
-                '- Flag any cross-module impact or architectural concerns',
-                '- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks',
-                '- Expand the plan with concrete file paths, function signatures, and data flow',
+                '## Step 2: Complexity & Edge-Case Audit',
+                'Before writing any implementation steps, audit the system:',
+                '*   **Complexity:** Rate the routine vs. complex/risky parts of the request.',
+                '*   **Edge Cases:** Identify race conditions, security flaws, backward compatibility issues, and side effects.',
                 '',
-                '## 4. Adversarial Review (`/challenge`)',
-                'Stress-test the plan using two personas:',
-                '- **Grumpy**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.',
-                '- **Balanced**: Synthesize the critique. Confirm which concerns are real blockers vs. noise. Finalize the plan.',
+                '## Step 3: Internal Adversarial Review',
+                'You must internally simulate two distinct personas to stress-test your assumptions before writing the implementation steps:',
+                '1.  **Grumpy Principal Engineer:** Aggressively critique the assumptions, edge cases, and missing error handling in your initial thought process. Assume the plan will break production.',
+                '2.  **Balanced Lead Developer:** Synthesize that critique. Acknowledge valid concerns and adjust the architecture/approach to mitigate the risks raised by Grumpy.',
                 '',
-                '## 5. Exhaustive Implementation Spec',
-                    'Produce a complete, copy-paste-ready implementation spec. You must create plans in raw markdown formatting in a single block. Use your full context window. Include:',
-                    '- Exact search/replace blocks or unified diffs for every file change',
-                    '- New file contents in full where applicable',
-                    '- Inline comments explaining non-obvious logic',
-                    '- A short verification checklist (manual steps to confirm the change works)',
-                    '',
-                    '---',
-                    '',
-                    '## Plan Template',
-                    '',
-                    'Use this template when producing the plan in Step 5. Fill in every section — do not omit or abbreviate.',
-                    '',
-                    '```markdown',
-                    '# [Highly Descriptive Title: What Is Being Changed and Why]',
-                    '',
-                    '## Goal',
-                    '',
-                    '[One to two sentences describing the desired outcome and why it matters to the user or system.]',
-                    '',
-                    '## User Review Required',
-                    '',
-                    '> [!NOTE]',
-                    '> [State any assumptions or decisions that need user confirmation before implementation begins.]',
-                    '',
-                    '> [!WARNING]',
-                    '> [Call out any irreversible actions, data migrations, schema changes, or breaking API changes.]',
-                    '',
-                    '## Complexity Audit',
-                    '',
-                    '### Band A — Routine',
-                    '- [List straightforward, low-risk, mechanical changes here (e.g., rename, add field, update copy).]',
-                    '',
-                    '### Band B — Complex / Risky',
-                    '- [List changes that involve architectural decisions, cross-module coupling, concurrency, or significant risk.]',
-                    '',
-                    '## Edge-Case Audit',
-                    '',
-                    '- **Race Conditions**: [Describe any concurrency or ordering concerns (e.g., async writes, shared state).]',
-                    '- **Security**: [Describe any auth gaps, injection vectors, or data exposure risks.]',
-                    '- **Side Effects**: [Describe unintended state mutations, file system changes, or downstream service calls.]',
-                    '',
-                    '## Proposed Changes',
-                    '',
-                    '### [Component Name]',
-                    '',
-                    '#### [MODIFY] [filename.ts](path/to/filename.ts)',
-                    '- [Describe each change with specifics: which function, what logic changes, new behavior vs. old.]',
-                    '',
-                    '#### [ADD] [filename.ts](path/to/filename.ts)',
-                    '- [Describe the new file, its exported interface, and its purpose within the system.]',
-                    '',
-                    '## Verification Plan',
-                    '',
-                    '### Automated Tests',
-                    '- [List test files or suites to add/update and what invariants they must assert.]',
-                    '',
-                    '### Manual Verification',
-                    '1. [Step-by-step instructions to confirm the feature works end-to-end in the running application.]',
-                    '```',
-                ].join('\n'), 'utf8');
+                '## Step 4: The Implementation Spec (Plan Template)',
+                'Output your final plan using the exact Markdown structure below. **You must include every section.**',
+                '',
+                '---',
+                '',
+                '# [Plan Title]',
+                '',
+                '## Goal',
+                '[1-2 sentences summarizing the objective]',
+                '',
+                '## User Review Required',
+                '> [!NOTE]',
+                '> [Any user-facing warnings, breaking changes, or manual steps required]',
+                '',
+                '## Complexity Audit',
+                '### Band A — Routine',
+                '- [List routine, safe changes]',
+                '### Band B — Complex / Risky',
+                '- [List complex logic, state mutations, or risky changes]',
+                '',
+                '## Edge-Case Audit',
+                '- **Race Conditions:** [Analysis]',
+                '- **Security:** [Analysis]',
+                '- **Side Effects:** [Analysis]',
+                '',
+                '## Adversarial Synthesis',
+                '### Grumpy Critique',
+                '[Simulate the Grumpy Engineer: Attack the plan\'s weaknesses, missing error handling, and naive assumptions.]',
+                '',
+                '### Balanced Response',
+                '[Simulate the Lead Developer: Address Grumpy\'s concerns and explain how the implementation steps below have been adjusted to prevent them.]',
+                '',
+                '## Proposed Changes',
+                '### [Target File or Component 1]',
+                '#### [MODIFY / CREATE / DELETE] `path/to/file.ext`',
+                '- [Explicit, step-by-step instructions on what to change]',
+                '- [Include how to handle the edge cases discovered above]',
+                '',
+                '### [Target File or Component 2]',
+                '...',
+                '',
+                '## Verification Plan',
+                '### Automated Tests',
+                '- [What existing or new tests need to be run/written?]',
+                '### Manual Testing',
+                '1. [Step 1 of manual verification]',
+                '2. [Step 2...]',
+            ].join('\n'), 'utf8');
 
             this._view?.webview.postMessage({ type: 'airlock_exportComplete' });
             vscode.window.showInformationMessage('Airlock: Bundle exported → .switchboard/airlock/');
