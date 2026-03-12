@@ -411,9 +411,24 @@ export class KanbanProvider implements vscode.Disposable {
                 ? afterBandB.slice(0, nextSection.index).trim()
                 : afterBandB.trim();
 
-            // Check if Band B content is effectively empty
-            const isEmpty = /^[-:*\s]*(none\.?|n\/a|—|-)\s*$/im.test(bandBContent)
-                || bandBContent.length === 0;
+            // Treat Band B as empty only when the entire section collapses to a known empty marker.
+            const normalizedBandB = bandBContent
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(line => line.length > 0)
+                .map(line => line.replace(/^[-*+]\s*/, '').trim())
+                .join(' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+
+            const isEmpty = normalizedBandB.length === 0
+                || normalizedBandB === 'none'
+                || normalizedBandB === 'none.'
+                || normalizedBandB === 'n/a'
+                || normalizedBandB === 'na'
+                || normalizedBandB === '—'
+                || normalizedBandB === '-';
 
             return isEmpty ? 'Low' : 'High';
         } catch {

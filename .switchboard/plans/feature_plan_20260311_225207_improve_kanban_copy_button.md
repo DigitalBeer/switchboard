@@ -182,3 +182,38 @@ Grumpy is right that taking away the raw link is annoying for documentation purp
 4. Move a card to **CODED**. Verify the button label changes to "Copy review prompt". Click it and paste. Verify it includes "The implementation for the following plan is complete. Please review the code...".
 5. Move a card to **CODE REVIEWED**. Verify the button label changes to "Copy plan link". Click it and paste. Verify it outputs *only* the `[Plan Title](file://...)` markdown link without any conversational wrapper.
 6. Open the standard Switchboard Sidebar (not the Kanban view). Select a plan from the dropdown and click the primary **COPY** button. Verify it outputs *only* the `[Plan Title](file://...)` markdown link without any conversational wrapper.
+
+## Reviewer-Executor Pass (2026-03-12)
+
+### Findings Summary
+- CRITICAL: None.
+- MAJOR: The contextual copy plumbing was implemented, but the Kanban button labels were still generic (`Copy Prompt`) instead of the explicit stage-aware labels required by the plan. That meant the UI still failed the plan’s main mitigation for clipboard surprise.
+- NIT: The implementation uses DOM traversal via `.closest('.kanban-column')`, which is consistent with the approved plan and not a defect.
+
+### Plan Requirement Check
+- [x] The Kanban webview passes the current column through the copy IPC message.
+- [x] `KanbanProvider.ts` forwards the optional `column` argument to `switchboard.copyPlanFromKanban`.
+- [x] `extension.ts` accepts the optional `column` parameter and passes it to `TaskViewerProvider.handleKanbanCopyPlan`.
+- [x] `TaskViewerProvider.ts` produces stage-aware prompts while preserving raw-link fallback for unrecognized columns and the sidebar path.
+- [x] The Kanban copy button text now clearly states what will be copied for each stage.
+
+### Fixes Applied
+- Updated the Kanban card button labels to match the approved wording:
+  - `CREATED`: `Copy planning prompt`
+  - `PLAN REVIEWED`: `Copy execution prompt`
+  - `CODED`: `Copy review prompt`
+  - `CODE REVIEWED` / fallback: `Copy plan link`
+- Recompiled the extension bundle so `dist/webview/kanban.html` matches the reviewed source.
+
+### Files Changed in This Reviewer Pass
+- `C:\Users\patvu\Documents\GitHub\switchboard\src\webview\kanban.html`
+- `C:\Users\patvu\Documents\GitHub\switchboard\dist\webview\kanban.html`
+- `C:\Users\patvu\Documents\GitHub\switchboard\.switchboard\plans\feature_plan_20260311_225207_improve_kanban_copy_button.md`
+
+### Validation Results
+- `npx tsc -p . --noEmit`: PASS (exit code `0`).
+- `npm run compile`: PASS (webpack completed successfully).
+
+### Remaining Risks
+- Manual clipboard verification is still required to confirm the prompt text and labels stay aligned across all four Kanban columns in the live panel.
+- The sidebar raw-link copy behavior was preserved by code path inspection, but not revalidated manually in this reviewer pass.
