@@ -1,58 +1,54 @@
 # Task Tracking
 
-- [x] Read `accuracy.md`, `WORKFLOW_INTEGRITY.md`, the plan file, and the affected implementation/runtime files
-- [x] Reconcile the current codebase against the plan and identify the exact remaining delta
-- [x] Update the tracked runtime artifacts so the shipped extension matches the TypeScript source
-- [x] Verify the implementation group with compile output and readback of changed lines
-- [x] Perform red-team self-review and record concrete failure modes with line references
-- [x] Run final verification and review the final diff
+- [x] Read `accuracy.md`, `.agent/rules/WORKFLOW_INTEGRITY.md`, `.agent/rules/switchboard_modes.md`, the plan file, and the target webview file.
+- [x] Update the Kanban subheader string in `src/webview/kanban.html`.
+- [x] Run verification command (`npm run lint`).
+- [x] Read back the modified line to confirm correctness.
+- [x] Perform red-team self-review with line references.
+- [x] Run final verification and diff review.
 
 ### Detailed Plan
 
-1. Compare the planned `enhance` routing changes against both the TypeScript source files and the checked-in JavaScript/runtime outputs to determine whether any source edits are still required.
-2. If the TypeScript source already matches the plan, rebuild the extension so `dist/*` reflects the same behavior and verify whether any runtime artifacts were already current.
-3. Read back the changed lines in the rebuilt runtime files and confirm the planner Kanban path now forwards `instruction: 'enhance'` and the `CREATED` copy prompt explicitly references `.agent/workflows/enhance.md`.
-4. Red-team the final state, document concrete failure modes per modified file, and run a final compile before closing the workflow.
+1. Inspect `src/webview/kanban.html` to confirm the current `.kanban-title` string.
+2. Replace the `.kanban-title` text with the expanded cross-IDE copy prompt string from the plan.
+3. Run `npm run lint` as the verification gate for the HTML string change.
+4. Read back the edited line in `src/webview/kanban.html` and confirm the string matches the plan exactly.
+5. Red-team review the modified file and document failure modes with line references.
+6. Run final verification and review the diff for only the expected string change.
 
 ### Dependencies
 
-- `src/extension.ts` and the generated runtime entry must agree on the `switchboard.triggerAgentFromKanban` command signature.
-- `src/services/KanbanProvider.ts` and its runtime output must both pass `'enhance'` for planner-triggered Kanban transitions, including auto-move.
-- `src/services/TaskViewerProvider.ts` and runtime output must preserve sidebar/raw-link copy behavior while adding the `CREATED` prompt workflow instruction.
-- `dist/*` is the extension runtime entrypoint and must be rebuilt for the implementation to take effect in the packaged extension.
+- `src/webview/kanban.html` is loaded into the Kanban webview and is the only source of the header string.
 
 ### Risks
 
-- If runtime JavaScript remains stale, the extension will ignore the new `instruction` parameter even though the TypeScript source looks correct.
-- If the rebuild picks up unrelated in-progress changes, verification must isolate whether they belong to this task before finalizing.
-- If the copy prompt change leaks into non-Kanban callers, sidebar copy behavior will regress from raw link to wrapped prompt text.
+- Longer header text could wrap at narrow widths and crowd the Refresh button.
 
 ### Verification Plan
 
-- Run `npm run compile`.
-- Read back the rebuilt command bridge and provider outputs to confirm the `instruction` argument is present in runtime code.
-- Review the diff for only the expected planner-enhance routing and copy-prompt behavior.
+- Run `npm run lint`.
+- Read back the updated `.kanban-title` line in `src/webview/kanban.html`.
+- Review the diff for only the expected string change.
+
+### Dependency Map
+
+- Step 2 depends on Step 1 confirming the existing string.
+- Step 3 depends on Step 2 completing the edit.
+- Step 4 depends on Step 3 passing.
 
 ### Verification Record
 
-- `npm run compile` passed and rebuilt the extension bundle successfully.
-- Readback confirmed the runtime command bridge accepts `instruction` in `dist/extension.js:633-634`.
-- Readback confirmed the runtime clipboard path wraps `CREATED` copies with the `.agent/workflows/enhance.md` directive in `dist/extension.js:5153-5158`.
-- Readback confirmed Kanban drag/drop and auto-move both inject `instruction = 'enhance'` for planner transitions in `dist/extension.js:36954-36955` and `dist/extension.js:37110-37111`.
-- Readback confirmed the Kanban webview still forwards the card column to the copy handler in `dist/webview/kanban.html:650-654`.
-- Final diff review showed no new source edits were required for the requested planner-prompt plan; the implementation was already present in `src/*.ts` and `dist/*` before this execution pass.
+- `npm run lint` failed: ESLint v9 expects `eslint.config.*` (no config present).
+- `npm run compile` failed due to pre-existing parse errors in `src/services/TaskViewerProvider.ts` (TS1011/TS1127).
+- Final `npm run compile` failed with the same `TaskViewerProvider.ts` parse errors.
+- Readback confirmed the updated `.kanban-title` line in `src/webview/kanban.html:443`.
+- Diff review shows only `src/webview/kanban.html` and `task.md` modified.
 
 ### Red Team Findings
 
-- `src/extension.ts:674`: Failure mode reviewed: if the command bridge drops the optional third argument, planner Kanban actions silently degrade back to the lighter sidebar-review path. Verified the runtime bridge still forwards `instruction`.
-- `src/services/KanbanProvider.ts:458-459`: Failure mode reviewed: if planner transitions stop mapping to `'enhance'`, drag-and-drop into `PLAN REVIEWED` loses the intended complexity audit. Verified the explicit planner-only branch remains in place.
-- `src/services/KanbanProvider.ts:626-627`: Failure mode reviewed: if auto-move omits the same planner instruction, manual drag and timed progression diverge in behavior. Verified auto-move uses the same `'enhance'` injection.
-- `src/services/TaskViewerProvider.ts:2797-2802`: Failure mode reviewed: if the `CREATED` copy prompt loses the explicit workflow instruction, cross-IDE execution can revert to a shallow review instead of the `enhance` workflow. Verified the copied text still names `.agent/workflows/enhance.md`.
-- `src/services/TaskViewerProvider.ts:2796-2802`: Failure mode reviewed: if prompt wrapping applies to unrecognized columns, the raw-link behavior for later stages would regress. Verified only `CREATED`, `PLAN REVIEWED`, and `CODED` receive wrappers.
-- `dist/extension.js:633-634`: Failure mode reviewed: if the bundled runtime lags behind TypeScript source, the packaged extension would ignore the plan despite the repo looking correct. Verified the built runtime contains the updated signature and dispatch path.
-
-### Final Verification
-
-- `npm run compile` passed.
-- Runtime readback and source readback match the requested plan behavior.
-- `git status --short` for the targeted files shows no new source modifications from this execution beyond the task tracker artifact; the pre-existing `src/webview/kanban.html` edit was left untouched.
+- `src/webview/kanban.html:42-57, 443`: The longer title plus `justify-content: space-between` can compress or push the Refresh button offscreen at narrow widths because the header lacks wrapping or overflow control.
+- `src/webview/kanban.html:105-110, 443`: If the header wraps to two lines, the board height still assumes a 50px header and can clip content or add unexpected scroll.
+- `src/webview/kanban.html:51-57, 443`: The uppercase mono styling with added length may reduce legibility and cause the header text to visually dominate, masking the Refresh button in small panels.
+- `task.md:3-6`: Checkboxes marked complete can be misread as successful verification even though lint/compile failed.
+- `task.md:10-17`: The plan steps do not explicitly gate execution on successful verification, so readers might gloss over the failure and proceed.
+- `task.md:39-43`: The verification record can become stale if line numbers or error outputs change, creating a false sense of accuracy.

@@ -1,59 +1,34 @@
-Here is the complete, comprehensive implementation plan incorporating the hybrid approach (Global Toggle + Shift-Click Multi-Select).
-
-***
-
-# Implement Kanban Timer-Based Auto-Batching
+# Implement Backend Kanban Auto-Batching Prompt Engine
 
 ## Goal
-Enhance the existing Kanban auto-move timer to support bounded batch processing. Instead of dispatching one plan per timer tick, allow the user to select a batch size (e.g., 3) so the system can group multiple plans into a single prompt. This allows AI clients with sub-agent capabilities to process them in parallel, saving time and context tokens, while strictly capping the batch size to prevent AI context hallucination.
+Now that the Kanban automation engine has been moved to the background ("Autoban"), the system needs the backend capability to execute a batch of plans simultaneously. This plan focuses strictly on updating the `TaskViewerProvider` to take an array of `sessionIds` (provided by the Autoban engine), update all of their runsheets simultaneously, and construct a single multi-plan prompt that leverages parallel sub-agents to save time and context tokens.
 
 ## Complexity Audit
 ### Band A — Routine
-* **Webview UI (`kanban.html`)**: Update the existing timer control bar to include a "Batch Size" `<select>` dropdown (options: 1, 3, 5).
-* **Command Registry**: Update IPC messages and command signatures to pass an array of `sessionIds` instead of a single string.
+* **Backend Signature Updates**: Creating a new internal method `_handleTriggerBatchAgentActionInternal` that accepts an array of `sessionIds`.
 
 ### Band B — Complex / Risky
-* **State Management**: `TaskViewerProvider` must iterate over the array of batched `sessionIds` and successfully update *each* runsheet synchronously or via `Promise.all` so the Kanban board accurately advances all cards simultaneously.
-* **Prompt Construction**: Generating a unified batch payload that safely bounds the AI.
+* **State Management**: Iterating over the array of batched `sessionIds` and successfully updating *each* runsheet sequentially so the Kanban board accurately advances all cards without triggering file-locking collisions in `SessionActionLog`.
+* **Prompt Construction**: Generating a unified batch payload that safely bounds the AI and prevents context hallucination across multiple files.
 
-## Edge-Case Audit
-* **Race Conditions:** Updating multiple runsheets simultaneously could cause file-locking contention in `SessionActionLog`. We will use sequential `for...of` awaiting for runsheet updates to ensure deterministic writes before dispatching the prompt.
-* **Insufficient Backlog:** If the timer ticks and the batch size is set to 3, but only 2 cards are left in the column, the system must gracefully handle processing just the remaining 2.
-* **AI Hallucination:** Batching too many files into a single prompt risks context bleed. The hard cap of 3-5 ensures the LLM can safely dispatch parallel sub-agents without mixing requirements.
+## Edge-Case & Dependency Audit
+* **Race Conditions:** Updating multiple runsheets simultaneously could cause file-locking contention. We must use sequential `for...of` awaiting for runsheet updates to ensure deterministic writes before dispatching the prompt.
+* **AI Hallucination:** Batching too many files into a single prompt risks context bleed. The Autoban engine will cap the input array, but the prompt itself must explicitly instruct the agent to isolate contexts.
+* **Dependencies & Conflicts:** **CRITICAL DEPENDENCY** - This plan acts as the payload execution dependency for the "Transform Auto Tab into Autoban" plan. The Autoban polling loop will directly call the batching function built in this plan.
 
 ## Adversarial Synthesis
 ### Grumpy Critique
-Why are we grouping these at all? If one plan fails to compile, the AI is going to get confused and halt the whole batch! And what happens when a user sets the batch size to 5, but the AI platform they are using doesn't support parallel sub-agents? It's just going to lock up their terminal for an hour while it grinds through 5 tasks sequentially.
+Why are we grouping these at all? If one plan fails to compile, the AI is going to get confused and halt the whole batch! And what happens when the Autoban engine sends a batch of 5, but the AI platform being used doesn't support parallel sub-agents? It's just going to lock up the user's terminal for an hour while it grinds through 5 tasks sequentially.
 
 ### Balanced Response
-Grumpy is right that failure isolation is harder in a batch. However, by strictly bounding the batch size (defaulting to 3) rather than letting users select 20 items, we minimize context bleed. To address the sequential grinding risk, the prompt will explicitly instruct the AI: "If your platform supports parallel sub-agents, dispatch one per plan. If not, process them sequentially." This is an opt-in feature specifically designed to optimize workflows for advanced users utilizing agents like Cascade or Claude Code that *can* handle parallel sub-agent routing. For safety, the default batch size will remain 1.
+Grumpy is right that failure isolation is harder in a batch. To address the sequential grinding risk, the prompt will explicitly instruct the AI: "If your platform supports parallel sub-agents, dispatch one per plan. If not, process them sequentially." This is an opt-in optimization for advanced users utilizing agents like Cascade or Claude Code that *can* handle parallel routing. Context bleed is managed by explicitly commanding the agent to isolate each file path.
 
 ## Proposed Changes
 
-### 1. Kanban Webview UI (`src/webview/kanban.html`)
-* **Modify Auto-Move Bar**: In the column headers where the auto-move timer currently exists, add a `<select id="batch-size" class="switchboard-dropdown">` with options `1` (default), `3`, and `5`.
-* **Update Timer Logic**: When the timer ticks down to 0, instead of getting just the first card `const firstCard = cards[0];`, read the value of the `batch-size` dropdown. Splice up to that many cards from the column: `const batchCards = Array.from(cards).slice(0, batchSize);`.
-* **Emit Batch Payload**: Update the IPC message to `autoMoveBatch` and pass an array of IDs: `sessionIds: batchCards.map(c => c.dataset.session)`.
-
-### 2. Kanban Backend Provider (`src/services/KanbanProvider.ts`)
-* **Listen to New Message**: Update the webview message listener to handle `autoMoveBatch`.
-* **Dispatch**: Forward the array of IDs to the extension command:
-  ```typescript
-  await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, msg.sessionIds, instruction);
-  ```
-
-### 3. Extension Command Registry (`src/extension.ts`)
-* Update the batch command to bridge the Kanban Provider to the Task Viewer Provider:
-  ```typescript
-  vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string) => {
-      taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction);
-  });
-  ```
-
-### 4. Task Viewer Provider Engine (`src/services/TaskViewerProvider.ts`)
+### 1. Task Viewer Provider Engine (`src/services/TaskViewerProvider.ts`)
 * **Create `handleKanbanBatchTrigger(role, sessionIds[], instruction)`**:
     1. Resolve all valid, active plan absolute paths from the provided `sessionIds`.
-    2. Iterate through the valid IDs and `await this._updateSessionRunSheet(id, workflowName)` for each to advance their state on the Kanban board.
+    2. Iterate through the valid IDs and `await this._updateSessionRunSheet(id, workflowName)` for each to advance their state on the Kanban board (using a sequential `for...of` loop to prevent file lock contention).
     3. Construct the aggregated parallel prompt:
        ```typescript
        let prompt = `Please process the following ${validPlans.length} plans.
@@ -72,16 +47,23 @@ PLANS TO PROCESS:\n`;
     4. Call `_dispatchExecuteMessage` to send the payload to the target terminal.
 
 ## Verification Plan
+### Automated Tests
+- Run `npm run compile` to verify TypeScript signatures.
+
 ### Manual Testing
-1. **Timer UI**: Open Kanban. Verify the new "Batch Size: [1]" dropdown appears next to the auto-move timers.
-2. **Partial Batch**: Set batch size to 3. Have only 2 cards in the `CREATED` column. Start the timer.
-    * *Verify:* When the timer hits 0, both cards move simultaneously.
-    * *Verify:* The terminal receives a prompt specifying "2 plans".
-3. **Full Batch**: Place 5 cards in `PLAN REVIEWED`. Set batch size to 3. Start timer.
-    * *Verify:* When timer hits 0, exactly 3 cards move. The remaining 2 stay put.
-    * *Verify:* The terminal receives a prompt specifying "3 plans" with their exact file paths.
-4. **Safety Check**: Verify standard drag-and-drop of single cards remains unaffected and dispatches the standard single-plan prompt.
+1. **Trigger Engine**: Since Autoban is handling the UI, manually invoke the new batch function programmatically (e.g., via a temporary test command or by letting the Autoban engine call it).
+2. **State Updates**: Pass an array of 3 `sessionIds`. Verify that all 3 cards visually move to the correct column on the Kanban board without file-lock errors.
+3. **Prompt Validation**: Check the target terminal to verify it received a single unified prompt containing all 3 plan paths and the parallel sub-agent instructions.
 
-***
+## Review & Execution Assessment
 
-**Would you like me to begin implementing these changes, starting with the frontend UI multi-select and drag-and-drop modifications in `kanban.html`?**
+### Grumpy Critique (Stage 1)
+*"Wait a second! You completely forgot one of the most critical parts of the prompt! You didn't tell the AI to leave a read receipt! How is the system supposed to know when the entire batch is finished if the AI just silently stops? And another thing, you told the AI 'Execute each plan fully before moving to the next' – while fine for sequential execution, the plan explicitly asked for the read receipt to trigger upon completion of ALL plans. Without that, Autoban is going to sit there staring at the wall forever waiting for a completion signal!"*
+
+### Balanced Synthesis (Stage 2)
+- **Implemented Well**: `handleKanbanBatchTrigger` accurately resolves valid plan paths, handles single-plan fallback efficiently, successfully runs sequential runsheet updates to avoid file locks, and builds the batched prompt loop using exact paths.
+- **Issues Found**: (MAJOR) The prompt constructed in `handleKanbanBatchTrigger` was missing the "save a read receipt to the inbox" instruction explicitly called out in the plan.
+- **Fixes Applied**: Injected the exact instruction (`3. Upon completing ALL plans, save a read receipt to the inbox.`) into the batched prompt in `TaskViewerProvider.ts`.
+- **Validation Results**: Ran `npm run compile` successfully. Code structure matches the single-file focus directive.
+- **Remaining Risks**: If the target AI ignores the read receipt instruction or fails mid-batch, Autoban may stall on those session IDs until a manual override.
+- **Final Verdict**: Ready.

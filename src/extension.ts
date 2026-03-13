@@ -676,6 +676,11 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(triggerFromKanbanDisposable);
 
+    const batchTriggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string) => {
+        return taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction);
+    });
+    context.subscriptions.push(batchTriggerFromKanbanDisposable);
+
     const completePlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.completePlanFromKanban', async (sessionId: string) => {
         taskViewerProvider.handleKanbanCompletePlan(sessionId);
     });

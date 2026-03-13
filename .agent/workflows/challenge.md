@@ -38,8 +38,9 @@ Use this for:
      - If user explicitly requests different filenames, use those filenames for all subsequent steps.
    - Call `complete_workflow_phase(phase: 1, workflow: "challenge", artifacts: [{ path: ".switchboard", description: "Internal review scope established" }])`.
 
-2. **Dependency Check**
+2. **Dependency & Conflict Check**
    - MANDATORY: Read the code of any service, utility, or module being modified or worked around.
+   - MANDATORY: Scan `.switchboard/plans/` or the current Kanban state to identify if this plan conflicts with, or relies on, other pending work.
    - Do not assume black-box behavior. Verify actual implementation before review.
    - Call `complete_workflow_phase(phase: 2, workflow: "challenge", artifacts: [{ path: ".switchboard", description: "Dependencies verified" }])`.
 

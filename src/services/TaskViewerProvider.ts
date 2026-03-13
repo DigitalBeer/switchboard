@@ -8,7 +8,6 @@ import * as cp from 'child_process';
 import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog';
 import { KanbanProvider } from './KanbanProvider';
 import { sendRobustText, getAntigravityHash } from './terminalUtils';
-import { InteractiveOrchestrator } from './InteractiveOrchestrator';
 import { PipelineOrchestrator } from './PipelineOrchestrator';
 import { bundleWorkspaceContext } from './ContextBundler';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
@@ -94,11 +93,24 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _mcpToolReachable: boolean = false;
     private _mcpDiagnostic: string = 'MCP: Checking...';
     private _registeredTerminals?: Map<string, vscode.Terminal>;
-    private _orchestrator: InteractiveOrchestrator;
     private _pipeline: PipelineOrchestrator;
-    private _coderReviewerSessions: Map<string, NodeJS.Timeout[]> = new Map();
     private _tombstones: Set<string> = new Set();
     private _tombstonesReady: Promise<void> | null = null;
+    // Autoban continuous background polling engine
+    private _autobanTimers = new Map<string, NodeJS.Timeout>();
+    private _autobanState: {
+        enabled: boolean;
+        batchSize: number;
+        rules: Record<string, { enabled: boolean; intervalMinutes: number }>;
+    } = {
+        enabled: false,
+        batchSize: 3,
+        rules: {
+            'CREATED': { enabled: true, intervalMinutes: 5 },
+            'PLAN REVIEWED': { enabled: true, intervalMinutes: 10 },
+            'CODED': { enabled: true, intervalMinutes: 10 }
+        }
+    };
     // Dedupe key set: tracks recently processed mirror events (sessionId+stablePath) to prevent watcher churn re-processing
     private _recentMirrorProcessed = new Map<string, NodeJS.Timeout>();
     // Persisted workspace blacklist: stable-path keys of brain plans present during setup.
@@ -141,11 +153,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         needsSetup: boolean = false
     ) {
         this._needsSetup = needsSetup;
-        this._orchestrator = new InteractiveOrchestrator(
-            () => this._postOrchestratorState(),
-            (role, sessionId, instruction) => this._handleTriggerAgentAction(role, sessionId, instruction),
-            this._context.globalState
-        );
         this._pipeline = new PipelineOrchestrator(
             () => this._postPipelineState(),
             async (role, sessionId, instruction) => {
@@ -160,6 +167,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             },
             this._context.globalState
         );
+        // Restore persisted Autoban state
+        const savedAutoban = this._context.workspaceState.get<typeof this._autobanState>('autoban.state');
+        if (savedAutoban) {
+            this._autobanState = savedAutoban;
+        }
         this._setupStateWatcher();
         this._setupPlanWatcher();
         this._setupSessionWatcher();
@@ -529,6 +541,121 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         await this._handleTriggerAgentAction(role, sessionId, instruction);
     }
 
+    /**
+     * Called by the Autoban engine to trigger a batched agent action on multiple plan sessions.
+     * Sequentially updates runsheets to avoid file-lock contention, then constructs
+     * a single multi-plan prompt and dispatches it to the target agent.
+     */
+    public async handleKanbanBatchTrigger(role: string, sessionIds: string[], instruction?: string): Promise<boolean> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || sessionIds.length === 0) { return false; }
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+        // If only one plan, fall through to single dispatch for simplicity
+        if (sessionIds.length === 1) {
+            await this._handleTriggerAgentAction(role, sessionIds[0], instruction);
+            return true;
+        }
+
+        const targetAgent = await this._getAgentNameForRole(role);
+        if (!targetAgent) {
+            vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Cannot dispatch batch.`);
+            return false;
+        }
+        if (!this._isValidAgentName(targetAgent)) {
+            console.error(`[TaskViewerProvider] Rejected invalid agent name for batch dispatch: ${targetAgent}`);
+            return false;
+        }
+
+        // Resolve valid plan paths from session IDs
+        const validPlans: { sessionId: string; topic: string; absolutePath: string }[] = [];
+        for (const sid of sessionIds) {
+            try {
+                const sessionPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sid}.json`);
+                if (!fs.existsSync(sessionPath)) { continue; }
+                const content = await fs.promises.readFile(sessionPath, 'utf8');
+                const session = JSON.parse(content);
+                if (!session.planFile) { continue; }
+                const absolutePath = path.resolve(workspaceRoot, session.planFile);
+                if (!fs.existsSync(absolutePath)) { continue; }
+                validPlans.push({
+                    sessionId: sid,
+                    topic: session.topic || session.planFile || 'Untitled',
+                    absolutePath
+                });
+            } catch {
+                console.error(`[TaskViewerProvider] Failed to resolve plan for session ${sid}`);
+            }
+        }
+
+        if (validPlans.length === 0) {
+            console.warn('[TaskViewerProvider] Batch trigger: no valid plans resolved.');
+            return false;
+        }
+
+        // Determine workflow name for runsheet updates
+        const workflowMap: Record<string, string> = {
+            'planner': 'sidebar-review',
+            'reviewer': 'reviewer-pass',
+            'lead': 'handoff-lead',
+            'coder': 'handoff'
+        };
+        if (role === 'planner' && instruction === 'enhance') {
+            // Special case for enhance
+        }
+        const workflowName = (role === 'planner' && instruction === 'enhance')
+            ? 'Enhanced plan'
+            : workflowMap[role];
+
+        // Sequential runsheet updates to prevent file-lock contention
+        for (const plan of validPlans) {
+            if (workflowName) {
+                await this._updateSessionRunSheet(plan.sessionId, workflowName);
+            }
+        }
+
+        // Construct batched prompt
+        const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
+
+        let prompt = `Please process the following ${validPlans.length} plans.\nIf your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.\n\nCRITICAL INSTRUCTIONS:\n1. Treat each file path below as a completely isolated context. Do not mix requirements between plans.\n2. Execute each plan fully before moving to the next (if sequential).\n3. Upon completing ALL plans, save a read receipt to the inbox.\n\n${focusDirective}\n\nPLANS TO PROCESS:\n`;
+
+        for (const plan of validPlans) {
+            prompt += `- [${plan.topic}] Plan File: ${plan.absolutePath}\n`;
+        }
+
+        if (role === 'coder') {
+            prompt = this._withCoderAccuracyInstruction(prompt);
+        }
+
+        // Dispatch the batched prompt
+        try {
+            vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
+            await this._dispatchExecuteMessage(workspaceRoot, targetAgent, prompt, {
+                batch: true,
+                sessionIds: validPlans.map(p => p.sessionId)
+            });
+            await this._logEvent('dispatch', {
+                event: 'batch_dispatch_sent',
+                role,
+                sessionIds: validPlans.map(p => p.sessionId),
+                targetAgent,
+                planCount: validPlans.length
+            });
+            vscode.window.showInformationMessage(`Autoban: Dispatched ${validPlans.length} plans to ${role} (${targetAgent})`);
+            return true;
+        } catch (e) {
+            await this._logEvent('dispatch', {
+                event: 'batch_dispatch_failed',
+                role,
+                sessionIds: validPlans.map(p => p.sessionId),
+                targetAgent,
+                error: String(e)
+            });
+            vscode.window.showErrorMessage(`Batch dispatch failed: ${e}`);
+            return false;
+        }
+    }
+
     /** Called by the Kanban board to mark a plan as complete. */
     public async handleKanbanCompletePlan(sessionId: string) {
         await this._handleCompletePlan(sessionId);
@@ -612,11 +739,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private _postOrchestratorState(): void {
+    private _postAutobanState(): void {
         this._view?.webview.postMessage({
-            type: 'orchestratorState',
-            state: this._orchestrator.getState()
+            type: 'autobanStateSync',
+            state: this._autobanState
         });
+        // Also broadcast to Kanban webview if open
+        this._kanbanProvider?.updateAutobanConfig(this._autobanState);
     }
 
     private _postPipelineState(): void {
@@ -626,28 +755,136 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    private async _tryRestoreOrchestrator(): Promise<void> {
-        const wasRunning = this._context.globalState.get<boolean>('orchestrator.running', false);
-        if (!wasRunning) return;
-        const sessionId = this._context.globalState.get<string | null>('orchestrator.sessionId', null);
-        if (!sessionId) return;
+    /** Restore Autoban engine if it was running before reload. */
+    private _tryRestoreAutoban(): void {
+        if (this._autobanState.enabled) {
+            this._startAutobanEngine();
+        }
+    }
 
+    /** Column-to-role mapping for Autoban dispatches. */
+    private _autobanColumnToRole(column: string): string | null {
+        switch (column) {
+            case 'CREATED': return 'planner';
+            case 'PLAN REVIEWED': return this._autobanCodedTarget();
+            case 'CODED': return 'reviewer';
+            default: return null;
+        }
+    }
+
+    private _autobanCodedTarget(): string {
+        return this._kanbanProvider?.getCodedColumnTarget?.() || 'lead';
+    }
+
+    /** Column-to-instruction mapping for Autoban dispatches. */
+    private _autobanColumnToInstruction(column: string): string | undefined {
+        if (column === 'CREATED') { return 'enhance'; }
+        return undefined;
+    }
+
+    /** Start the continuous Autoban background polling engine. */
+    private _startAutobanEngine(): void {
+        this._stopAutobanEngine();
+        const { rules, batchSize } = this._autobanState;
+
+        for (const [column, rule] of Object.entries(rules)) {
+            if (!rule.enabled) { continue; }
+            const intervalMs = Math.max(rule.intervalMinutes, 1) * 60 * 1000;
+
+            const timer = setInterval(async () => {
+                if (!this._autobanState.enabled) { return; }
+                try {
+                    await this._autobanTickColumn(column, batchSize);
+                } catch (e) {
+                    console.error(`[Autoban] Tick failed for column ${column}:`, e);
+                }
+            }, intervalMs);
+
+            this._autobanTimers.set(column, timer);
+        }
+        console.log('[Autoban] Engine started with rules:', Object.entries(rules).filter(([, r]) => r.enabled).map(([c, r]) => `${c}: ${r.intervalMinutes}m`).join(', '));
+    }
+
+    /** Stop all Autoban background timers. */
+    private _stopAutobanEngine(): void {
+        for (const [, timer] of this._autobanTimers) {
+            clearInterval(timer);
+        }
+        this._autobanTimers.clear();
+    }
+
+    /** Process one tick for a given column: find cards, batch-dispatch up to batchSize. */
+    private async _autobanTickColumn(sourceColumn: string, batchSize: number): Promise<void> {
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) return;
-        const sheets = await this._getSessionLog(workspaceRoot).getRunSheets();
-        const sheet = sheets.find((s: any) => s.sessionId === sessionId && !s.completed);
-        if (!sheet) {
-            // Session is gone — clear stale persistence
-            void this._context.globalState.update('orchestrator.running', undefined);
-            void this._context.globalState.update('orchestrator.sessionId', undefined);
-            void this._context.globalState.update('orchestrator.secondsRemaining', undefined);
-            void this._context.globalState.update('orchestrator.stageIndex', undefined);
-            return;
+        if (!workspaceRoot) { return; }
+
+        const role = this._autobanColumnToRole(sourceColumn);
+        if (!role) { return; }
+        const instruction = this._autobanColumnToInstruction(sourceColumn);
+
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+
+        // Determine which column each card is in (reuse KanbanProvider's logic inline)
+        const cardsInColumn: { sessionId: string; lastActivity: string }[] = [];
+        for (const sheet of sheets) {
+            if (!sheet.sessionId || sheet.completed) { continue; }
+            const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
+            const column = this._deriveColumnFromEvents(events);
+            if (column === sourceColumn) {
+                let lastActivity = sheet.createdAt || '';
+                for (const e of events) {
+                    if (e.timestamp && e.timestamp > lastActivity) {
+                        lastActivity = e.timestamp;
+                    }
+                }
+                cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity });
+            }
         }
 
-        const secondsRemaining = this._context.globalState.get<number>('orchestrator.secondsRemaining', 420);
-        const stageIndex = this._context.globalState.get<number>('orchestrator.stageIndex', 0);
-        this._orchestrator.restore(sessionId, secondsRemaining, stageIndex);
+        if (cardsInColumn.length === 0) { return; }
+
+        // Sort oldest first, take up to batchSize
+        cardsInColumn.sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''));
+        const batch = cardsInColumn.slice(0, batchSize);
+        const sessionIds = batch.map(c => c.sessionId);
+
+        console.log(`[Autoban] ${sourceColumn}: dispatching ${sessionIds.length} card(s) to ${role}`);
+        await this.handleKanbanBatchTrigger(role, sessionIds, instruction);
+    }
+
+    /**
+     * Derive column from runsheet events. Mirrors KanbanProvider._deriveColumn.
+     * Kept as a standalone method to avoid circular dependency on KanbanProvider.
+     */
+    private _deriveColumnFromEvents(events: any[]): string {
+        if (!events || events.length === 0) { return 'CREATED'; }
+
+        const REVIEW_WORKFLOWS = ['sidebar-review', 'Enhanced plan', 'reviewer-pass'];
+        const CODE_WORKFLOWS = ['handoff', 'handoff-lead', 'jules'];
+
+        let lastReviewStart: string | null = null;
+        let lastCodeStart: string | null = null;
+        let lastReviewerStart: string | null = null;
+
+        for (const e of events) {
+            if (e.action !== 'start') { continue; }
+            if (REVIEW_WORKFLOWS.includes(e.workflow)) {
+                if (e.workflow === 'reviewer-pass') {
+                    lastReviewerStart = e.timestamp;
+                } else {
+                    lastReviewStart = e.timestamp;
+                }
+            }
+            if (CODE_WORKFLOWS.includes(e.workflow)) {
+                lastCodeStart = e.timestamp;
+            }
+        }
+
+        if (lastReviewerStart) { return 'CODE REVIEWED'; }
+        if (lastCodeStart) { return 'CODED'; }
+        if (lastReviewStart) { return 'PLAN REVIEWED'; }
+        return 'CREATED';
     }
 
     public revealInitiatePlanModal() {
@@ -688,8 +925,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         this._postRecentActivity(50),
                         this._sweepOrphanedReviews()
                     ]);
-                    await this._tryRestoreOrchestrator();
-                    this._postOrchestratorState();
+                    await this._tryRestoreAutoban();
+                    this._postAutobanState();
                     await this._pipeline.restore();
                     this._postPipelineState();
                     this._view?.webview.postMessage({ type: 'loading', value: false });
@@ -954,43 +1191,30 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         await this._postRecentActivity(limit, beforeTimestamp);
                         break;
                     }
-                    case 'orchestratorStart':
-                        if (data.sessionId) {
-                            const requestedInterval = typeof data.intervalSeconds === 'number'
-                                ? data.intervalSeconds
-                                : undefined;
-                            this._pipeline.stop(); // mutual exclusion
-                            this._postPipelineState();
-                            this._orchestrator.start(data.sessionId, requestedInterval);
+                    case 'updateAutobanState': {
+                        // Sidebar Autoban configuration changed
+                        if (data.state) {
+                            const wasEnabled = this._autobanState.enabled;
+                            this._autobanState = { ...this._autobanState, ...data.state };
+                            // Persist to workspace state
+                            await this._context.workspaceState.update('autoban.state', this._autobanState);
+                            // Start/stop engine based on toggle
+                            if (this._autobanState.enabled && !wasEnabled) {
+                                this._startAutobanEngine();
+                            } else if (!this._autobanState.enabled && wasEnabled) {
+                                this._stopAutobanEngine();
+                            } else if (this._autobanState.enabled) {
+                                // Rules changed while running — restart with new config
+                                this._startAutobanEngine();
+                            }
+                            this._postAutobanState();
                         }
                         break;
-                    case 'orchestratorAdvance':
-                        await this._orchestrator.advance();
-                        break;
-                    case 'orchestratorStop':
-                        this._orchestrator.stop();
-                        break;
-                    case 'orchestratorSetInterval':
-                        if (typeof data.intervalSeconds === 'number' && Number.isFinite(data.intervalSeconds)) {
-                            this._orchestrator.setInterval(data.intervalSeconds);
-                        }
-                        break;
-                    case 'orchestratorSessionChange':
-                        this._orchestrator.setSession(data.sessionId || null);
-                        this._postOrchestratorState();
-                        break;
-                    case 'orchestratorPause':
-                        this._orchestrator.pause();
-                        break;
-                    case 'orchestratorUnpause':
-                        this._orchestrator.unpause();
-                        break;
+                    }
                     case 'pipelineStart': {
                         const requestedInterval = typeof data.intervalSeconds === 'number'
                             ? data.intervalSeconds
                             : undefined;
-                        this._orchestrator.stop(); // mutual exclusion
-                        this._postOrchestratorState();
                         this._pipeline.start(requestedInterval);
                         break;
                     }
@@ -1006,16 +1230,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'pipelineSetInterval':
                         if (typeof data.intervalSeconds === 'number' && Number.isFinite(data.intervalSeconds)) {
                             this._pipeline.setInterval(data.intervalSeconds);
-                        }
-                        break;
-                    case 'startCoderReviewerWorkflow':
-                        if (data.sessionId) {
-                            await this._handleStartCoderReviewerWorkflow(data.sessionId);
-                        }
-                        break;
-                    case 'stopCoderReviewerWorkflow':
-                        if (data.sessionId) {
-                            this._stopCoderReviewerWorkflow(data.sessionId);
                         }
                         break;
                     case 'airlock_export':
@@ -2949,10 +3163,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 await this._updatePlanRegistryStatus(workspaceRoot, sessionId, 'archived');
             }
 
-            const orchestratorState = this._orchestrator.getState();
-            if (orchestratorState.sessionId === sessionId) {
-                this._orchestrator.stop();
-            }
+            // Autoban engine doesn't track individual sessions — no cleanup needed
             await this._logEvent('plan_management', {
                 operation: 'mark_complete',
                 sessionId,
@@ -4436,7 +4647,7 @@ You may add clarifying implementation detail only if strictly implied by existin
 ${planAnchor}
 
 Use the explicit three-stage review process:
-  Stage 1 — Enhancement: If you see any 'TODO' sections or underspecified parts, fill those out first with proposed implementation details without asking for permission. If already specified, skip this.
+  Stage 1 — Enhancement: Fill out 'TODO' sections or underspecified parts. Scan the Kanban board/plans folder for potential cross-plan conflicts and document them here.
   Stage 2 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
   Stage 3 — Write a balanced synthesis to ${balancedReviewPath}
 
@@ -4465,7 +4676,7 @@ ${planAnchor}
 
 Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Do NOT write plan/review artifact files for this pass.
-2. Stage 1 (Enhancement): If you see any 'TODO' sections or underspecified parts in the plan, fill those out first with proposed implementation details without asking for permission. If the plan is already fully specified, you may skip this stage and go straight into the critique.
+2. Stage 1 (Enhancement): Fill out any 'TODO' sections. MANDATORY: Scan the Kanban board/plans folder for potential cross-plan conflicts and document them here.
 3. Stage 2 (Grumpy Critique): post adversarial critique of the technical approach directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
 4. Stage 3 (Balanced Synthesis): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
 5. Stage 4 (Action): Update the original plan with the enhancement findings and provide the final assessment in chat. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
@@ -4487,7 +4698,7 @@ Context: ${instruction}` : '';
 ${planAnchor}
 
 Use the explicit three-stage review process:
-  Stage 1 — Enhancement: If you see any 'TODO' sections or underspecified parts, fill those out first with proposed implementation details without asking for permission. If already specified, skip this.
+  Stage 1 — Enhancement: Fill out 'TODO' sections or underspecified parts. Scan the Kanban board/plans folder for potential cross-plan conflicts and document them here.
   Stage 2 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
   Stage 3 — Write a balanced synthesis to ${balancedReviewPath}
 
@@ -4504,7 +4715,7 @@ At the very end of your response, explicitly recommend which agent should execut
 - If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
 - If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
-IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \\`[ ]\\` to \\`[x]\\`). ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
+IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \`[ ]\` to \`[x]\`). ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 ${focusDirective}`;
                 } else {
@@ -4514,7 +4725,7 @@ ${planAnchor}
 
 Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Do NOT write plan/review artifact files for this pass.
-2. Stage 1 (Enhancement): If you see any 'TODO' sections or underspecified parts in the plan, fill those out first with proposed implementation details without asking for permission. If the plan is already fully specified, you may skip this stage and go straight into the critique.
+2. Stage 1 (Enhancement): Fill out any 'TODO' sections. MANDATORY: Scan the Kanban board/plans folder for potential cross-plan conflicts and document them here.
 3. Stage 2 (Grumpy Critique): post adversarial critique of the technical approach directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
 4. Stage 3 (Balanced Synthesis): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
 5. Stage 4 (Action): Update the original plan with review feedback and completed items, and provide the final assessment in chat. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
@@ -6120,107 +6331,6 @@ ${focusDirective}`);
         }
     }
 
-    private _stopCoderReviewerWorkflow(sessionId: string, phase: 'idle' | 'done' | 'timeout' = 'idle'): void {
-        const timers = this._coderReviewerSessions.get(sessionId);
-        if (timers) {
-            timers.forEach(t => {
-                clearTimeout(t);
-                clearInterval(t);
-            });
-            this._coderReviewerSessions.delete(sessionId);
-        }
-        this._view?.webview.postMessage({ type: 'coderReviewerPhase', sessionId, phase });
-    }
-
-    private async _handleStartCoderReviewerWorkflow(sessionId: string): Promise<void> {
-        if (this._coderReviewerSessions.has(sessionId)) {
-            vscode.window.showErrorMessage('Coder → Reviewer workflow is already running for this session.');
-            return;
-        }
-
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) { return; }
-
-        const timers: NodeJS.Timeout[] = [];
-        this._coderReviewerSessions.set(sessionId, timers);
-        const stopWorkflow = (phase: 'idle' | 'done' | 'timeout' = 'idle') => this._stopCoderReviewerWorkflow(sessionId, phase);
-        const postPhase = (phase: string, timestamp?: number) => this._view?.webview.postMessage({ type: 'coderReviewerPhase', sessionId, phase, timestamp });
-
-        // Phase 1: dispatch coder immediately
-        const coderDispatched = await this._handleTriggerAgentActionInternal('coder', sessionId);
-        if (!coderDispatched) {
-            stopWorkflow('idle');
-            return;
-        }
-        const coderDispatchTs = Date.now();
-        postPhase('coder_dispatched', coderDispatchTs);
-
-        const MAX_POLL_MS = 30 * 60 * 1000;
-        const FIRST_SIGNAL_DELAY_MS = 2 * 60 * 1000;
-        let workflowStartTs = 0;
-        const signalFilePath = path.join(workspaceRoot, '.switchboard', 'inbox', 'Reviewer', `${sessionId}.md`);
-
-        // Phase 2: after 2 minutes, send signal-file instruction then begin polling
-        const delayTimer = setTimeout(async () => {
-            if (!this._coderReviewerSessions.has(sessionId)) { return; }
-            try {
-                workflowStartTs = Date.now();
-                const signalPromptDispatched = await this._handleTriggerAgentActionInternal('coder', sessionId, 'create-signal-file');
-                if (!signalPromptDispatched) {
-                    stopWorkflow('idle');
-                    return;
-                }
-                postPhase('polling');
-
-                // Phase 3: poll every 5 seconds for the signal file
-                const pollTimer = setInterval(async () => {
-                    if (!this._coderReviewerSessions.has(sessionId)) { return; }
-                    try {
-                        if (Date.now() - workflowStartTs > MAX_POLL_MS) {
-                            stopWorkflow('timeout');
-                            vscode.window.showErrorMessage('Coder → Reviewer: Timed out waiting for signal file.');
-                            return;
-                        }
-
-                        if (!fs.existsSync(signalFilePath)) {
-                            return;
-                        }
-
-                        const stat = await fs.promises.stat(signalFilePath);
-                        if (stat.mtimeMs < workflowStartTs) {
-                            return;
-                        }
-
-                        clearInterval(pollTimer);
-                        postPhase('reviewer_dispatched');
-                        const reviewerDispatched = await this._handleTriggerAgentActionInternal('reviewer', sessionId);
-                        if (!reviewerDispatched) {
-                            stopWorkflow('idle');
-                            return;
-                        }
-
-                        try {
-                            await fs.promises.unlink(signalFilePath);
-                        } catch {
-                            // Keep workflow completion resilient if signal cleanup races.
-                        }
-                        stopWorkflow('done');
-                    } catch (error) {
-                        console.error('[TaskViewerProvider] Coder→Reviewer poller failed:', error);
-                        stopWorkflow('idle');
-                    }
-                }, 5000);
-
-                timers.push(pollTimer);
-            } catch (error) {
-                console.error('[TaskViewerProvider] Failed to dispatch coder signal prompt:', error);
-                stopWorkflow('idle');
-            }
-        }, FIRST_SIGNAL_DELAY_MS);
-
-        timers.push(delayTimer);
-    }
-
     // ── Web AI Airlock ──────────────────────────────────────────────────
 
     private async _handleAirlockExport(): Promise<void> {
@@ -6252,10 +6362,11 @@ ${focusDirective}`);
                 '## Step 1: Understand the Goal',
                 'Identify the core problem or feature. Clarify what success looks like. If the user\'s request is ambiguous, stop and ask clarifying questions before generating a plan.',
                 '',
-                '## Step 2: Complexity & Edge-Case Audit',
+                '## Step 2: Complexity, Edge-Case & Dependency Audit',
                 'Before writing any implementation steps, audit the system:',
                 '*   **Complexity:** Rate the routine vs. complex/risky parts of the request.',
                 '*   **Edge Cases:** Identify race conditions, security flaws, backward compatibility issues, and side effects.',
+                '*   **Dependencies & Conflicts:** Identify if this plan relies on other pending plans in the Kanban board, or if it will conflict with concurrent work.',
                 '',
                 '## Step 3: Internal Adversarial Review',
                 'You must internally simulate two distinct personas to stress-test your assumptions before writing the implementation steps:',
@@ -6282,10 +6393,11 @@ ${focusDirective}`);
                 '### Band B — Complex / Risky',
                 '- [List complex logic, state mutations, or risky changes]',
                 '',
-                '## Edge-Case Audit',
+                '## Edge-Case & Dependency Audit',
                 '- **Race Conditions:** [Analysis]',
                 '- **Security:** [Analysis]',
                 '- **Side Effects:** [Analysis]',
+                '- **Dependencies & Conflicts:** [Identify if this plan relies on or conflicts with other pending Kanban plans]',
                 '',
                 '## Adversarial Synthesis',
                 '### Grumpy Critique',
@@ -6474,8 +6586,7 @@ ${focusDirective}`);
     }
 
     public dispose() {
-        this._coderReviewerSessions.forEach((_, sessionId) => this._stopCoderReviewerWorkflow(sessionId));
-        this._orchestrator.dispose();
+        this._stopAutobanEngine();
         this._pipeline.dispose();
         this._stateWatcher?.dispose();
         this._planWatcher?.dispose();

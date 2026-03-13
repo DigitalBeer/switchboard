@@ -21,6 +21,7 @@ This workflow is for "System 2" thinking. It takes a minimalist plan drafted in 
 2. **Analysis Phase**:
    - Perform a **Complexity Audit**: Identify Band B (architectural) vs Band A (routine) tasks.
    - Perform an **Edge-Case Audit**: Identify potential race conditions, security holes, or side effects.
+   - Perform a **Dependency & Conflict Audit**: Scan `.switchboard/plans/` (or the Kanban state) for other pending plans that might conflict with or act as a prerequisite for this plan.
 3. **Hardening**: 
    - Inject the audits and detailed verification steps into the existing document.
    - **DO NOT** remove existing "Proposed Changes" or technical deep-dives; instead, refine them to address the newly identified edge cases.

@@ -346,101 +346,43 @@
             overflow: hidden;
         }
 
-        /* Auto-Move Controls */
-        .auto-move-bar {
+        /* Autoban Read-Only Status Bar */
+        .autoban-status-bar {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            padding: 6px 8px 8px; /* Reduced from 12px to prevent overflow */
+            padding: 4px 8px;
             background: var(--panel-bg2);
             border-bottom: 1px solid var(--border-color);
             font-family: var(--font-mono);
             font-size: 9px;
-            overflow: hidden; /* Added to keep content strictly within bounds */
-            min-height: 31px;
+            min-height: 22px;
         }
 
-        .auto-move-left, .auto-move-right {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-
-        .invisible-placeholder {
-            visibility: hidden;
-            pointer-events: none;
-        }
-
-        .auto-move-bar input[type="number"] {
-            width: 36px;
-            padding: 2px 4px;
-            background: #0a0a0a;
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-            border-radius: 2px;
-            font-family: var(--font-mono);
-            font-size: 9px;
-            text-align: center;
-            outline: none;
-        }
-
-        .auto-move-bar input[type="number"]:focus {
-            border-color: var(--border-bright);
-        }
-
-        .auto-move-bar .auto-move-label {
+        .autoban-indicator {
             color: var(--text-secondary);
             white-space: nowrap;
-        }
-
-        .auto-move-bar .auto-move-btn {
-            padding: 1px 8px;
-            background: transparent;
-            border: 1px solid color-mix(in srgb, var(--accent-teal) 40%, transparent);
-            color: var(--accent-teal);
-            border-radius: 2px;
-            font-family: var(--font-mono);
-            font-size: 8px;
             letter-spacing: 0.5px;
-            text-transform: uppercase;
-            cursor: pointer;
-            white-space: nowrap;
         }
 
-        .auto-move-bar .auto-move-btn:hover {
-            background: color-mix(in srgb, var(--accent-teal) 10%, transparent);
-        }
-
-        .auto-move-bar .auto-move-btn.is-stop {
-            border-color: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 40%, transparent);
-            color: var(--vscode-errorForeground, #f44747);
-        }
-
-        .auto-move-bar .auto-move-btn.is-stop:hover {
-            background: color-mix(in srgb, var(--vscode-errorForeground, #f44747) 10%, transparent);
-        }
-
-        .auto-move-bar .auto-move-timer {
+        .autoban-indicator.is-active {
             color: var(--accent-teal);
-            font-variant-numeric: tabular-nums;
-            min-width: 32px;
-            text-align: right;
         }
 
-        @keyframes timerPulse {
+        @keyframes autobanPulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
 
-        .auto-move-bar .auto-move-timer.is-active {
-            animation: timerPulse 2s ease-in-out infinite;
+        .autoban-indicator.is-active::before {
+            content: '⚡ ';
+            animation: autobanPulse 2s ease-in-out infinite;
         }
     </style>
 </head>
 
 <body>
     <div class="kanban-header">
-        <div class="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions</div>
+        <div class="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to external IDE agents</div>
         <button class="btn-refresh" id="btn-refresh">Refresh</button>
     </div>
     <div class="kanban-board" id="kanban-board">
@@ -455,16 +397,8 @@
                     <span class="column-count" id="count-CREATED">0</span>
                 </div>
             </div>
-            <div class="auto-move-bar" id="automove-bar-CREATED">
-                <div class="auto-move-left">
-                    <span class="auto-move-label">Auto-move every</span>
-                    <input type="number" id="automove-interval-CREATED" min="1" max="60" value="2" title="Interval in minutes">
-                    <span class="auto-move-label">min</span>
-                </div>
-                <div class="auto-move-right">
-                    <span class="auto-move-timer" id="automove-timer-CREATED"></span>
-                    <button class="auto-move-btn" id="automove-btn-CREATED">START</button>
-                </div>
+            <div class="autoban-status-bar" id="autoban-status-CREATED">
+                <span class="autoban-indicator" id="autoban-indicator-CREATED"></span>
             </div>
             <div class="column-body" id="col-CREATED"></div>
         </div>
@@ -476,16 +410,8 @@
                 </div>
                 <span class="column-count" id="count-PLAN REVIEWED">0</span>
             </div>
-            <div class="auto-move-bar" id="automove-bar-PLAN REVIEWED">
-                <div class="auto-move-left">
-                    <span class="auto-move-label">Auto-move every</span>
-                    <input type="number" id="automove-interval-PLAN REVIEWED" min="1" max="60" value="10" title="Interval in minutes">
-                    <span class="auto-move-label">min</span>
-                </div>
-                <div class="auto-move-right">
-                    <span class="auto-move-timer" id="automove-timer-PLAN REVIEWED"></span>
-                    <button class="auto-move-btn" id="automove-btn-PLAN REVIEWED">START</button>
-                </div>
+            <div class="autoban-status-bar" id="autoban-status-PLAN REVIEWED">
+                <span class="autoban-indicator" id="autoban-indicator-PLAN REVIEWED"></span>
             </div>
             <div class="column-body" id="col-PLAN REVIEWED"></div>
         </div>
@@ -503,16 +429,8 @@
                     <span class="column-count" id="count-CODED">0</span>
                 </div>
             </div>
-            <div class="auto-move-bar" id="automove-bar-CODED">
-                <div class="auto-move-left">
-                    <span class="auto-move-label">Auto-move every</span>
-                    <input type="number" id="automove-interval-CODED" min="1" max="60" value="10" title="Interval in minutes">
-                    <span class="auto-move-label">min</span>
-                </div>
-                <div class="auto-move-right">
-                    <span class="auto-move-timer" id="automove-timer-CODED"></span>
-                    <button class="auto-move-btn" id="automove-btn-CODED">START</button>
-                </div>
+            <div class="autoban-status-bar" id="autoban-status-CODED">
+                <span class="autoban-indicator" id="autoban-indicator-CODED"></span>
             </div>
             <div class="column-body" id="col-CODED"></div>
         </div>
@@ -524,8 +442,8 @@
                 </div>
                 <span class="column-count" id="count-CODE REVIEWED">0</span>
             </div>
-            <div class="auto-move-bar">
-                <!-- Blank section for alignment -->
+            <div class="autoban-status-bar">
+                <!-- Final column — no automation -->
             </div>
             <div class="column-body" id="col-CODE REVIEWED"></div>
         </div>
@@ -538,8 +456,8 @@
         let lastAgentNames = {};
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let currentCodedTarget = 'lead';
-        let autoMoveState = {}; // { 'CREATED': { running, intervalSeconds, secondsRemaining }, ... }
-        const autoMoveColumns = ['CREATED', 'PLAN REVIEWED', 'CODED'];
+        let autobanConfig = null; // Received from backend: { enabled, batchSize, rules }
+        const autobanColumns = ['CREATED', 'PLAN REVIEWED', 'CODED'];
 
         /** Map a kanban column to its assigned agent role. */
         function columnToRole(col) {
@@ -836,9 +754,9 @@
                         }
                     }
                     break;
-                case 'autoMoveState':
-                    autoMoveState = msg.state || {};
-                    updateAutoMoveUI();
+                case 'updateAutobanConfig':
+                    autobanConfig = msg.state || null;
+                    updateAutobanIndicators();
                     break;
             }
         });
@@ -850,52 +768,28 @@
             return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
         }
 
-        /** Update all auto-move bar UIs based on current state. */
-        function updateAutoMoveUI() {
-            autoMoveColumns.forEach(col => {
-                const btn = document.getElementById('automove-btn-' + col);
-                const inp = document.getElementById('automove-interval-' + col);
-                const timerEl = document.getElementById('automove-timer-' + col);
-                if (!btn || !inp || !timerEl) return;
+        /** Update all autoban status indicators based on current config. */
+        function updateAutobanIndicators() {
+            autobanColumns.forEach(col => {
+                const indicator = document.getElementById('autoban-indicator-' + col);
+                if (!indicator) return;
 
-                const colState = autoMoveState[col];
-                if (colState && colState.running) {
-                    btn.textContent = 'STOP';
-                    btn.classList.add('is-stop');
-                    btn.classList.remove('auto-move-btn');
-                    btn.className = 'auto-move-btn is-stop';
-                    inp.disabled = true;
-                    inp.style.opacity = '0.4';
-                    timerEl.textContent = formatCountdown(colState.secondsRemaining);
-                    timerEl.classList.add('is-active');
+                if (!autobanConfig || !autobanConfig.enabled) {
+                    indicator.textContent = '';
+                    indicator.className = 'autoban-indicator';
+                    return;
+                }
+
+                const rule = autobanConfig.rules && autobanConfig.rules[col];
+                if (rule && rule.enabled) {
+                    indicator.textContent = `Auto: ${rule.intervalMinutes}m (Batch: ${autobanConfig.batchSize})`;
+                    indicator.className = 'autoban-indicator is-active';
                 } else {
-                    btn.textContent = 'START';
-                    btn.className = 'auto-move-btn';
-                    inp.disabled = false;
-                    inp.style.opacity = '1';
-                    timerEl.textContent = '';
-                    timerEl.classList.remove('is-active');
+                    indicator.textContent = 'Auto: off';
+                    indicator.className = 'autoban-indicator';
                 }
             });
         }
-
-        /** Wire up auto-move button click handlers for each column. */
-        autoMoveColumns.forEach(col => {
-            const btn = document.getElementById('automove-btn-' + col);
-            if (btn) {
-                btn.addEventListener('click', () => {
-                    const colState = autoMoveState[col];
-                    if (colState && colState.running) {
-                        vscode.postMessage({ type: 'autoMoveStop', column: col });
-                    } else {
-                        const inp = document.getElementById('automove-interval-' + col);
-                        const mins = parseInt(inp?.value, 10) || (col === 'CREATED' ? 2 : 10);
-                        const intervalSeconds = Math.max(mins * 60, 30);
-                        vscode.postMessage({ type: 'autoMoveStart', column: col, intervalSeconds });
-                    }
-                });
-            }
-        });
 
         document.getElementById('btn-refresh').addEventListener('click', () => {
             vscode.postMessage({ type: 'refresh' });
