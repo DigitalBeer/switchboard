@@ -1864,6 +1864,114 @@ function registerTools(server) {
         }
     );
 
+    // Tool: get_kanban_state
+    server.tool(
+        "get_kanban_state",
+        {},
+        async () => {
+            const workspaceRoot = getWorkspaceRoot();
+            const sbDir = path.join(workspaceRoot, '.switchboard');
+            const registryPath = path.join(sbDir, 'plan_registry.json');
+            const identityPath = path.join(sbDir, 'workspace_identity.json');
+            const sessionsDir = path.join(sbDir, 'sessions');
+            const tombstonePath = path.join(sbDir, 'plan_tombstones.json');
+            const blacklistPath = path.join(sbDir, 'brain_plan_blacklist.json');
+
+            if (!fs.existsSync(registryPath) || !fs.existsSync(identityPath)) {
+                return { isError: true, content: [{ type: "text", text: "Error: Not a switchboard workspace or missing registry." }] };
+            }
+
+            let identity, registry;
+            try {
+                identity = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
+                registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+            } catch (e) {
+                return { isError: true, content: [{ type: "text", text: `Error: Failed to parse registry/identity: ${e.message}` }] };
+            }
+
+            const workspaceId = identity.workspaceId;
+
+            let tombstones = new Set();
+            let blacklist = new Set();
+            try {
+                if (fs.existsSync(tombstonePath)) {
+                    tombstones = new Set(JSON.parse(fs.readFileSync(tombstonePath, 'utf8')));
+                }
+                if (fs.existsSync(blacklistPath)) {
+                    const parsed = JSON.parse(fs.readFileSync(blacklistPath, 'utf8'));
+                    const rawEntries = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.entries) ? parsed.entries : []);
+                    blacklist = new Set(rawEntries);
+                }
+            } catch (e) {
+                // Non-fatal: proceed without tombstone/blacklist filtering
+            }
+
+            function getStablePath(planPath) {
+                const normalized = path.normalize(planPath);
+                const stable = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+                const rootPath = path.parse(stable).root;
+                return stable.length > rootPath.length ? stable.replace(/[\\\/]+$/, '') : stable;
+            }
+
+            function getBaseBrainPath(planPath) {
+                return planPath.replace(/\.resolved(\.\d+)?$/i, '');
+            }
+
+            function deriveColumn(events) {
+                for (let i = events.length - 1; i >= 0; i--) {
+                    const e = events[i];
+                    const wf = (e.workflow || '').toLowerCase();
+                    if (wf.includes('reviewer') || wf === 'review') return 'CODE REVIEWED';
+                    if (wf === 'lead' || wf === 'coder' || wf === 'handoff' || wf === 'team' || wf === 'handoff-lead') return 'CODED';
+                    if (wf === 'planner' || wf === 'challenge' || wf === 'enhance' || wf === 'accuracy' || wf === 'sidebar-review' || wf === 'enhanced plan') return 'PLAN REVIEWED';
+                }
+                return 'CREATED';
+            }
+
+            const columns = {
+                'CREATED': [],
+                'PLAN REVIEWED': [],
+                'CODED': [],
+                'CODE REVIEWED': []
+            };
+
+            let files;
+            try {
+                files = fs.readdirSync(sessionsDir);
+            } catch (e) {
+                return { content: [{ type: "text", text: JSON.stringify(columns, null, 2) }] };
+            }
+
+            for (const file of files) {
+                if (!file.endsWith('.json') || file === 'activity.json') continue;
+                try {
+                    const sheet = JSON.parse(fs.readFileSync(path.join(sessionsDir, file), 'utf8'));
+                    if (sheet.completed) continue;
+
+                    let planId = sheet.sessionId;
+                    if (sheet.brainSourcePath) {
+                        const stablePath = getStablePath(getBaseBrainPath(path.resolve(workspaceRoot, sheet.brainSourcePath)));
+                        if (blacklist.has(stablePath)) continue;
+                        planId = crypto.createHash('sha256').update(stablePath).digest('hex');
+                        if (tombstones.has(planId)) continue;
+                    }
+
+                    const entry = registry.entries[planId];
+                    if (!entry || entry.ownerWorkspaceId !== workspaceId || entry.status !== 'active') continue;
+
+                    const col = deriveColumn(sheet.events || []);
+                    columns[col].push({
+                        topic: sheet.topic || sheet.planFile || 'Untitled',
+                        sessionId: sheet.sessionId,
+                        createdAt: sheet.createdAt
+                    });
+                } catch (e) {}
+            }
+
+            return { content: [{ type: "text", text: JSON.stringify(columns, null, 2) }] };
+        }
+    );
+
     // Tool: set_agent_status (unified Ã¢â‚¬â€ replaces set_terminal_status + update_chat_agent_status)
     server.tool(
         "set_agent_status",

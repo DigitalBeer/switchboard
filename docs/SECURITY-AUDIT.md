@@ -1,6 +1,6 @@
 # Security Audit Report (Post-Implementation Re-Audit)
 
-- Project: Switchboard VS Code extension (`ai-product-manager`)
+- Project: Switchboard VS Code extension (`switchboard`)
 - Date: February 25, 2026
 - Auditor: Codex 5.3 High
 

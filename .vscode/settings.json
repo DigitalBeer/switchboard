@@ -16,5 +16,6 @@
 	"switchboard.planner.strictPrompts": false,
 	"switchboard.workspaceBrainPaths": [
 		"c:/Users/patvu/.gemini/antigravity/brain/1e46edeb-72da-465b-940c-0f430d82600d/implementation_plan.md"
-	]
+	],
+	"switchboard.team.strictPrompts": false
 }

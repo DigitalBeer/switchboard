@@ -31,7 +31,7 @@ Before EVERY response, you MUST:
 1. **Scan** the user's message for explicit workflow commands from the table above (prefer `/workflow` forms).
 2. **Do not auto-trigger on generic language** (for example: "review this", "delegate this", "quick start") unless the user explicitly asks to run that workflow.
 3. **If a command match is found**: Read the workflow file with `view_file .agent/workflows/[WORKFLOW].md` and execute it step-by-step. Do NOT improvise an alternative approach.
-4. **Fast Kanban Resolution**: If the user asks about plans in specific Kanban columns (e.g. "update all created plans"), you MUST use the `Get Kanban State` skill (`node .agent/scripts/kanban-list.js`) to instantly identify the target plans.
+4. **Fast Kanban Resolution**: If the user asks about plans in specific Kanban columns (e.g. "update all created plans"), you MUST use the `get_kanban_state` MCP tool to instantly identify the target plans.
 5. **If no match is found**: Respond normally.
 
 ### Execution Rules

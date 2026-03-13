@@ -14,14 +14,10 @@ Use this skill to instantly identify which plans are in which stage of the workf
 
 ## Usage
 
-Run the following command in the workspace root:
-
-```bash
-node .agent/scripts/kanban-list.js
-```
+Call the `get_kanban_state` MCP tool.
 
 ### Response Format
-The script outputs a JSON object where keys are Kanban columns and values are arrays of plan metadata:
+The tool outputs a JSON object where keys are Kanban columns and values are arrays of plan metadata:
 
 ```json
 {

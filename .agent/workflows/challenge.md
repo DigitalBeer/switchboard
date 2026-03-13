@@ -23,6 +23,8 @@ Use this for:
 - **NO IMPLEMENTATION**: You are strictly FORBIDDEN from modifying any project source files to fix the issues you identify. This applies to ALL tools including `write_to_file`, `replace_file_content`, `multi_replace_file_content`, and `run_command`.
 - **PLAN ONLY**: Your ONLY permissible write action (beyond the review artifact files) is updating the existing Feature Plan document (`.switchboard/plans/features/*.md`) to reflect approved findings.
 - **VIOLATION RESPONSE**: If you feel tempted to fix something yourself, STOP IMMEDIATELY. Call `notify_user` to explain what you found and await instructions. Do not apply the fix.
+- **NO SKIPPING REVIEWS**: You must ALWAYS perform a fresh adversarial review. NEVER skip the review just because the plan document already contains headers like "Adversarial Synthesis", "Grumpy Critique", or "Balanced Response". Existing reviews must be considered stale and overwritten.
+- **CONTENT PRESERVATION**: You are FORBIDDEN from deleting original implementation details, prose, or context. Your goal is to **APPEND** or **OVERWRITE ONLY THE REVIEW SECTION**, not replace or truncate the rest of the plan.
 - **NOTE**: This is advisory governance. The tools remain available; compliance is required by role, not enforced by the system.
 
 ## Steps
@@ -43,6 +45,7 @@ Use this for:
 
 3. **Execute Internal Review**
    - ⛔ Do NOT implement any findings. Update the Feature Plan only.
+   - ⚠️ ALWAYS perform a fresh review. If the plan already contains an "Adversarial Synthesis", overwrite it. Do NOT skip this step.
    - MUST read current plan/task objective.
    - MUST read `.agent/personas/grumpy.md`. If missing, HALT.
    - Generate `grumpyPath` in CRITICAL/MAJOR/NIT format.
@@ -64,7 +67,7 @@ Use this for:
 5. **Complete + Integrate**
    - MANDATORY before calling `complete_workflow_phase`: update the original Feature Plan document with the Action Plan items from the balanced review.
      - Read `.switchboard/sessions/` to find the most recent session JSON and extract `planFile` (the absolute path to the Feature Plan).
-     - Edit the Feature Plan to integrate the approved Action Plan items. This is a permitted write under the CRITICAL CONSTRAINTS block — it is orchestration, not implementation.
+     - Edit the Feature Plan to integrate the approved Action Plan items. ⚠️ **CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing.** This is a permitted write under the CRITICAL CONSTRAINTS block — it is orchestration, not implementation.
    - Call `complete_workflow_phase(phase: 5, workflow: "challenge", artifacts: [{ path: "<balancedPath>", description: "Final internal review output" }, { path: "<feature_plan_absolute_path>", description: "Feature Plan updated with review findings" }])`.
    - **Kanban**: `complete_workflow_phase(phase: 5)` automatically promotes the most recently active Kanban card to **PLAN REVIEWED**. No additional tool call is required.
 

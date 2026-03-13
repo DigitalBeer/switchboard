@@ -110,6 +110,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _workspaceId: string | null = null;
     private _planRegistry: PlanRegistry = { version: 1, entries: {} };
     private _ownershipInitPromise: Promise<void> | null = null;
+    private _planRegistryWriteTail: Promise<void> = Promise.resolve();
 
     // Session Tracking
     private _lastSessionId: string | null = null;
@@ -1464,17 +1465,23 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _savePlanRegistry(workspaceRoot: string): Promise<void> {
-        const registryPath = this._getPlanRegistryPath(workspaceRoot);
-        const dir = path.dirname(registryPath);
-        if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
-        const tmpPath = registryPath + `.${Date.now()}.tmp`;
-        try {
-            await fs.promises.writeFile(tmpPath, JSON.stringify(this._planRegistry, null, 2));
-            await fs.promises.rename(tmpPath, registryPath);
-        } catch (e) {
-            try { await fs.promises.unlink(tmpPath); } catch { }
-            throw e;
-        }
+        const writeOperation = async () => {
+            const registryPath = this._getPlanRegistryPath(workspaceRoot);
+            const dir = path.dirname(registryPath);
+            if (!fs.existsSync(dir)) { fs.mkdirSync(dir, { recursive: true }); }
+            const tmpPath = registryPath + `.${Date.now()}.tmp`;
+            try {
+                await fs.promises.writeFile(tmpPath, JSON.stringify(this._planRegistry, null, 2));
+                await fs.promises.rename(tmpPath, registryPath);
+            } catch (e) {
+                try { await fs.promises.unlink(tmpPath); } catch { }
+                throw e;
+            }
+        };
+
+        const nextWrite = this._planRegistryWriteTail.then(writeOperation);
+        this._planRegistryWriteTail = nextWrite.catch(() => { });
+        await nextWrite;
     }
 
     private async _registerPlan(workspaceRoot: string, entry: PlanRegistryEntry): Promise<void> {
@@ -1853,6 +1860,62 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._planRegistry = registry;
         await this._savePlanRegistry(workspaceRoot);
         console.log(`[TaskViewerProvider] Migrated ${Object.keys(registry.entries).length} plans to registry`);
+    }
+
+    private async _reconcileLocalPlansFromRunSheets(workspaceRoot: string): Promise<void> {
+        const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+        let changed = false;
+
+        for (const sheet of sheets) {
+            if (!sheet || typeof sheet !== 'object') continue;
+            if (sheet.brainSourcePath) continue;
+            if (sheet.completed === true) continue;
+            if (typeof sheet.sessionId !== 'string' || typeof sheet.planFile !== 'string') continue;
+
+            const existingEntry = this._planRegistry.entries[sheet.sessionId];
+            if (existingEntry) {
+                if (
+                    existingEntry.sourceType === 'local' &&
+                    existingEntry.status === 'active' &&
+                    existingEntry.ownerWorkspaceId === wsId &&
+                    existingEntry.localPlanPath === sheet.planFile
+                ) {
+                    continue;
+                }
+
+                if (existingEntry.sourceType !== 'local') {
+                    continue;
+                }
+
+                existingEntry.ownerWorkspaceId = wsId;
+                existingEntry.localPlanPath = sheet.planFile;
+                existingEntry.topic = sheet.topic || existingEntry.topic || this._inferTopicFromPath(sheet.planFile);
+                existingEntry.createdAt = sheet.createdAt || existingEntry.createdAt || new Date().toISOString();
+                existingEntry.updatedAt = sheet.completedAt || sheet.createdAt || new Date().toISOString();
+                existingEntry.status = 'active';
+                changed = true;
+                continue;
+            }
+
+            this._planRegistry.entries[sheet.sessionId] = {
+                planId: sheet.sessionId,
+                ownerWorkspaceId: wsId,
+                sourceType: 'local',
+                localPlanPath: sheet.planFile,
+                topic: sheet.topic || this._inferTopicFromPath(sheet.planFile),
+                createdAt: sheet.createdAt || new Date().toISOString(),
+                updatedAt: sheet.completedAt || sheet.createdAt || new Date().toISOString(),
+                status: 'active'
+            };
+            changed = true;
+        }
+
+        if (changed) {
+            await this._savePlanRegistry(workspaceRoot);
+            console.log('[TaskViewerProvider] Reconciled missing local plan registry entries from run sheets');
+        }
     }
 
     /**
@@ -3469,6 +3532,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         try {
             await this._ensureOwnershipRegistryInitialized();
             await this._ensureTombstonesLoaded(workspaceRoot);
+            await this._reconcileLocalPlansFromRunSheets(workspaceRoot);
             const allSheets = await this._getSessionLog(workspaceRoot).getRunSheets();
             const ownedActiveEntries = Object.values(this._planRegistry.entries).filter((entry) =>
                 entry.ownerWorkspaceId === this._workspaceId && entry.status === 'active'
@@ -4389,7 +4453,7 @@ At the very end of your response, explicitly recommend which agent should execut
 - If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
 - If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
-IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the enhancement findings.
+IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the enhancement findings. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 ${focusDirective}`;
                 } else {
@@ -4404,7 +4468,7 @@ Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 2. Stage 1 (Enhancement): If you see any 'TODO' sections or underspecified parts in the plan, fill those out first with proposed implementation details without asking for permission. If the plan is already fully specified, you may skip this stage and go straight into the critique.
 3. Stage 2 (Grumpy Critique): post adversarial critique of the technical approach directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
 4. Stage 3 (Balanced Synthesis): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
-5. Stage 4 (Action): Update the original plan with the enhancement findings and provide the final assessment in chat.
+5. Stage 4 (Action): Update the original plan with the enhancement findings and provide the final assessment in chat. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 CRITICAL: Do not stop early. You must complete the Enhancement (if applicable), the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
 
@@ -4440,7 +4504,7 @@ At the very end of your response, explicitly recommend which agent should execut
 - If the plan is simple (e.g., routine changes, no complex architectural shifts, only Band A tasks), say: "This is a simple plan. Send it to the Coder agent."
 - If the plan has high complexity (e.g., Band B tasks, new frameworks, tricky state management), say: "This plan requires advanced reasoning. Send it to the Lead Coder."
 
-IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \`[ ]\` to \`[x]\`).
+IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \\`[ ]\\` to \\`[x]\\`). ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 ${focusDirective}`;
                 } else {
@@ -4453,7 +4517,7 @@ Light mode rules (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 2. Stage 1 (Enhancement): If you see any 'TODO' sections or underspecified parts in the plan, fill those out first with proposed implementation details without asking for permission. If the plan is already fully specified, you may skip this stage and go straight into the critique.
 3. Stage 2 (Grumpy Critique): post adversarial critique of the technical approach directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
 4. Stage 3 (Balanced Synthesis): Immediately after the grumpy critique, post a balanced synthesis directly in chat.
-5. Stage 4 (Action): Update the original plan with review feedback and completed items, and provide the final assessment in chat.
+5. Stage 4 (Action): Update the original plan with review feedback and completed items, and provide the final assessment in chat. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 CRITICAL: Do not stop early. You must complete the Enhancement (if applicable), the Grumpy review, the Balanced synthesis, and the File Update all in one continuous response.
 
@@ -4490,7 +4554,7 @@ Required outputs:
 1. Write both review files above.
 2. Apply code fixes for valid findings.
 3. Run verification checks (typecheck/tests as applicable) and include results in the balanced review.
-4. Update the original plan file with what was fixed, files changed, validation results, and any remaining risks.
+4. Update the original plan file with what was fixed, files changed, validation results, and any remaining risks. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.
@@ -4529,7 +4593,7 @@ Required outputs:
 1. Do NOT write plan/review artifact files in light mode.
 2. Apply code fixes for valid CRITICAL/MAJOR findings.
 3. Run focused verification checks (typecheck/tests as applicable) and include results in the balanced review.
-4. Update the original plan file with fixed items, files changed, validation results, and remaining risks.
+4. Update the original plan file with fixed items, files changed, validation results, and remaining risks. ⚠️ CRITICAL: Ensure you do NOT truncate, summarize, or delete the existing implementation steps, code blocks, or goal statements when editing the plan.
 
 Delivery requirement (chat-first UX) (COMPLETE ALL STEPS IN A SINGLE RESPONSE):
 1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.

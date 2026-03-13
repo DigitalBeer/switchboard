@@ -1777,6 +1777,28 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
         path.join(plansRoot, 'antigravity_plans'),
     ];
 
+    const collectLegacyFiles = async (dir: string): Promise<string[]> => {
+        let entries: fs.Dirent[];
+        try {
+            entries = await fs.promises.readdir(dir, { withFileTypes: true });
+        } catch {
+            return [];
+        }
+
+        const files: string[] = [];
+        for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isFile()) {
+                files.push(fullPath);
+                continue;
+            }
+            if (entry.isDirectory()) {
+                files.push(...await collectLegacyFiles(fullPath));
+            }
+        }
+        return files;
+    };
+
     const registryPath = path.join(workspaceRoot, '.switchboard', 'plan_registry.json');
     let registryBackedUp = false;
     let registryModified = false;
@@ -1784,14 +1806,9 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
 
     for (const legacyDir of legacyDirs) {
         if (!fs.existsSync(legacyDir)) continue;
-        let entries: fs.Dirent[];
-        try {
-            entries = await fs.promises.readdir(legacyDir, { withFileTypes: true });
-        } catch { continue; }
-
-        const files = entries.filter(e => e.isFile());
+        const files = await collectLegacyFiles(legacyDir);
         if (files.length === 0) {
-            try { await fs.promises.rmdir(legacyDir); } catch { }
+            try { await fs.promises.rm(legacyDir, { recursive: true, force: true }); } catch { }
             continue;
         }
 
@@ -1813,9 +1830,9 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
         const subDirName = path.basename(legacyDir); // 'features' or 'antigravity_plans'
         const renamedFilesMap = new Map<string, string>();
 
-        for (const file of files) {
-            const srcPath = path.join(legacyDir, file.name);
-            let destName = file.name;
+        for (const srcPath of files) {
+            const originalName = path.basename(srcPath);
+            let destName = originalName;
             let destPath = path.join(plansRoot, destName);
 
             // Collision-safe rename
@@ -1832,19 +1849,19 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
 
             try {
                 await fs.promises.rename(srcPath, destPath);
-                renamedFilesMap.set(file.name, destName);
+                renamedFilesMap.set(originalName, destName);
             } catch {
                 // If rename fails (cross-device), fall back to copy+unlink
                 try {
                     await fs.promises.copyFile(srcPath, destPath);
                     await fs.promises.unlink(srcPath);
-                    renamedFilesMap.set(file.name, destName);
+                    renamedFilesMap.set(originalName, destName);
                 } catch { continue; }
             }
 
             // Update registry entries pointing to old paths
             if (registry?.entries) {
-                const oldRelative = `.switchboard/plans/${subDirName}/${file.name}`;
+                const oldRelative = `.switchboard/plans/${subDirName}/${originalName}`;
                 const newRelative = `.switchboard/plans/${destName}`;
                 for (const entry of Object.values(registry.entries)) {
                     if (entry.localPlanPath === oldRelative) {
@@ -1858,6 +1875,8 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
                 }
             }
         }
+
+        try { await fs.promises.rm(legacyDir, { recursive: true, force: true }); } catch { }
 
         // Also update runsheet planFile references
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');

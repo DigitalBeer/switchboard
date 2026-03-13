@@ -91,6 +91,7 @@ class TaskViewerProvider {
     _workspaceId = null;
     _planRegistry = { version: 1, entries: {} };
     _ownershipInitPromise = null;
+    _planRegistryWriteTail = Promise.resolve();
     // Session Tracking
     _lastSessionId = null;
     _lastActiveWorkflow = null;
@@ -1297,23 +1298,28 @@ class TaskViewerProvider {
         return this._planRegistry;
     }
     async _savePlanRegistry(workspaceRoot) {
-        const registryPath = this._getPlanRegistryPath(workspaceRoot);
-        const dir = path.dirname(registryPath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        const tmpPath = registryPath + `.${Date.now()}.tmp`;
-        try {
-            await fs.promises.writeFile(tmpPath, JSON.stringify(this._planRegistry, null, 2));
-            await fs.promises.rename(tmpPath, registryPath);
-        }
-        catch (e) {
-            try {
-                await fs.promises.unlink(tmpPath);
+        const writeOperation = async () => {
+            const registryPath = this._getPlanRegistryPath(workspaceRoot);
+            const dir = path.dirname(registryPath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
             }
-            catch { }
-            throw e;
-        }
+            const tmpPath = registryPath + `.${Date.now()}.tmp`;
+            try {
+                await fs.promises.writeFile(tmpPath, JSON.stringify(this._planRegistry, null, 2));
+                await fs.promises.rename(tmpPath, registryPath);
+            }
+            catch (e) {
+                try {
+                    await fs.promises.unlink(tmpPath);
+                }
+                catch { }
+                throw e;
+            }
+        };
+        const nextWrite = this._planRegistryWriteTail.then(writeOperation);
+        this._planRegistryWriteTail = nextWrite.catch(() => { });
+        await nextWrite;
     }
     async _registerPlan(workspaceRoot, entry) {
         this._planRegistry.entries[entry.planId] = entry;
@@ -1692,6 +1698,57 @@ class TaskViewerProvider {
         this._planRegistry = registry;
         await this._savePlanRegistry(workspaceRoot);
         console.log(`[TaskViewerProvider] Migrated ${Object.keys(registry.entries).length} plans to registry`);
+    }
+    async _reconcileLocalPlansFromRunSheets(workspaceRoot) {
+        const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+        let changed = false;
+        for (const sheet of sheets) {
+            if (!sheet || typeof sheet !== 'object')
+                continue;
+            if (sheet.brainSourcePath)
+                continue;
+            if (sheet.completed === true)
+                continue;
+            if (typeof sheet.sessionId !== 'string' || typeof sheet.planFile !== 'string')
+                continue;
+            const existingEntry = this._planRegistry.entries[sheet.sessionId];
+            if (existingEntry) {
+                if (existingEntry.sourceType === 'local' &&
+                    existingEntry.status === 'active' &&
+                    existingEntry.ownerWorkspaceId === wsId &&
+                    existingEntry.localPlanPath === sheet.planFile) {
+                    continue;
+                }
+                if (existingEntry.sourceType !== 'local') {
+                    continue;
+                }
+                existingEntry.ownerWorkspaceId = wsId;
+                existingEntry.localPlanPath = sheet.planFile;
+                existingEntry.topic = sheet.topic || existingEntry.topic || this._inferTopicFromPath(sheet.planFile);
+                existingEntry.createdAt = sheet.createdAt || existingEntry.createdAt || new Date().toISOString();
+                existingEntry.updatedAt = sheet.completedAt || sheet.createdAt || new Date().toISOString();
+                existingEntry.status = 'active';
+                changed = true;
+                continue;
+            }
+            this._planRegistry.entries[sheet.sessionId] = {
+                planId: sheet.sessionId,
+                ownerWorkspaceId: wsId,
+                sourceType: 'local',
+                localPlanPath: sheet.planFile,
+                topic: sheet.topic || this._inferTopicFromPath(sheet.planFile),
+                createdAt: sheet.createdAt || new Date().toISOString(),
+                updatedAt: sheet.completedAt || sheet.createdAt || new Date().toISOString(),
+                status: 'active'
+            };
+            changed = true;
+        }
+        if (changed) {
+            await this._savePlanRegistry(workspaceRoot);
+            console.log('[TaskViewerProvider] Reconciled missing local plan registry entries from run sheets');
+        }
     }
     /**
      * Centralized eligibility check for plan mirroring.
@@ -3319,6 +3376,7 @@ class TaskViewerProvider {
         try {
             await this._ensureOwnershipRegistryInitialized();
             await this._ensureTombstonesLoaded(workspaceRoot);
+            await this._reconcileLocalPlansFromRunSheets(workspaceRoot);
             const allSheets = await this._getSessionLog(workspaceRoot).getRunSheets();
             const ownedActiveEntries = Object.values(this._planRegistry.entries).filter((entry) => entry.ownerWorkspaceId === this._workspaceId && entry.status === 'active');
             const bestSheetByPlanId = new Map();
