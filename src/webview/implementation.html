@@ -2578,6 +2578,15 @@
             });
             batchSelect.addEventListener('change', () => {
                 autobanState.batchSize = parseInt(batchSelect.value, 10) || 3;
+                // Re-evaluate all interval warnings with new batch size
+                columnTransitions.forEach(({ column, floorPerPlan }) => {
+                    const input = document.getElementById('interval-input-' + column);
+                    const label = document.getElementById('warn-label-' + column);
+                    if (input && label) {
+                        evaluateIntervalWarning(column, autobanState.rules[column]?.intervalMinutes || 0,
+                            autobanState.batchSize, floorPerPlan, input, label);
+                    }
+                });
                 emitAutobanState();
             });
 
