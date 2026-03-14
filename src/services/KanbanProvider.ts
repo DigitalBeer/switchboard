@@ -489,6 +489,11 @@ export class KanbanProvider implements vscode.Disposable {
                     await vscode.commands.executeCommand('switchboard.viewPlanFromKanban', msg.sessionId);
                 }
                 break;
+            case 'reviewPlan':
+                if (msg.sessionId) {
+                    await vscode.commands.executeCommand('switchboard.reviewPlanFromKanban', msg.sessionId);
+                }
+                break;
             case 'copyPlanLink':
                 if (msg.sessionId) {
                     const success = await vscode.commands.executeCommand<boolean>('switchboard.copyPlanFromKanban', msg.sessionId, msg.column);

@@ -669,6 +669,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         await this._handleViewPlan(sessionId);
     }
 
+    /** Called by the Kanban board to open a plan in review mode. */
+    public async handleKanbanReviewPlan(sessionId: string) {
+        await this._handleReviewPlan(sessionId);
+    }
+
     public async getStartupCommands(): Promise<Record<string, string>> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (!workspaceFolders) return {};
@@ -1144,6 +1149,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'viewPlan':
                         if (data.sessionId) {
                             await this._handleViewPlan(data.sessionId);
+                        }
+                        break;
+                    case 'reviewPlan':
+                        if (data.sessionId) {
+                            await this._handleReviewPlan(data.sessionId);
                         }
                         break;
                     case 'copyPlanLink':
@@ -3068,27 +3078,51 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _handleViewPlan(sessionId: string) {
+    private async _resolvePlanContextForSession(sessionId: string): Promise<{ planFileAbsolute: string; topic: string }> {
         const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
+        if (!workspaceFolders) {
+            throw new Error('No workspace folder found.');
+        }
         const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        const content = await fs.promises.readFile(runSheetPath, 'utf8');
+        const sheet = JSON.parse(content);
+
+        const planPath = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
+            ? sheet.planFile.trim()
+            : (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
+
+        if (!planPath) {
+            throw new Error('No plan file associated with this session.');
+        }
+
+        const planFileAbsolute = path.resolve(workspaceRoot, planPath);
+        if (!this._isPathWithinRoot(planFileAbsolute, workspaceRoot)) {
+            throw new Error('Plan file path is outside the workspace boundary.');
+        }
+
+        const topic = (typeof sheet.topic === 'string' && sheet.topic.trim())
+            ? sheet.topic.trim()
+            : path.basename(planFileAbsolute);
+
+        return { planFileAbsolute, topic };
+    }
+
+    private async _handleViewPlan(sessionId: string) {
         try {
-            const content = await fs.promises.readFile(runSheetPath, 'utf8');
-            const sheet = JSON.parse(content);
-            if (!sheet.planFile) {
-                vscode.window.showErrorMessage('No plan file associated with this session.');
-                return;
-            }
-            const planFileAbsolute = path.resolve(workspaceRoot, sheet.planFile);
-            // F-06 SECURITY: Enforce workspace containment for plan paths
-            if (!this._isPathWithinRoot(planFileAbsolute, workspaceRoot)) {
-                vscode.window.showErrorMessage('Plan file path is outside the workspace boundary.');
-                return;
-            }
+            const { planFileAbsolute } = await this._resolvePlanContextForSession(sessionId);
             await vscode.commands.executeCommand('switchboard.openPlan', vscode.Uri.file(planFileAbsolute));
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to open plan: ${e}`);
+        }
+    }
+
+    private async _handleReviewPlan(sessionId: string) {
+        try {
+            const { planFileAbsolute, topic } = await this._resolvePlanContextForSession(sessionId);
+            await vscode.commands.executeCommand('switchboard.reviewPlan', { sessionId, planFileAbsolute, topic });
+        } catch (e) {
+            vscode.window.showErrorMessage(`Failed to open review panel: ${e}`);
         }
     }
 

@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plan Review</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --panel: #161b22;
+            --border: #2d333b;
+            --text: #d1d7e0;
+            --muted: #8b949e;
+            --accent: #3ddbd9;
+            --danger: #f85149;
+            --success: #3fb950;
+            --shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+            --font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
+            --mono: var(--vscode-editor-font-family, 'Consolas', monospace);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-family);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            background: var(--panel);
+        }
+
+        .title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--accent);
+            font-family: var(--mono);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .subtitle {
+            font-size: 12px;
+            color: var(--muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 50vw;
+            text-align: right;
+        }
+
+        .content {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+            line-height: 1.6;
+            position: relative;
+        }
+
+        .markdown-body {
+            max-width: 980px;
+            margin: 0 auto;
+            padding-bottom: 64px;
+        }
+
+        .comment-popup {
+            position: fixed;
+            z-index: 999;
+            width: min(420px, calc(100vw - 24px));
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            box-shadow: var(--shadow);
+            display: none;
+        }
+
+        .comment-popup.visible {
+            display: block;
+        }
+
+        .popup-label {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            font-family: var(--mono);
+        }
+
+        .selected-preview {
+            font-size: 12px;
+            color: var(--text);
+            background: rgba(61, 219, 217, 0.08);
+            border: 1px solid rgba(61, 219, 217, 0.22);
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+            max-height: 80px;
+            overflow: auto;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 76px;
+            resize: vertical;
+            background: #0b0d12;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px;
+            font-family: var(--font-family);
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        .popup-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        button {
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        button.primary {
+            background: rgba(61, 219, 217, 0.14);
+            border-color: rgba(61, 219, 217, 0.35);
+            color: var(--accent);
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 12px;
+            right: 12px;
+            z-index: 1100;
+            max-width: 460px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--panel);
+            box-shadow: var(--shadow);
+            display: none;
+            font-size: 12px;
+        }
+
+        .toast.visible {
+            display: block;
+        }
+
+        .toast.success {
+            border-color: rgba(63, 185, 80, 0.55);
+            color: var(--success);
+        }
+
+        .toast.error {
+            border-color: rgba(248, 81, 73, 0.55);
+            color: var(--danger);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <div class="title" id="topic">Plan Review</div>
+        <div class="subtitle" id="path"></div>
+    </div>
+
+    <div class="content" id="content">
+        <article id="markdown-content" class="markdown-body"></article>
+    </div>
+
+    <div class="comment-popup" id="comment-popup">
+        <div class="popup-label">Comment on selection</div>
+        <div class="selected-preview" id="selected-preview"></div>
+        <textarea id="comment-input" placeholder="Add your contextual feedback..."></textarea>
+        <div class="popup-actions">
+            <button id="cancel-comment">Cancel</button>
+            <button class="primary" id="submit-comment">Submit Comment</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+
+        const topicEl = document.getElementById('topic');
+        const pathEl = document.getElementById('path');
+        const markdownContentEl = document.getElementById('markdown-content');
+        const popupEl = document.getElementById('comment-popup');
+        const selectedPreviewEl = document.getElementById('selected-preview');
+        const commentInputEl = document.getElementById('comment-input');
+        const toastEl = document.getElementById('toast');
+
+        const state = {
+            sessionId: '',
+            topic: '',
+            planFileAbsolute: '',
+            selectedText: ''
+        };
+
+        function hidePopup(clear = false) {
+            popupEl.classList.remove('visible');
+            if (clear) {
+                commentInputEl.value = '';
+                state.selectedText = '';
+            }
+        }
+
+        function showToast(message, kind) {
+            toastEl.textContent = message;
+            toastEl.className = 'toast visible ' + (kind === 'success' ? 'success' : 'error');
+            setTimeout(() => {
+                toastEl.className = 'toast';
+            }, 2600);
+        }
+
+        function showPopup(rect, selectedText) {
+            const maxLeft = window.innerWidth - popupEl.offsetWidth - 12;
+            const targetLeft = Math.max(12, Math.min(rect.left, maxLeft > 12 ? maxLeft : rect.left));
+            const targetTop = Math.min(window.innerHeight - 12, rect.bottom + 10);
+
+            popupEl.style.left = `${targetLeft}px`;
+            popupEl.style.top = `${targetTop}px`;
+            selectedPreviewEl.textContent = selectedText;
+            popupEl.classList.add('visible');
+            commentInputEl.focus();
+        }
+
+        function handleSelectionEvent() {
+            const selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0) {
+                hidePopup();
+                return;
+            }
+
+            const text = selection.toString().trim();
+            if (!text) {
+                hidePopup();
+                return;
+            }
+
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            const payloadRect = {
+                top: rect.top,
+                left: rect.left,
+                width: rect.width,
+                height: rect.height,
+                bottom: rect.bottom,
+                right: rect.right
+            };
+
+            state.selectedText = text;
+            vscode.postMessage({
+                type: 'selectionChanged',
+                selectedText: text,
+                selectionRect: payloadRect
+            });
+
+            showPopup(rect, text);
+        }
+
+        document.getElementById('cancel-comment').addEventListener('click', () => {
+            hidePopup(true);
+        });
+
+        document.getElementById('submit-comment').addEventListener('click', () => {
+            const comment = commentInputEl.value.trim();
+            if (!state.selectedText) {
+                showToast('Select text before submitting a comment.', 'error');
+                return;
+            }
+            if (!comment) {
+                showToast('Comment is required.', 'error');
+                return;
+            }
+
+            vscode.postMessage({
+                type: 'submitComment',
+                sessionId: state.sessionId,
+                topic: state.topic,
+                planFileAbsolute: state.planFileAbsolute,
+                selectedText: state.selectedText,
+                comment
+            });
+        });
+
+        document.addEventListener('mouseup', () => {
+            setTimeout(handleSelectionEvent, 0);
+        });
+
+        document.addEventListener('mousedown', (event) => {
+            if (!popupEl.contains(event.target)) {
+                const selection = window.getSelection();
+                const selectedText = selection ? selection.toString().trim() : '';
+                if (!selectedText) {
+                    hidePopup();
+                }
+            }
+        });
+
+        window.addEventListener('message', (event) => {
+            const message = event.data;
+            switch (message.type) {
+                case 'renderPlan':
+                    state.sessionId = message.sessionId || '';
+                    state.topic = message.topic || 'Plan Review';
+                    state.planFileAbsolute = message.planFileAbsolute || '';
+                    topicEl.textContent = state.topic;
+                    pathEl.textContent = state.planFileAbsolute;
+                    markdownContentEl.innerHTML = message.renderedHtml || '';
+                    hidePopup(true);
+                    break;
+                case 'commentResult':
+                    if (message.ok) {
+                        const target = message.targetAgent ? ` -> ${message.targetAgent}` : '';
+                        showToast(`Comment sent${target}`, 'success');
+                        hidePopup(true);
+                    } else {
+                        showToast(message.message || 'Failed to send comment.', 'error');
+                    }
+                    break;
+            }
+        });
+
+        vscode.postMessage({ type: 'ready' });
+    </script>
+</body>
+
+</html>

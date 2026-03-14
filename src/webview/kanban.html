@@ -544,6 +544,12 @@
                 });
             });
 
+            document.querySelectorAll('.card-btn.review').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    vscode.postMessage({ type: 'reviewPlan', sessionId: btn.dataset.session });
+                });
+            });
+
             document.querySelectorAll('.card-btn.complete').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     const cardEl = e.target.closest('.kanban-card');
@@ -582,6 +588,7 @@
                     <div class="card-actions">
                         <button class="card-btn copy" data-session="${card.sessionId}">${copyLabel}</button>
                         <button class="card-btn view" data-session="${card.sessionId}">View</button>
+                        <button class="card-btn review" data-session="${card.sessionId}">Review</button>
                         <button class="card-btn complete" data-session="${card.sessionId}">Complete</button>
                     </div>
                 </div>`;

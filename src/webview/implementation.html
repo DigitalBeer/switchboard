@@ -2247,6 +2247,172 @@
             btn.addEventListener('click', () => switchAgentTab(btn.dataset.tab));
         });
 
+        function createAgentRow(label, roleId, actionLabel, findTerminalFn, hideLocate) {
+            const container = document.createElement('div');
+            container.className = 'agent-row';
+
+            const termName = findTerminalFn ? findTerminalFn(lastTerminals) : null;
+            const dispatchInfo = lastDispatchReadiness && roleId ? lastDispatchReadiness[roleId] : null;
+            const dispatchState = dispatchInfo && dispatchInfo.state ? dispatchInfo.state : null;
+            const routedTermName = (dispatchInfo && dispatchInfo.terminalName) ? dispatchInfo.terminalName : null;
+            const resolvedTermName = termName || routedTermName;
+            const termData = resolvedTermName ? lastTerminals[resolvedTermName] : null;
+
+            // Status Logic
+            let isReady = false;
+            let isWorking = false;
+            let isRecoverable = false;
+
+            if (roleId === 'jules') {
+                isReady = true;
+                if (lastJulesActivePlans && lastJulesActivePlans.length > 0) {
+                    isWorking = true;
+                }
+            } else if (dispatchState === 'ready') {
+                isReady = true;
+            } else if (dispatchState === 'recoverable') {
+                isReady = true;
+                isRecoverable = true;
+            } else if (dispatchState === 'not_ready') {
+                isReady = false;
+            } else if (termData) {
+                // Check liveliness
+                const HEARTBEAT_THRESHOLD_MS = 60_000;
+                const lastSeenMs = Date.parse(termData.lastSeen || '');
+                const heartbeatAlive = !isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < HEARTBEAT_THRESHOLD_MS;
+                const isAlive = termData.alive !== undefined ? termData.alive : (termData._isLocal || heartbeatAlive);
+
+                if (isAlive) {
+                    isReady = true;
+                    // For terminals, check statusState. For chat agents, check status.
+                    const currentStatus = termData.statusState || termData.status;
+                    if (currentStatus === 'working' || currentStatus === 'thinking' || currentStatus === 'active' || currentStatus === 'planning') {
+                        isWorking = true;
+                    }
+                }
+            }
+
+            // Row Header
+            const header = document.createElement('div');
+            header.className = 'row-header';
+
+            // Identity (Dot + Name)
+            const identity = document.createElement('div');
+            identity.className = 'agent-identity';
+
+            const dot = document.createElement('div');
+            dot.className = 'status-dot';
+            if (isWorking) dot.classList.add('green-pulse');
+            else if (isReady) dot.classList.add(isRecoverable ? 'orange' : 'green');
+            else dot.classList.add('red');
+
+            const name = document.createElement('div');
+            name.className = 'agent-name';
+            if (roleId !== 'jules' && lastStartupCommands[roleId]) {
+                const cmd = lastStartupCommands[roleId].trim().split(/\s+/)[0].toUpperCase();
+                name.innerText = `${label} - ${cmd} CLI`;
+            } else {
+                name.innerText = label;
+            }
+
+            identity.appendChild(dot);
+            identity.appendChild(name);
+
+            header.appendChild(identity);
+
+            if (roleId === 'jules') {
+                const locateBtn = document.createElement('button');
+                locateBtn.className = 'locate-btn';
+                locateBtn.innerText = 'locate';
+                locateBtn.onclick = () => {
+                    vscode.postMessage({ type: 'focusTerminal', terminalName: 'Jules Monitor' });
+                };
+                header.appendChild(locateBtn);
+            } else if (!hideLocate) {
+                // Locate Button
+                const locateBtn = document.createElement('button');
+                locateBtn.className = 'locate-btn';
+                locateBtn.innerText = 'locate';
+                // Disable/Hide for chat-only agents that are not locals
+                const isChatOnly = termData && termData._isChat && !termData._isLocal;
+                locateBtn.disabled = !resolvedTermName || isChatOnly;
+                if (isChatOnly) locateBtn.style.opacity = '0.3';
+
+                locateBtn.onclick = () => {
+                    if (resolvedTermName) vscode.postMessage({ type: 'focusTerminal', terminalName: resolvedTermName });
+                };
+                header.appendChild(locateBtn);
+            }
+
+            // Action Button
+            const btn = document.createElement('button');
+            btn.className = 'action-btn';
+            const pendingDispatch = isDispatchPending(roleId);
+            btn.innerText = pendingDispatch ? 'DISPATCHING...' : actionLabel;
+            btn.disabled = !isReady || pendingDispatch || !isPlanSelected();
+            btn.dataset.role = roleId;
+            if (pendingDispatch) {
+                btn.classList.add('dispatching');
+            }
+            if (isRecoverable && dispatchInfo && dispatchInfo.source) {
+                btn.title = `Recoverable route (${dispatchInfo.source})`;
+            } else if (dispatchState === 'not_ready') {
+                btn.title = 'No executable terminal route in this window';
+            }
+
+            // Special click handlers based on role
+            btn.onclick = () => {
+                const sessionId = runSheetSelect.value;
+                if (!sessionId) return;
+                markDispatchPending(roleId);
+                btn.disabled = true;
+                btn.classList.add('dispatching');
+                btn.innerText = 'DISPATCHING...';
+
+                if (roleId === 'planner') {
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'planner', sessionFile: sessionId, instruction: 'enhance' });
+                } else if (roleId === 'reviewer') {
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'reviewer', sessionFile: sessionId });
+                } else if (roleId === 'coder') {
+                    // Coder: Action -> Implement
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'coder', sessionFile: sessionId });
+                } else if (roleId === 'lead') {
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'lead', sessionFile: sessionId });
+                } else if (roleId === 'jules') {
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'jules', sessionFile: sessionId, instruction: 'execute' });
+                }
+            };
+
+            container.appendChild(header);
+
+            if (roleId === 'jules') {
+                const julesSync = document.createElement('button');
+                julesSync.className = 'secondary-btn is-cyan w-full';
+                julesSync.id = 'jules-sync-btn';
+                julesSync.innerText = 'SYNC REPO';
+                julesSync.onclick = () => {
+                    julesSync.disabled = true;
+                    julesSync.innerText = 'SYNCING...';
+                    julesSync.classList.add('dispatching');
+                    vscode.postMessage({ type: 'airlock_syncRepo' });
+                };
+                container.appendChild(julesSync);
+
+                const syncStatus = document.createElement('div');
+                syncStatus.id = 'jules-sync-status';
+                syncStatus.style.cssText = 'padding:2px 8px; font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
+                container.appendChild(syncStatus);
+            }
+
+            container.appendChild(btn);
+
+            if (roleId === 'jules') {
+                container.appendChild(createJulesHistoryList());
+            }
+
+            return container;
+        }
+
         function renderAgentList() {
             // Preserve stateful analyst input across re-renders
             const existingInput = document.getElementById('analyst-input');

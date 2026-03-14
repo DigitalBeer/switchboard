@@ -7,6 +7,7 @@ import { TaskViewerProvider } from './services/TaskViewerProvider';
 import { InboxWatcher } from './services/InboxWatcher';
 import { SessionActionLog } from './services/SessionActionLog';
 import { KanbanProvider } from './services/KanbanProvider';
+import { ReviewProvider, ReviewCommentRequest, ReviewCommentResult, ReviewPlanContext } from './services/ReviewProvider';
 import { cleanWorkspace, pruneZombieTerminalEntries } from './lifecycle/cleanWorkspace';
 
 // Status bar item for setup notification
@@ -102,6 +103,67 @@ async function ensureWorkspaceMcpServerFiles(extensionPath: string, workspaceRoo
 // Terminal Registry: Store terminal references for input forwarding
 const registeredTerminals = new Map<string, vscode.Terminal>();
 const recentBridgeInputBySource = new Map<string, { target: string; at: number }>();
+
+function normalizeAgentKey(value: string | undefined | null): string {
+    return (value || '')
+        .toLowerCase()
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function isPathWithinRoot(candidate: string, root: string): boolean {
+    const rel = path.relative(root, candidate);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function isCompatibleIdeName(termIdeName: string | undefined, currentIdeName: string): boolean {
+    const normalizedTermIde = (termIdeName || '').toLowerCase();
+    const normalizedCurrentIde = (currentIdeName || '').toLowerCase();
+    if (!normalizedTermIde) return true;
+    if (normalizedTermIde === normalizedCurrentIde) return true;
+    if (normalizedTermIde === 'antigravity' && normalizedCurrentIde.includes('visual studio code')) return true;
+    if (normalizedTermIde.includes('visual studio code') && normalizedCurrentIde === 'antigravity') return true;
+    return false;
+}
+
+function resolvePreferredReviewRole(state: any): string {
+    const validRoles = new Set(['planner', 'reviewer', 'lead', 'coder', 'analyst']);
+    const candidates = [
+        state?.review?.preferredRole,
+        state?.context?.review?.preferredRole,
+        state?.context?.preferredRole,
+        state?.session?.activePersona
+    ];
+    for (const candidate of candidates) {
+        const normalized = normalizeAgentKey(typeof candidate === 'string' ? candidate : '').replace(/\s+/g, '_');
+        const role = normalized.replace(/^lead_coder$/, 'lead');
+        if (validRoles.has(role)) return role;
+    }
+    return 'planner';
+}
+
+function resolveTerminalByName(terminalName: string): vscode.Terminal | undefined {
+    const exact = registeredTerminals.get(terminalName);
+    if (exact && exact.exitStatus === undefined) {
+        return exact;
+    }
+
+    const normalizedTarget = normalizeAgentKey(terminalName);
+    for (const [name, terminal] of registeredTerminals.entries()) {
+        if (terminal.exitStatus !== undefined) continue;
+        if (normalizeAgentKey(name) === normalizedTarget) {
+            return terminal;
+        }
+    }
+
+    return (vscode.window.terminals || []).find((terminal) => {
+        if (terminal.exitStatus !== undefined) return false;
+        const liveName = normalizeAgentKey(terminal.name);
+        const creationName = normalizeAgentKey((terminal.creationOptions as vscode.TerminalOptions | undefined)?.name || '');
+        return liveName === normalizedTarget || creationName === normalizedTarget;
+    });
+}
 
 /**
  * Helper to wrap a promise with a timeout.
@@ -663,7 +725,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Kanban Board
     const kanbanProvider = new KanbanProvider(context.extensionUri, context);
+    const reviewProvider = new ReviewProvider(context.extensionUri);
     context.subscriptions.push(kanbanProvider);
+    context.subscriptions.push(reviewProvider);
     taskViewerProvider.setKanbanProvider(kanbanProvider);
     const openKanbanDisposable = vscode.commands.registerCommand('switchboard.openKanban', async () => {
         await kanbanProvider.open();
@@ -695,6 +759,11 @@ export async function activate(context: vscode.ExtensionContext) {
         taskViewerProvider.handleKanbanViewPlan(sessionId);
     });
     context.subscriptions.push(viewPlanFromKanbanDisposable);
+
+    const reviewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.reviewPlanFromKanban', async (sessionId: string) => {
+        taskViewerProvider.handleKanbanReviewPlan(sessionId);
+    });
+    context.subscriptions.push(reviewPlanFromKanbanDisposable);
 
     let degradedMcpStreak = 0;
     let autoHealInFlight = false;
@@ -1223,6 +1292,157 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
     context.subscriptions.push(openPlanDisposable);
+
+    const reviewPlanDisposable = vscode.commands.registerCommand('switchboard.reviewPlan', async (target: ReviewPlanContext | vscode.Uri | string) => {
+        if (!target) return;
+
+        let planFileAbsolute = '';
+        let sessionId: string | undefined;
+        let topic: string | undefined;
+
+        if (typeof target === 'object' && !(target instanceof vscode.Uri) && 'planFileAbsolute' in target) {
+            const candidate = target as ReviewPlanContext;
+            planFileAbsolute = String(candidate.planFileAbsolute || '').trim();
+            sessionId = candidate.sessionId;
+            topic = candidate.topic;
+        } else if (target instanceof vscode.Uri) {
+            planFileAbsolute = target.fsPath;
+        } else if (typeof target === 'string') {
+            planFileAbsolute = target.trim();
+        }
+
+        if (!planFileAbsolute) {
+            vscode.window.showErrorMessage('Failed to open review panel: invalid plan path.');
+            return;
+        }
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) {
+            vscode.window.showErrorMessage('Failed to open review panel: no workspace folder found.');
+            return;
+        }
+
+        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const absolutePath = path.resolve(planFileAbsolute);
+        if (!isPathWithinRoot(absolutePath, workspaceRoot)) {
+            vscode.window.showErrorMessage('Review plan path is outside the workspace boundary.');
+            return;
+        }
+
+        try {
+            await reviewProvider.open({
+                sessionId,
+                topic,
+                planFileAbsolute: absolutePath
+            });
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            vscode.window.showErrorMessage(`Failed to open review panel: ${message}`);
+        }
+    });
+    context.subscriptions.push(reviewPlanDisposable);
+
+    const sendReviewCommentDisposable = vscode.commands.registerCommand(
+        'switchboard.sendReviewComment',
+        async (request: ReviewCommentRequest): Promise<ReviewCommentResult> => {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (!workspaceFolders) {
+                return { ok: false, message: 'No workspace folder found.' };
+            }
+            const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+            const selectedText = typeof request?.selectedText === 'string' ? request.selectedText.trim() : '';
+            const comment = typeof request?.comment === 'string' ? request.comment.trim() : '';
+            const planFileAbsolute = typeof request?.planFileAbsolute === 'string' ? request.planFileAbsolute.trim() : '';
+
+            if (!selectedText) {
+                return { ok: false, message: 'Selected text is required.' };
+            }
+            if (!comment) {
+                return { ok: false, message: 'Comment text is required.' };
+            }
+            if (!planFileAbsolute) {
+                return { ok: false, message: 'Plan path is required.' };
+            }
+
+            const absolutePlanPath = path.resolve(planFileAbsolute);
+            if (!isPathWithinRoot(absolutePlanPath, workspaceRoot)) {
+                return { ok: false, message: 'Plan path is outside workspace boundary.' };
+            }
+
+            const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
+            let state: any = {};
+            if (fs.existsSync(statePath)) {
+                try {
+                    state = JSON.parse(await fs.promises.readFile(statePath, 'utf8'));
+                } catch (e) {
+                    const message = e instanceof Error ? e.message : String(e);
+                    return { ok: false, message: `Failed to parse state.json: ${message}` };
+                }
+            }
+
+            const preferredRole = resolvePreferredReviewRole(state);
+            const rolePriority = Array.from(new Set([preferredRole, 'planner', 'reviewer', 'lead', 'coder', 'analyst']));
+            const stateTerminals = state.terminals || {};
+            const currentIdeName = vscode.env.appName || '';
+
+            let selectedTerminalName: string | undefined;
+            let selectedTerminal: vscode.Terminal | undefined;
+
+            for (const role of rolePriority) {
+                const roleCandidates = Object.entries(stateTerminals)
+                    .filter(([, info]) => normalizeAgentKey((info as any)?.role) === role)
+                    .filter(([, info]) => isCompatibleIdeName((info as any)?.ideName, currentIdeName))
+                    .map(([name]) => name);
+
+                for (const candidateName of roleCandidates) {
+                    const terminal = resolveTerminalByName(candidateName);
+                    if (terminal) {
+                        selectedTerminalName = candidateName;
+                        selectedTerminal = terminal;
+                        break;
+                    }
+                }
+
+                if (selectedTerminal) break;
+            }
+
+            if (!selectedTerminal) {
+                for (const fallbackName of ['Planner', 'Reviewer', 'Lead Coder', 'Coder', 'Analyst']) {
+                    const terminal = resolveTerminalByName(fallbackName);
+                    if (terminal) {
+                        selectedTerminalName = fallbackName;
+                        selectedTerminal = terminal;
+                        break;
+                    }
+                }
+            }
+
+            if (!selectedTerminal || !selectedTerminalName) {
+                return { ok: false, message: 'No active target terminal found for review comments.' };
+            }
+
+            const compactSelectedText = selectedText.replace(/\s+/g, ' ').trim();
+            const compactComment = comment.replace(/\s+/g, ' ').trim();
+            const planContext = path.relative(workspaceRoot, absolutePlanPath).replace(/\\/g, '/');
+            const sessionContext = request?.sessionId ? `\nSession: ${request.sessionId}` : '';
+            const payload = `> [${compactSelectedText}] — Comment: "${compactComment}"\nPlan: ${planContext}${sessionContext}`;
+
+            try {
+                await sendRobustText(selectedTerminal, payload, true);
+                return {
+                    ok: true,
+                    message: `Comment sent to ${selectedTerminalName}`,
+                    targetAgent: selectedTerminalName,
+                    preferredRole
+                };
+            } catch (e) {
+                const message = e instanceof Error ? e.message : String(e);
+                return { ok: false, message: `Failed to send review comment: ${message}` };
+            }
+        }
+    );
+    context.subscriptions.push(sendReviewCommentDisposable);
 
     async function createAgentGrid() {
         if (!workspaceRoot) {

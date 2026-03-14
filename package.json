@@ -75,6 +75,10 @@
       {
         "command": "switchboard.openKanban",
         "title": "Switchboard: Open CLI-BAN"
+      },
+      {
+        "command": "switchboard.reviewPlan",
+        "title": "Switchboard: Review Plan"
       }
     ],
     "configuration": {
