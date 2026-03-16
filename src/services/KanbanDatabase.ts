@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { createRequire } from 'module';
 import * as path from 'path';
 
 export type KanbanPlanStatus = 'active' | 'archived' | 'completed';
@@ -77,6 +78,7 @@ ON CONFLICT(plan_id) DO UPDATE SET
 `;
 
 const MIGRATION_VERSION_KEY = 'kanban_db_migration_version';
+const runtimeRequire = createRequire(__filename);
 
 export class KanbanDatabase {
     private static _instances = new Map<string, KanbanDatabase>();
@@ -219,29 +221,6 @@ export class KanbanDatabase {
             [topic, new Date().toISOString(), sessionId]
         );
     }
-    public async markMissingAsArchived(workspaceId: string, activePlanIds: Set<string>): Promise<boolean> {
-        if (!(await this.ensureReady()) || !this._db) return false;
-        const existing = await this.getBoard(workspaceId);
-        const now = new Date().toISOString();
-
-        this._db.run('BEGIN');
-        try {
-            for (const record of existing) {
-                if (activePlanIds.has(record.planId)) continue;
-                this._db.run(
-                    'UPDATE plans SET status = ?, updated_at = ?, last_action = ? WHERE plan_id = ?',
-                    ['archived', now, 'legacy-sync-archive', record.planId]
-                );
-            }
-            this._db.run('COMMIT');
-        } catch (error) {
-            try { this._db.run('ROLLBACK'); } catch { }
-            console.error('[KanbanDatabase] Failed to archive stale records:', error);
-            return false;
-        }
-        return this._persist();
-    }
-
     public async getBoard(workspaceId: string): Promise<KanbanPlanRecord[]> {
         if (!(await this.ensureReady()) || !this._db) return [];
         const stmt = this._db.prepare(
@@ -346,7 +325,8 @@ export class KanbanDatabase {
     private static async _loadSqlJs(): Promise<SqlJsStatic> {
         if (!KanbanDatabase._sqlJsPromise) {
             KanbanDatabase._sqlJsPromise = (async () => {
-                const initSqlJsModule = require('sql.js') as ((config?: { wasmBinary?: Uint8Array }) => Promise<SqlJsStatic>) | { default?: (config?: { wasmBinary?: Uint8Array }) => Promise<SqlJsStatic> };
+                const sqlJsModulePath = KanbanDatabase._resolveSqlJsModulePath();
+                const initSqlJsModule = runtimeRequire(sqlJsModulePath) as ((config?: { wasmBinary?: Uint8Array }) => Promise<SqlJsStatic>) | { default?: (config?: { wasmBinary?: Uint8Array }) => Promise<SqlJsStatic> };
                 const initSqlJs = typeof initSqlJsModule === 'function' ? initSqlJsModule : initSqlJsModule.default;
                 if (!initSqlJs) {
                     throw new Error('sql.js module did not expose an initializer function.');
@@ -362,8 +342,34 @@ export class KanbanDatabase {
         return KanbanDatabase._sqlJsPromise;
     }
 
+    private static _resolveSqlJsModulePath(): string {
+        const candidates = [
+            path.join(__dirname, 'sql-wasm.js'),
+            path.join(__dirname, '..', 'sql-wasm.js'),
+            path.join(__dirname, '..', '..', 'sql-wasm.js'),
+            path.join(path.dirname(require.main?.filename || process.cwd()), 'sql-wasm.js'),
+            path.join(process.cwd(), 'dist', 'sql-wasm.js'),
+            path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+            path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+            path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+            path.join(__dirname, '..', '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+            path.join(__dirname, '..', '..', '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js')
+        ];
+        for (const candidate of candidates) {
+            if (fs.existsSync(candidate)) {
+                return candidate;
+            }
+        }
+        throw new Error(`Unable to locate sql-wasm.js. Checked: ${candidates.join(', ')}`);
+    }
+
     private static _resolveSqlWasmPath(): string {
         const candidates = [
+            path.join(__dirname, 'sql-wasm.wasm'),
+            path.join(__dirname, '..', 'sql-wasm.wasm'),
+            path.join(__dirname, '..', '..', 'sql-wasm.wasm'),
+            path.join(path.dirname(require.main?.filename || process.cwd()), 'sql-wasm.wasm'),
+            path.join(process.cwd(), 'dist', 'sql-wasm.wasm'),
             path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
             path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
             path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
@@ -375,7 +381,7 @@ export class KanbanDatabase {
                 return candidate;
             }
         }
-        throw new Error('Unable to locate sql-wasm.wasm. Ensure sql.js is installed.');
+        throw new Error(`Unable to locate sql-wasm.wasm. Checked: ${candidates.join(', ')}`);
     }
 }
 

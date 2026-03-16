@@ -71,6 +71,18 @@
             gap: 10px;
         }
 
+        .workspace-select {
+            background: #0a0a0a;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 2px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.5px;
+            padding: 4px 8px;
+            min-width: 180px;
+        }
+
         .controls-strip {
             display: flex;
             align-items: center;
@@ -365,6 +377,15 @@
             color: var(--accent-teal);
         }
 
+        .card-btn.icon-btn {
+            padding: 4px;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         .empty-state {
             text-align: center;
             padding: 20px 10px;
@@ -405,7 +426,7 @@
         /* Card Complete / Delete Animation */
         @keyframes cardComplete {
             0% { transform: scale(1); opacity: 1; }
-            40% { transform: scale(1.05); opacity: 0.9; background: color-mix(in srgb, var(--accent-teal) 20%, var(--panel-bg)); border-color: var(--accent-teal); }
+            40% { transform: scale(1.05); opacity: 0.9; }
             100% { transform: scale(0.8) translateX(40px); opacity: 0; padding-top: 0; padding-bottom: 0; margin: 0; height: 0; border-width: 0; }
         }
         .card-completing {
@@ -450,7 +471,10 @@
 
     <body>
     <div class="kanban-header">
-        <div class="kanban-title" id="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to external IDE agents</div>
+        <div class="kanban-title" id="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to IDE chat agents</div>
+        <div class="header-controls">
+            <select id="workspace-select" class="workspace-select" title="Select workspace"></select>
+        </div>
     </div>
     <div class="controls-strip">
         <button class="strip-btn" id="btn-autoban" title="Toggle Autoban engine">⚡ AUTOBAN</button>
@@ -470,10 +494,10 @@
         const vscode = acquireVsCodeApi();
         const kanbanBoard = document.getElementById('kanban-board');
         let columnDefinitions = [
-            { id: 'CREATED', label: 'Plan Created', role: null, autobanEnabled: true },
-            { id: 'PLAN REVIEWED', label: 'Plan Reviewed', role: 'planner', autobanEnabled: true },
-            { id: 'CODED', label: 'Coded', role: null, autobanEnabled: true },
-            { id: 'CODE REVIEWED', label: 'Code Reviewed', role: 'reviewer', autobanEnabled: false }
+            { id: 'CREATED', label: 'New', role: null, autobanEnabled: true },
+            { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', autobanEnabled: true },
+            { id: 'CODED', label: 'Coded', role: 'coder', autobanEnabled: true },
+            { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: false }
         ];
         let columns = columnDefinitions.map(col => col.id);
         let currentCards = [];
@@ -484,6 +508,29 @@
         let autobanConfig = null; // Received from backend: { enabled, batchSize, rules }
         let autobanColumns = columnDefinitions.filter(col => col.autobanEnabled).map(col => col.id);
         let lastBoardSignature = '';
+        let currentWorkspaceRoot = '';
+        let workspaceItems = [];
+
+        function getActiveWorkspaceRoot() {
+            return currentWorkspaceRoot || (workspaceItems[0] && workspaceItems[0].workspaceRoot) || '';
+        }
+
+        function postKanbanMessage(message) {
+            vscode.postMessage({
+                ...message,
+                workspaceRoot: message.workspaceRoot || getActiveWorkspaceRoot()
+            });
+        }
+
+        function updateWorkspaceSelector() {
+            const select = document.getElementById('workspace-select');
+            if (!select) return;
+            const options = workspaceItems.map(item => `<option value="${escapeAttr(item.workspaceRoot)}">${escapeHtml(item.label)}</option>`).join('');
+            select.innerHTML = options;
+            if (currentWorkspaceRoot) {
+                select.value = currentWorkspaceRoot;
+            }
+        }
 
         function updateCliToggleUi() {
             const toggle = document.getElementById('cli-triggers-toggle');
@@ -515,7 +562,7 @@
         function buildBoardSignature(cards) {
             if (!Array.isArray(cards) || cards.length === 0) return '';
             return cards
-                .map(card => `${card.sessionId}|${card.column}|${card.topic || ''}|${card.planFile || ''}|${card.complexity || 'Unknown'}`)
+                .map(card => `${card.workspaceRoot || ''}|${card.sessionId}|${card.column}|${card.topic || ''}|${card.planFile || ''}|${card.complexity || 'Unknown'}`)
                 .sort()
                 .join('||');
         }
@@ -585,7 +632,7 @@
             }).join('');
 
             document.getElementById('btn-add-plan')?.addEventListener('click', () => {
-                vscode.postMessage({ type: 'createPlan' });
+                postKanbanMessage({ type: 'createPlan' });
             });
 
             const codedTargetSelect = document.getElementById('coded-target-select');
@@ -594,7 +641,7 @@
                 codedTargetSelect.addEventListener('change', (e) => {
                     currentCodedTarget = e.target.value;
                     updateAllColumnAgents();
-                    vscode.postMessage({ type: 'setColumnTarget', column: 'CODED', target: e.target.value });
+                    postKanbanMessage({ type: 'setColumnTarget', column: 'CODED', target: e.target.value });
                 });
             }
 
@@ -698,9 +745,15 @@
                 el.addEventListener('dragend', handleDragEnd);
             });
 
+            document.querySelectorAll('.card-btn.view').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    postKanbanMessage({ type: 'viewPlan', sessionId: btn.dataset.session, workspaceRoot: btn.dataset.workspaceRoot });
+                });
+            });
+
             document.querySelectorAll('.card-btn.review').forEach(btn => {
                 btn.addEventListener('click', () => {
-                    vscode.postMessage({ type: 'reviewPlan', sessionId: btn.dataset.session });
+                    postKanbanMessage({ type: 'reviewPlan', sessionId: btn.dataset.session, workspaceRoot: btn.dataset.workspaceRoot });
                 });
             });
 
@@ -711,11 +764,11 @@
                         // Optimistic UI: Animate out before sending to backend
                         cardEl.classList.add('card-completing');
                         setTimeout(() => {
-                            vscode.postMessage({ type: 'completePlan', sessionId: btn.dataset.session });
+                            postKanbanMessage({ type: 'completePlan', sessionId: btn.dataset.session, workspaceRoot: btn.dataset.workspaceRoot });
                         }, 350); // Slightly less than 400ms to ensure smooth handoff to the backend redraw
                     } else {
                         // Fallback if DOM traversal fails
-                        vscode.postMessage({ type: 'completePlan', sessionId: btn.dataset.session });
+                        postKanbanMessage({ type: 'completePlan', sessionId: btn.dataset.session, workspaceRoot: btn.dataset.workspaceRoot });
                     }
                 });
             });
@@ -724,7 +777,7 @@
                 btn.addEventListener('click', () => {
                     btn.disabled = true;
                     const column = btn.closest('.kanban-column')?.dataset?.column;
-                    vscode.postMessage({ type: 'copyPlanLink', sessionId: btn.dataset.session, column });
+                    postKanbanMessage({ type: 'copyPlanLink', sessionId: btn.dataset.session, column, workspaceRoot: btn.dataset.workspaceRoot });
                 });
             });
 
@@ -738,13 +791,22 @@
             const complexityClass = complexity.toLowerCase();
             let copyLabel = 'Copy Prompt';
             return `
-                <div class="kanban-card" draggable="true" data-session="${card.sessionId}">
+                <div class="kanban-card" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                     <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
                     <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}">${complexity}</span> · ${timeAgo}</div>
-                    <div class="card-actions">
-                        <button class="card-btn copy" data-session="${card.sessionId}">${copyLabel}</button>
-                        <button class="card-btn review" data-session="${card.sessionId}">Ticket</button>
-                        <button class="card-btn complete" data-session="${card.sessionId}">Complete</button>
+                    <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
+                        <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">${copyLabel}</button>
+                        <div style="display: flex; gap: 4px;">
+                            <button class="card-btn icon-btn view" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="View Plan">
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8c0 0 3-4.5 6.5-4.5S14.5 8 14.5 8s-3 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2.5"/></svg>
+                            </button>
+                            <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 2v12h12V2H2zM2 5h12M5 2v12"/></svg>
+                            </button>
+                            <button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Complete Plan">
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>
+                            </button>
+                        </div>
                     </div>
                 </div>`;
         }
@@ -774,6 +836,7 @@
             e.target.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', draggedSessionId);
+            e.dataTransfer.setData('application/switchboard-workspace-root', e.target.dataset.workspaceRoot || getActiveWorkspaceRoot());
         }
 
         function handleDragEnd(e) {
@@ -784,8 +847,7 @@
 
         function handleDragOver(e) {
             e.preventDefault();
-            const col = e.currentTarget.closest('.kanban-column')?.dataset?.column;
-            e.dataTransfer.dropEffect = (cliTriggersEnabled && col && !isColumnAgentAvailable(col)) ? 'none' : 'move';
+            e.dataTransfer.dropEffect = 'move';
         }
 
         function handleDragEnter(e) {
@@ -807,73 +869,114 @@
         function handleDrop(e, targetColumn) {
             e.preventDefault();
             e.currentTarget.classList.remove('drag-over');
-            const sessionId = e.dataTransfer.getData('text/plain');
-            if (!sessionId) return;
+            const workspaceRoot = e.dataTransfer.getData('application/switchboard-workspace-root') || getActiveWorkspaceRoot();
+            
+            let sessionIds = [];
+            try {
+                sessionIds = JSON.parse(e.dataTransfer.getData('application/json'));
+            } catch {
+                const plain = e.dataTransfer.getData('text/plain');
+                if (plain) sessionIds = [plain];
+            }
+            
+            if (!sessionIds || sessionIds.length === 0) return;
 
-            // Reject drop if the target column has no active assignment
-            if (cliTriggersEnabled && !isColumnAgentAvailable(targetColumn)) {
-                const agentEl = document.getElementById('agent-' + targetColumn);
-                if (agentEl) {
-                    agentEl.style.transition = 'color 0.15s';
-                    agentEl.style.color = 'var(--vscode-errorForeground, #f44747)';
-                    setTimeout(() => {
-                        agentEl.style.color = 'var(--vscode-editorWarning-foreground, #cca700)';
-                    }, 800);
+            const forwardIds = [];
+            const backwardIds = [];
+
+            sessionIds.forEach(id => {
+                const card = currentCards.find(c => c.sessionId === id);
+                if (!card || card.column === targetColumn) return;
+                
+                const sourceIndex = columns.indexOf(card.column);
+                const targetIndex = columns.indexOf(targetColumn);
+                
+                if (targetIndex < sourceIndex) {
+                    backwardIds.push(id);
+                } else {
+                    forwardIds.push(id);
                 }
-                return;
+            });
+
+            if (forwardIds.length > 0) {
+                if (cliTriggersEnabled && !isColumnAgentAvailable(targetColumn)) {
+                    // Strip forward moves if agent isn't ready/assigned, but allow backward moves to proceed
+                    forwardIds.length = 0; 
+                    const agentEl = document.getElementById('agent-' + targetColumn);
+                    if (agentEl) {
+                        agentEl.style.transition = 'color 0.15s';
+                        agentEl.style.color = 'var(--vscode-errorForeground, #f44747)';
+                        setTimeout(() => {
+                            agentEl.style.color = 'var(--vscode-editorWarning-foreground, #cca700)';
+                        }, 800);
+                    }
+                }
             }
 
-            // Find current column of the card
-            const card = currentCards.find(c => c.sessionId === sessionId);
-            if (!card || card.column === targetColumn) return;
+            const validIds = [...forwardIds, ...backwardIds];
+            if (validIds.length === 0) return;
 
-            // Optimistic UI: move the card DOM element immediately
-            const cardEl = document.querySelector(`.kanban-card[data-session="${sessionId}"]`);
             const targetBody = document.getElementById('col-' + targetColumn);
-            if (cardEl && targetBody) {
-                // Remove empty-state placeholder if present
-                const emptyState = targetBody.querySelector('.empty-state');
-                if (emptyState) emptyState.remove();
-                targetBody.appendChild(cardEl);
 
-                // Update source column: show empty-state if now empty
-                const sourceBody = document.getElementById('col-' + card.column);
-                if (sourceBody && sourceBody.querySelectorAll('.kanban-card').length === 0) {
-                    sourceBody.innerHTML = '<div class="empty-state">No plans</div>';
+            validIds.forEach(id => {
+                const card = currentCards.find(c => c.sessionId === id);
+                const cardEl = document.querySelector(`.kanban-card[data-session="${id}"]`);
+                if (cardEl && targetBody) {
+                    // Remove empty-state placeholder if present
+                    const emptyState = targetBody.querySelector('.empty-state');
+                    if (emptyState) emptyState.remove();
+                    targetBody.appendChild(cardEl);
+
+                    // Update source column: show empty-state if now empty
+                    const sourceBody = document.getElementById('col-' + card.column);
+                    if (sourceBody && sourceBody.querySelectorAll('.kanban-card').length === 0) {
+                        sourceBody.innerHTML = '<div class="empty-state">No plans</div>';
+                    }
+
+                    // Update counts
+                    const srcCount = document.getElementById('count-' + card.column);
+                    const tgtCount = document.getElementById('count-' + targetColumn);
+                    if (srcCount) srcCount.textContent = String(Math.max(0, parseInt(srcCount.textContent) - 1));
+                    if (tgtCount) tgtCount.textContent = String(parseInt(tgtCount.textContent) + 1);
+
+                    // Update in-memory state
+                    card.column = targetColumn;
+
+                    // Trigger drop animation
+                    cardEl.classList.remove('card-dropped'); 
+                    void cardEl.offsetWidth; // Trigger reflow to restart animation
+                    cardEl.classList.add('card-dropped');
+                    cardEl.addEventListener('animationend', () => {
+                        cardEl.classList.remove('card-dropped');
+                    }, { once: true });
                 }
+            });
 
-                // Update counts
-                const srcCount = document.getElementById('count-' + card.column);
-                const tgtCount = document.getElementById('count-' + targetColumn);
-                if (srcCount) srcCount.textContent = String(Math.max(0, parseInt(srcCount.textContent) - 1));
-                if (tgtCount) tgtCount.textContent = String(parseInt(tgtCount.textContent) + 1);
-
-                // Update in-memory state
-                card.column = targetColumn;
-
-                // Trigger drop animation
-                cardEl.classList.remove('card-dropped'); 
-                void cardEl.offsetWidth; // Trigger reflow to restart animation
-                cardEl.classList.add('card-dropped');
-                cardEl.addEventListener('animationend', () => {
-                    cardEl.classList.remove('card-dropped');
-                }, { once: true });
+            if (validIds.length > 0) {
+                document.querySelectorAll('.kanban-card.selected').forEach(el => el.classList.remove('selected'));
+                setTimeout(() => {
+                    if (forwardIds.length === 1) {
+                        postKanbanMessage({ type: 'triggerAction', sessionId: forwardIds[0], targetColumn, workspaceRoot });
+                    } else if (forwardIds.length > 1) {
+                        postKanbanMessage({ type: 'triggerBatchAction', sessionIds: forwardIds, targetColumn, workspaceRoot });
+                    }
+                    
+                    if (backwardIds.length > 0) {
+                        postKanbanMessage({ type: 'moveCardBackwards', sessionIds: backwardIds, targetColumn, workspaceRoot });
+                    }
+                }, 350);
             }
-
-            // Optimistic UI: Delay backend update so animation finishes before DOM is wiped
-            setTimeout(() => {
-                vscode.postMessage({
-                    type: 'triggerAction',
-                    sessionId: sessionId,
-                    targetColumn: targetColumn
-                });
-            }, 350);
         }
 
         // Listen for messages from the extension
         window.addEventListener('message', (event) => {
             const msg = event.data;
             switch (msg.type) {
+                case 'updateWorkspaceSelection':
+                    currentWorkspaceRoot = msg.workspaceRoot || '';
+                    workspaceItems = Array.isArray(msg.workspaces) ? msg.workspaces : [];
+                    updateWorkspaceSelector();
+                    break;
                 case 'updateBoard':
                     const nextCards = Array.isArray(msg.cards) ? msg.cards : [];
                     const nextBoardSignature = buildBoardSignature(nextCards);
@@ -979,27 +1082,32 @@
             updateAutobanButtonState();
         }
 
+        document.getElementById('workspace-select')?.addEventListener('change', (event) => {
+            currentWorkspaceRoot = event.target.value || '';
+            lastBoardSignature = '';
+            postKanbanMessage({ type: 'selectWorkspace', workspaceRoot: currentWorkspaceRoot });
+        });
         document.getElementById('btn-autoban')?.addEventListener('click', () => {
             const currentlyEnabled = !!(autobanConfig && autobanConfig.enabled);
-            vscode.postMessage({ type: 'toggleAutoban', enabled: !currentlyEnabled });
+            postKanbanMessage({ type: 'toggleAutoban', enabled: !currentlyEnabled });
         });
         document.getElementById('btn-batch-planner')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'batchPlannerPrompt' });
+            postKanbanMessage({ type: 'batchPlannerPrompt' });
         });
         document.getElementById('btn-batch-low')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'batchLowComplexity' });
+            postKanbanMessage({ type: 'batchLowComplexity' });
         });
         document.getElementById('btn-jules-low')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'julesLowComplexity' });
+            postKanbanMessage({ type: 'julesLowComplexity' });
         });
         document.getElementById('btn-refresh-strip').addEventListener('click', () => {
-            vscode.postMessage({ type: 'refresh' });
+            postKanbanMessage({ type: 'refresh' });
         });
         document.getElementById('cli-triggers-toggle').addEventListener('change', (event) => {
             const checked = !!event.target?.checked;
             cliTriggersEnabled = checked;
             updateCliToggleUi();
-            vscode.postMessage({ type: 'toggleCliTriggers', enabled: checked });
+            postKanbanMessage({ type: 'toggleCliTriggers', enabled: checked });
         });
 
         updateCliToggleUi();

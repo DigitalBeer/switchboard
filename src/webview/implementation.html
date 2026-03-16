@@ -1272,8 +1272,8 @@
         <div id="panel-agents" class="tab-panel">
             <div class="sub-tab-bar">
                 <button class="sub-tab-btn is-active" data-tab="agents">Agents</button>
-                <button class="sub-tab-btn" data-tab="autoban">Autoban</button>
                 <button class="sub-tab-btn" data-tab="webai">Airlock</button>
+                <button class="sub-tab-btn" data-tab="autoban">Autoban</button>
             </div>
             <div id="agent-list-standard" class="agent-list">
                 <div style="text-align: center; padding: 20px; color: var(--text-secondary);">
@@ -1309,11 +1309,10 @@
             <div class="panel-fields open" id="terminal-operations-fields">
                 <button id="createAgentGrid" class="secondary-btn is-teal w-full">OPEN AGENT TERMINALS</button>
                 <button id="btn-deregister-all" class="secondary-btn error w-full">RESET ALL AGENTS</button>
-                <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px; border-color: color-mix(in srgb, var(--accent-red) 30%, transparent); color: var(--accent-red);">Access main program</button>
-            </div>
-        </div>
-
-        <!-- SETUP -->
+                <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px;">Access main program</button>
+                </div>
+                </div>
+                <!-- SETUP -->
         <div class="startup-section">
             <div class="startup-toggle" id="startup-toggle">
                 <div class="section-label" style="margin:0">SETUP</div>
@@ -1396,7 +1395,6 @@
             <div class="flex gap-2">
                 <button id="btn-send-planner" class="action-btn w-full">SEND TO PLANNER</button>
                 <button id="btn-save-plan" class="secondary-btn w-full">SAVE PLAN</button>
-                <button id="btn-copy-prompt" class="secondary-btn w-full">COPY TO CLIPBOARD</button>
             </div>
         </div>
     </div>
@@ -1521,13 +1519,10 @@
                 initiatePlanIdeaInput.value = initialIdea;
             }
             const sendBtn = document.getElementById('btn-send-planner');
-            const copyBtn = document.getElementById('btn-copy-prompt');
             if (_planModalFromAirlock) {
                 sendBtn.innerText = 'REVIEW PLAN';
-                copyBtn.innerText = 'SAVE AS PLAN';
             } else {
                 sendBtn.innerText = 'SEND TO PLANNER';
-                copyBtn.innerText = 'COPY TO CLIPBOARD';
             }
             initiatePlanModal.classList.remove('hidden');
             setTimeout(() => initiatePlanTitleInput.focus(), 0);
@@ -1537,9 +1532,7 @@
             initiatePlanModal.classList.add('hidden');
             _planModalFromAirlock = false;
             const sendBtn = document.getElementById('btn-send-planner');
-            const copyBtn = document.getElementById('btn-copy-prompt');
             sendBtn.innerText = 'SEND TO PLANNER';
-            copyBtn.innerText = 'COPY TO CLIPBOARD';
         }
 
         function sanitizeCustomAgentId(value) {
@@ -1693,7 +1686,8 @@
                 type: 'initiatePlan',
                 title,
                 idea,
-                mode
+                mode,
+                isAirlock: _planModalFromAirlock
             });
             closeInitiatePlanModal();
             initiatePlanTitleInput.value = '';
@@ -1702,7 +1696,6 @@
 
         document.getElementById('btn-send-planner').addEventListener('click', () => submitInitiatePlan('send'));
         document.getElementById('btn-save-plan').addEventListener('click', () => submitInitiatePlan('local'));
-        document.getElementById('btn-copy-prompt').addEventListener('click', () => submitInitiatePlan('copy'));
         document.getElementById('btn-create-plan').addEventListener('click', () => openInitiatePlanModal());
 
         initiatePlanModal.addEventListener('click', (event) => {
@@ -1938,15 +1931,7 @@
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let lastCustomAgents = [];
         // Autoban engine state (received from backend)
-        let autobanState = {
-            enabled: false,
-            batchSize: 3,
-            rules: {
-                'CREATED': { enabled: true, intervalMinutes: 10 },
-                'PLAN REVIEWED': { enabled: true, intervalMinutes: 20 },
-                'CODED': { enabled: true, intervalMinutes: 15 }
-            }
-        };
+        let autobanState = { enabled: false, batchSize: 3, rules: {} };
         let userInitiatedChange = false;
         let activeTab = 'agents';
         let recentActivityEvents = [];
@@ -2866,7 +2851,7 @@
                 planBtn.disabled = true;
                 planBtn.innerText = 'SAVING...';
                 if (status) status.innerText = 'Saving plan...';
-                vscode.postMessage({ type: 'initiatePlan', title, idea: text, mode: 'local' });
+                vscode.postMessage({ type: 'initiatePlan', title, idea: text, mode: 'local', isAirlock: true });
             };
 
             const plannerBtn = document.createElement('button');
@@ -2882,7 +2867,7 @@
                 plannerBtn.disabled = true;
                 plannerBtn.innerText = 'SENDING...';
                 if (status) status.innerText = 'Sending to planner...';
-                vscode.postMessage({ type: 'initiatePlan', title, idea: text, mode: 'send' });
+                vscode.postMessage({ type: 'initiatePlan', title, idea: text, mode: 'send', isAirlock: true });
             };
 
             btnRow.appendChild(planBtn);

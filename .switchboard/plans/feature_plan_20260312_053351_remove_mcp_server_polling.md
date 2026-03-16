@@ -32,3 +32,27 @@ Simplify the MCP server status indicator by removing brittle IPC health checks a
 - Race conditions: The file existence check might run before the extension's `dist` folder is fully written during an initial installation/update, leading to a false negative.
 - Side effects: Removing auto-heal means if the MCP server process dies (managed by IDE), the extension will not attempt to recover it or even know it died, leading to degraded user experience with no feedback.
 - Security holes: None identified.
+
+***
+
+## Final Review Results
+
+### Implemented Well
+- The `scheduleNextMcpPoll`, `probeBundledMcpTools`, `HEALTHY_POLL_MS`, `DEGRADED_POLL_MS`, and `degradedMcpStreak` logic have all been completely excised from `src/extension.ts`.
+- The `checkMcpConnection` function was correctly reduced to a synchronous static analysis of the runtime layout, checking for the existence of `mcp-server.js` inside the `dist` or `src` folders and assigning `serverRunning` and `toolReachable` to `true` instantly if found.
+- The architectural intent of making the external IDE responsible for MCP execution lifecycle has been faithfully implemented.
+
+### Issues Found
+- None. The implementation fulfills the exact requirements described in the plan.
+
+### Fixes Applied
+- None required.
+
+### Validation Results
+- Executed `npm run compile`. Codebase successfully built without the polling mechanisms and missing references.
+
+### Remaining Risks
+- As highlighted in the Grumpy Review, the extension no longer has deep observability into the MCP server state. If the IDE fails to spin up the server or the server encounters a runtime crash, the Switchboard webview will still display a green "Connected" status as long as the file exists on disk.
+- If `switchboard.checkMcpConnection` is invoked before `mcpServers` settings exist, `ideConfigured` will return false, but this accurately reflects the system state.
+
+### Final Verdict: Ready

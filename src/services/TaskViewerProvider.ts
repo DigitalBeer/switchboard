@@ -128,6 +128,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _gitCommitDisposable?: vscode.Disposable;
 
     // Hard workspace ownership scoping
+    private _activeWorkspaceRoot: string | null = null;
     private _workspaceId: string | null = null;
     private _planRegistry: PlanRegistry = { version: 1, entries: {} };
     private _ownershipInitPromise: Promise<void> | null = null;
@@ -136,10 +137,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Session Tracking
     private _lastSessionId: string | null = null;
     private _lastActiveWorkflow: string | null = null;
-    private _sessionLog?: SessionActionLog;
+    private _sessionLogs = new Map<string, SessionActionLog>();
     private _kanbanProvider?: KanbanProvider;
-    private _kanbanDb?: KanbanDatabase;
-    private _lastKanbanDbWarning: string | null = null;
+    private _kanbanDbs = new Map<string, KanbanDatabase>();
+    private _lastKanbanDbWarnings = new Map<string, string | null>();
     private _notifiedSessions = new Set<string>(); // Track sessions that have been notified of completion
 
     // Batched State Updates
@@ -173,7 +174,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 }
             },
             () => {
-                const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                const root = this._resolveWorkspaceRoot();
                 return root ? this._getSessionLog(root).getRunSheets() : Promise.resolve([]);
             },
             this._context.globalState
@@ -201,6 +202,94 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }, 30000);
     }
 
+    private _getWorkspaceRoots(): string[] {
+        return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+    }
+
+    private _resolveWorkspaceRoot(workspaceRoot?: string): string | null {
+        const roots = this._getWorkspaceRoots();
+        if (roots.length === 0) {
+            return null;
+        }
+        if (workspaceRoot) {
+            const resolved = path.resolve(workspaceRoot);
+            if (roots.includes(resolved)) {
+                this._activeWorkspaceRoot = resolved;
+                return resolved;
+            }
+        }
+        if (this._activeWorkspaceRoot && roots.includes(this._activeWorkspaceRoot)) {
+            return this._activeWorkspaceRoot;
+        }
+        this._activeWorkspaceRoot = roots[0];
+        return this._activeWorkspaceRoot;
+    }
+
+    private async _resolveWorkspaceRootForSession(sessionId: string, preferredWorkspaceRoot?: string): Promise<string | null> {
+        const orderedRoots = this._getWorkspaceRoots();
+        if (orderedRoots.length === 0) {
+            return null;
+        }
+
+        const candidates: string[] = [];
+        const preferred = this._resolveWorkspaceRoot(preferredWorkspaceRoot || undefined);
+        if (preferred) {
+            candidates.push(preferred);
+        }
+        for (const root of orderedRoots) {
+            if (!candidates.includes(root)) {
+                candidates.push(root);
+            }
+        }
+
+        for (const workspaceRoot of candidates) {
+            const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+            if (fs.existsSync(runSheetPath)) {
+                this._activeWorkspaceRoot = workspaceRoot;
+                return workspaceRoot;
+            }
+        }
+
+        return preferred || orderedRoots[0];
+    }
+
+    private _resolveWorkspaceRootForPath(candidatePath: string, preferredWorkspaceRoot?: string): string | null {
+        const orderedRoots = this._getWorkspaceRoots();
+        if (orderedRoots.length === 0) {
+            return null;
+        }
+
+        const absoluteCandidate = path.resolve(candidatePath);
+        const preferred = preferredWorkspaceRoot ? this._resolveWorkspaceRoot(preferredWorkspaceRoot) : null;
+        if (preferred && this._isPathWithinRoot(absoluteCandidate, preferred)) {
+            this._activeWorkspaceRoot = preferred;
+            return preferred;
+        }
+
+        for (const workspaceRoot of orderedRoots) {
+            if (this._isPathWithinRoot(absoluteCandidate, workspaceRoot)) {
+                this._activeWorkspaceRoot = workspaceRoot;
+                return workspaceRoot;
+            }
+        }
+
+        return preferred || this._resolveWorkspaceRoot();
+    }
+
+    private async _activateWorkspaceContext(workspaceRoot: string): Promise<string> {
+        const resolved = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolved) {
+            throw new Error('No workspace folder found.');
+        }
+        this._activeWorkspaceRoot = resolved;
+        this._workspaceId = null;
+        await this._ensureTombstonesLoaded(resolved);
+        await this._getOrCreateWorkspaceId(resolved);
+        await this._loadPlanRegistry(resolved);
+        this._loadBrainPlanBlacklist(resolved);
+        return resolved;
+    }
+
     private _ensureOwnershipRegistryInitialized(): Promise<void> {
         if (this._ownershipInitPromise) return this._ownershipInitPromise;
         this._ownershipInitPromise = this._initializeOwnershipRegistry().catch((e) => {
@@ -211,12 +300,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _initializeOwnershipRegistry(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-
-        await this._ensureTombstonesLoaded(workspaceRoot);
-        await this._getOrCreateWorkspaceId(workspaceRoot);
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
+        await this._activateWorkspaceContext(workspaceRoot);
         await this._migrateLegacyToRegistry(workspaceRoot);
         await this._loadPlanRegistry(workspaceRoot);
         console.log(`[TaskViewerProvider] Ownership registry initialized: ${Object.keys(this._planRegistry.entries).length} entries, workspaceId=${this._workspaceId}`);
@@ -461,10 +547,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._updateResolvers = [];
 
         try {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders) return;
-
-            const workspaceRoot = workspaceFolders[0].uri.fsPath;
+            const workspaceRoot = this._resolveWorkspaceRoot();
+            if (!workspaceRoot) return;
             const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
 
             // Ensure state.json and its directory exist
@@ -532,24 +616,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             if (workflow) return workflow;
         }
         return '';
-    }
-
-    private async _getKanbanDb(workspaceRoot: string): Promise<KanbanDatabase | undefined> {
-        if (!this._kanbanDb) {
-            this._kanbanDb = KanbanDatabase.forWorkspace(workspaceRoot);
-        }
-        const ready = await this._kanbanDb.ensureReady();
-        if (!ready) {
-            const initError = this._kanbanDb.lastInitError || 'unknown error';
-            console.warn(`[TaskViewerProvider] Kanban DB unavailable, falling back to file-based state: ${initError}`);
-            if (this._lastKanbanDbWarning !== initError) {
-                this._lastKanbanDbWarning = initError;
-                vscode.window.showWarningMessage(`Kanban DB initialization failed: ${initError}. Using file-based fallback.`);
-            }
-            return undefined;
-        }
-        this._lastKanbanDbWarning = null;
-        return this._kanbanDb;
     }
 
     private _targetColumnForRole(role: string): string | null {
@@ -636,7 +702,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         workspaceRoot: string,
         sheets: any[],
         customAgents: CustomAgentConfig[],
-        archiveMissing: boolean = true
+        _archiveMissing: boolean = true
     ): Promise<string | null> {
         const db = await this._getKanbanDb(workspaceRoot);
         if (!db) return null;
@@ -644,14 +710,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         await this._ensureOwnershipRegistryInitialized();
         const workspaceId = this._workspaceId || await this._getOrCreateWorkspaceId(workspaceRoot);
         const records: KanbanPlanRecord[] = [];
-        const activePlanIds = new Set<string>();
 
         for (const sheet of sheets) {
             const record = await this._buildKanbanRecordFromSheet(workspaceRoot, workspaceId, sheet, customAgents);
             if (!record) continue;
             if (record.status === 'active') {
                 if (!this._isOwnedActiveRunSheet(sheet)) continue;
-                activePlanIds.add(record.planId);
             } else {
                 const entry = this._planRegistry.entries[record.planId];
                 if (!entry || entry.ownerWorkspaceId !== workspaceId) continue;
@@ -660,9 +724,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
 
         if (records.length === 0) {
-            if (archiveMissing) {
-                await db.markMissingAsArchived(workspaceId, activePlanIds);
-            }
             return workspaceId;
         }
 
@@ -678,20 +739,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         await this._ensureTombstonesLoaded(workspaceRoot);
         await this._reconcileLocalPlansFromRunSheets(workspaceRoot);
         const allSheets = await this._getSessionLog(workspaceRoot).getRunSheets();
-        const customAgents = await this.getCustomAgents();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
         await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, allSheets, customAgents, archiveMissing);
         return allSheets;
     }
 
     public async initializeKanbanDbOnStartup(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-
-        try {
-            await this._collectAndSyncKanbanSnapshot(workspaceRoot, true);
-        } catch (e) {
-            console.error('[TaskViewerProvider] Failed to initialize Kanban DB on startup:', e);
+        const workspaceRoots = this._getWorkspaceRoots();
+        for (const workspaceRoot of workspaceRoots) {
+            try {
+                await this._activateWorkspaceContext(workspaceRoot);
+                await this._collectAndSyncKanbanSnapshot(workspaceRoot, true);
+            } catch (e) {
+                console.error(`[TaskViewerProvider] Failed to initialize Kanban DB on startup for ${workspaceRoot}:`, e);
+            }
         }
     }
 
@@ -757,8 +818,21 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     /** Called by the Kanban board to trigger an agent action on a plan session. */
-    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string): Promise<boolean> {
-        return this._handleTriggerAgentAction(role, sessionId, instruction);
+    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
+        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot);
+    }
+
+    /** Called by the Kanban board to silently reset a card to an earlier stage. */
+    public async handleKanbanBackwardMove(sessionIds: string[], targetColumn: string, workspaceRoot?: string) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : (sessionIds.length > 0 ? await this._resolveWorkspaceRootForSession(sessionIds[0]) : null);
+        if (!resolvedWorkspaceRoot) { return; }
+
+        const workflowName = 'reset-to-' + targetColumn.toLowerCase().replace(/\s+/g, '-');
+        for (const sessionId of sessionIds) {
+            await this._updateSessionRunSheet(sessionId, workflowName, 'User manually moved plan backwards', true, resolvedWorkspaceRoot);
+        }
     }
 
     /**
@@ -766,17 +840,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
      * Sequentially updates runsheets to avoid file-lock contention, then constructs
      * a single multi-plan prompt and dispatches it to the target agent.
      */
-    public async handleKanbanBatchTrigger(role: string, sessionIds: string[], instruction?: string): Promise<boolean> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || sessionIds.length === 0) { return false; }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    public async handleKanbanBatchTrigger(role: string, sessionIds: string[], instruction?: string, workspaceRoot?: string): Promise<boolean> {
+        if (sessionIds.length === 0) { return false; }
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionIds[0]);
+        if (!resolvedWorkspaceRoot) { return false; }
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
 
         // If only one plan, fall through to single dispatch for simplicity
         if (sessionIds.length === 1) {
-            return this._handleTriggerAgentAction(role, sessionIds[0], instruction);
+            return this._handleTriggerAgentAction(role, sessionIds[0], instruction, resolvedWorkspaceRoot);
         }
 
-        const targetAgent = await this._getAgentNameForRole(role);
+        const targetAgent = await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
         if (!targetAgent) {
             vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Cannot dispatch batch.`);
             return false;
@@ -790,12 +867,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const validPlans: { sessionId: string; topic: string; absolutePath: string }[] = [];
         for (const sid of sessionIds) {
             try {
-                const sessionPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sid}.json`);
+                const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sid}.json`);
                 if (!fs.existsSync(sessionPath)) { continue; }
                 const content = await fs.promises.readFile(sessionPath, 'utf8');
                 const session = JSON.parse(content);
                 if (!session.planFile) { continue; }
-                const absolutePath = path.resolve(workspaceRoot, session.planFile);
+                const absolutePath = path.resolve(resolvedWorkspaceRoot, session.planFile);
                 if (!fs.existsSync(absolutePath)) { continue; }
                 validPlans.push({
                     sessionId: sid,
@@ -847,17 +924,16 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         // This prevents cards from being moved forward if the dispatch fails.
         try {
             vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
-            await this._dispatchExecuteMessage(workspaceRoot, targetAgent, prompt, {
+            await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, prompt, {
                 batch: true,
                 sessionIds: validPlans.map(p => p.sessionId)
             });
 
-            // Dispatch succeeded — now update runsheets sequentially
             for (const plan of validPlans) {
                 if (workflowName) {
-                    await this._updateSessionRunSheet(plan.sessionId, workflowName);
+                    await this._updateSessionRunSheet(plan.sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
                 }
-                await this._updateKanbanColumnForSession(workspaceRoot, plan.sessionId, this._targetColumnForRole(role));
+                await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, plan.sessionId, this._targetColumnForRole(role));
             }
 
             await this._logEvent('dispatch', {
@@ -866,8 +942,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 sessionIds: validPlans.map(p => p.sessionId),
                 targetAgent,
                 planCount: validPlans.length
-            });
-            vscode.window.showInformationMessage(`Autoban: Dispatched ${validPlans.length} plans to ${role} (${targetAgent})`);
+            }, undefined, resolvedWorkspaceRoot);
             return true;
         } catch (e) {
             await this._logEvent('dispatch', {
@@ -876,31 +951,28 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 sessionIds: validPlans.map(p => p.sessionId),
                 targetAgent,
                 error: String(e)
-            });
-            vscode.window.showErrorMessage(`Batch dispatch failed: ${e}`);
+            }, undefined, resolvedWorkspaceRoot);
+            console.error(`[TaskViewerProvider] Batch dispatch failed for role '${role}':`, e);
             return false;
         }
     }
 
-    /** Called by the Kanban board to mark a plan as complete. */
-    public async handleKanbanCompletePlan(sessionId: string) {
-        await this._handleCompletePlan(sessionId);
+    public async handleKanbanCompletePlan(sessionId: string, workspaceRoot?: string) {
+        await this._handleCompletePlan(sessionId, workspaceRoot);
     }
 
-    /** Called by the Kanban board to open a plan file. */
-    public async handleKanbanViewPlan(sessionId: string) {
-        await this._handleViewPlan(sessionId);
+    public async handleKanbanViewPlan(sessionId: string, workspaceRoot?: string) {
+        await this._handleViewPlan(sessionId, workspaceRoot);
     }
 
-    /** Called by the Kanban board to open a plan in review mode. */
-    public async handleKanbanReviewPlan(sessionId: string) {
-        await this._handleReviewPlan(sessionId);
+    public async handleKanbanReviewPlan(sessionId: string, workspaceRoot?: string) {
+        await this._handleReviewPlan(sessionId, workspaceRoot);
     }
 
-    public async getStartupCommands(): Promise<Record<string, string>> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return {};
-        const statePath = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'state.json');
+    public async getStartupCommands(workspaceRoot?: string): Promise<Record<string, string>> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return {};
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
         try {
             const content = await fs.promises.readFile(statePath, 'utf8');
             const state = JSON.parse(content);
@@ -914,11 +986,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    public async getVisibleAgents(): Promise<Record<string, boolean>> {
+    public async getVisibleAgents(workspaceRoot?: string): Promise<Record<string, boolean>> {
         const defaults: Record<string, boolean> = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return defaults;
-        const statePath = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'state.json');
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return defaults;
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
         try {
             const content = await fs.promises.readFile(statePath, 'utf8');
             const state = JSON.parse(content);
@@ -931,10 +1003,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    public async getCustomAgents(): Promise<CustomAgentConfig[]> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return [];
-        const statePath = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'state.json');
+    public async getCustomAgents(workspaceRoot?: string): Promise<CustomAgentConfig[]> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return [];
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
         try {
             const content = await fs.promises.readFile(statePath, 'utf8');
             const state = JSON.parse(content);
@@ -972,26 +1044,30 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private _getSessionLog(workspaceRoot: string): SessionActionLog {
-        if (!this._sessionLog) {
-            this._sessionLog = new SessionActionLog(workspaceRoot);
+        const resolvedRoot = path.resolve(workspaceRoot);
+        const existing = this._sessionLogs.get(resolvedRoot);
+        if (existing) {
+            return existing;
         }
-        return this._sessionLog;
+        const created = new SessionActionLog(resolvedRoot);
+        this._sessionLogs.set(resolvedRoot, created);
+        return created;
     }
 
-    private async _logEvent(type: string, payload: Record<string, any>, correlationId?: string): Promise<void> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) return;
+    private async _logEvent(type: string, payload: Record<string, any>, correlationId?: string, workspaceRoot?: string): Promise<void> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return;
         try {
-            await this._getSessionLog(workspaceRoot).logEvent(type, payload, correlationId);
+            await this._getSessionLog(resolvedRoot).logEvent(type, payload, correlationId);
         } catch (error) {
             console.error('[TaskViewerProvider] Failed to write session audit event:', error);
         }
     }
 
-    private async _postRecentActivity(limit: number, beforeTimestamp?: string): Promise<void> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) return;
-        const page = await this._getSessionLog(workspaceRoot).getRecentActivity(limit, beforeTimestamp);
+    private async _postRecentActivity(limit: number, beforeTimestamp?: string, workspaceRoot?: string): Promise<void> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return;
+        const page = await this._getSessionLog(resolvedRoot).getRecentActivity(limit, beforeTimestamp);
         this._view?.webview.postMessage({
             type: 'recentActivity',
             events: page.events,
@@ -999,6 +1075,62 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             nextCursor: page.nextCursor,
             append: typeof beforeTimestamp === 'string' && beforeTimestamp.length > 0
         });
+    }
+
+    private async _getKanbanDb(workspaceRoot: string): Promise<KanbanDatabase | undefined> {
+        const resolvedRoot = path.resolve(workspaceRoot);
+        let db = this._kanbanDbs.get(resolvedRoot);
+        if (!db) {
+            db = KanbanDatabase.forWorkspace(resolvedRoot);
+            this._kanbanDbs.set(resolvedRoot, db);
+        }
+        const ready = await db.ensureReady();
+        if (!ready) {
+            const initError = db.lastInitError || 'unknown error';
+            console.warn(`[TaskViewerProvider] Kanban DB unavailable, falling back to file-based state: ${initError}`);
+            if (this._lastKanbanDbWarnings.get(resolvedRoot) !== initError) {
+                this._lastKanbanDbWarnings.set(resolvedRoot, initError);
+                vscode.window.showWarningMessage(`Kanban DB initialization failed: ${initError}. Using file-based fallback.`);
+            }
+            return undefined;
+        }
+        this._lastKanbanDbWarnings.set(resolvedRoot, null);
+        return db;
+    }
+
+    private async _logAndPostRecentActivityBackfill(workspaceRoot?: string): Promise<void> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return;
+        await this._postRecentActivity(50, undefined, resolvedRoot);
+    }
+
+    private async _getAgentNameForRole(role: string, workspaceRoot?: string): Promise<string | undefined> {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) return undefined;
+
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
+
+        try {
+            if (!fs.existsSync(statePath)) return undefined;
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+
+            if (state.terminals) {
+                for (const [name, info] of Object.entries(state.terminals) as [string, any][]) {
+                    if (info.role === role) return name;
+                }
+            }
+
+            if (state.chatAgents) {
+                for (const [name, info] of Object.entries(state.chatAgents) as [string, any][]) {
+                    if (info.role === role) return name;
+                }
+            }
+
+            return undefined;
+        } catch {
+            return undefined;
+        }
     }
 
     private _postAutobanState(): void {
@@ -1111,7 +1243,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     /** Process one tick for a given column: find cards, batch-dispatch up to batchSize. */
     private async _autobanTickColumn(sourceColumn: string, batchSize: number): Promise<void> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) { return; }
 
         const role = this._autobanColumnToRole(sourceColumn);
@@ -1120,7 +1252,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         const log = this._getSessionLog(workspaceRoot);
         const sheets = await log.getRunSheets();
-        const customAgents = await this.getCustomAgents();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
         let currentColumnBySession = new Map<string, string>();
 
         // File-based fallback snapshot
@@ -1149,18 +1281,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath });
         }
 
-        // DB-first snapshot (with fallback to file-based if DB is unavailable)
         try {
-            const workspaceId = await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents);
-            if (workspaceId) {
-                const dbState = await this._getAutobanStateFromDb(workspaceRoot, workspaceId, sourceColumn);
-                if (dbState) {
-                    currentColumnBySession = dbState.currentColumnBySession;
-                    cardsInColumn = dbState.cardsInColumn;
-                }
-            }
+            await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents, false);
         } catch (e) {
-            console.warn('[Autoban] DB sync/read failed; continuing with file-based snapshot:', e);
+            console.warn('[Autoban] DB sync failed; continuing with file-based snapshot:', e);
         }
 
         // Release in-flight locks once a card leaves the column that originally dispatched it.
@@ -1207,12 +1331,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             // Dispatch sequentially to avoid file and terminal lock contention
             if (lowSessions.length > 0) {
                 lowSessions.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
-                const ok = await this.handleKanbanBatchTrigger('coder', lowSessions, instruction);
+                const ok = await this.handleKanbanBatchTrigger('coder', lowSessions, instruction, workspaceRoot);
                 if (!ok) { lowSessions.forEach(id => this._activeDispatchSessions.delete(id)); }
             }
             if (highSessions.length > 0) {
                 highSessions.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
-                const ok = await this.handleKanbanBatchTrigger('lead', highSessions, instruction);
+                const ok = await this.handleKanbanBatchTrigger('lead', highSessions, instruction, workspaceRoot);
                 if (!ok) { highSessions.forEach(id => this._activeDispatchSessions.delete(id)); }
             }
             return;
@@ -1223,7 +1347,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         batch.forEach(c => this._activeDispatchSessions.set(c.sessionId, sourceColumn));
 
         console.log(`[Autoban] ${sourceColumn}: dispatching ${sessionIds.length} card(s) to ${role}`);
-        const ok = await this.handleKanbanBatchTrigger(role, sessionIds, instruction);
+        const ok = await this.handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot);
         if (!ok) {
             sessionIds.forEach(id => this._activeDispatchSessions.delete(id));
         }
@@ -1328,22 +1452,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         }
                         break;
                     case 'openDocs': {
-                        const workspaceFolders = vscode.workspace.workspaceFolders;
-                        if (workspaceFolders) {
-                            const refUri = vscode.Uri.joinPath(workspaceFolders[0].uri, '.switchboard', 'WORKFLOW_REFERENCE.md');
-                            try {
-                                await vscode.workspace.fs.stat(refUri);
-                                vscode.commands.executeCommand('markdown.showPreview', refUri);
-                            } catch {
-                                // Fallback to README
-                                const readmeUri = vscode.Uri.joinPath(workspaceFolders[0].uri, '.switchboard', 'README.md');
-                                try {
-                                    await vscode.workspace.fs.stat(readmeUri);
-                                    vscode.commands.executeCommand('markdown.showPreview', readmeUri);
-                                } catch {
-                                    vscode.window.showErrorMessage('Workflow docs not found. Run setup first.');
-                                }
-                            }
+                        const readmePath = vscode.Uri.joinPath(this._context.extensionUri, 'README.md');
+                        try {
+                            await vscode.workspace.fs.stat(readmePath);
+                            vscode.commands.executeCommand('markdown.showPreview', readmePath);
+                        } catch {
+                            vscode.window.showErrorMessage('Plugin README.md not found.');
                         }
                         break;
                     }
@@ -1466,7 +1580,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'initiatePlan':
                         if (data.title && data.idea && data.mode) {
-                            await this._handleInitiatePlan(data.title, data.idea, data.mode);
+                            await this._handleInitiatePlan(data.title, data.idea, data.mode, !!data.isAirlock);
                         }
                         break;
                     case 'mergeAllPlans':
@@ -1525,11 +1639,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'getAccurateCodingSetting': {
                         const enabled = this._isAccurateCodingEnabled();
                         this._view?.webview.postMessage({ type: 'accurateCodingSetting', enabled });
-                        break;
-                    }
-                    case 'openDocs': {
-                        const readmePath = vscode.Uri.joinPath(this._context.extensionUri, 'README.md');
-                        vscode.commands.executeCommand('markdown.showPreview', readmePath);
                         break;
                     }
                     case 'setActiveTab': {
@@ -1618,6 +1727,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (this._stateWatcher) {
             this._stateWatcher.dispose();
         }
+        try { this._fsStateWatcher?.close(); } catch { }
 
         // Watch .switchboard/state.json for agent updates
         this._stateWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/state.json');
@@ -1632,7 +1742,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         // Native fs.watch fallback — VS Code's createFileSystemWatcher skips
         // gitignored directories (.switchboard is gitignored). This ensures
         // cross-window state changes are detected immediately.
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (workspaceRoot) {
             const stateFile = path.join(workspaceRoot, '.switchboard', 'state.json');
             try {
@@ -1697,9 +1807,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         try { this._fsPlansWatcher?.close(); } catch { }
 
         // Initialize plan + sessions directories
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const plansRootDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         for (const dir of [plansRootDir, sessionsDir]) {
@@ -1716,12 +1825,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         let titleSyncTimer: NodeJS.Timeout | undefined;
         const debouncedTitleSync = (uri: vscode.Uri) => {
             if (titleSyncTimer) clearTimeout(titleSyncTimer);
-            titleSyncTimer = setTimeout(() => this._handlePlanTitleSync(uri), 300);
+            titleSyncTimer = setTimeout(() => this._handlePlanTitleSync(uri, workspaceRoot), 300);
         };
 
         // Unified watcher for all plans at the plans root
         this._planWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/plans/*.md');
-        this._planWatcher.onDidCreate((uri) => this._handlePlanCreation(uri));
+        this._planWatcher.onDidCreate((uri) => this._handlePlanCreation(uri, workspaceRoot));
         this._planWatcher.onDidChange((uri) => debouncedTitleSync(uri));
 
         // Native fs.watch fallback — VS Code's createFileSystemWatcher can miss .switchboard
@@ -1736,7 +1845,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 if (!fs.existsSync(fullPath)) return;
                 const uri = vscode.Uri.file(fullPath);
                 try {
-                    await this._handlePlanCreation(uri);
+                    await this._handlePlanCreation(uri, workspaceRoot);
                 } catch (e) {
                     console.error('[TaskViewerProvider] Native plan create sync failed:', e);
                 }
@@ -1774,9 +1883,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             this._sessionSyncTimer = undefined;
         }
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
 
         if (!fs.existsSync(sessionsDir)) {
@@ -1814,10 +1922,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
         if (!fs.existsSync(brainDir)) return;
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'plans');
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
+        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
         if (!fs.existsSync(stagingDir)) {
             try { fs.mkdirSync(stagingDir, { recursive: true }); } catch { }
         }
@@ -1849,7 +1956,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         if (this._recentBrainWrites.has(stablePath)) return;
                         if (fs.existsSync(fullPath)) {
                             await this._ensureTombstonesLoaded(workspaceRoot);
-                            await this._mirrorBrainPlan(fullPath, allowAutoClaim);
+                            await this._mirrorBrainPlan(fullPath, allowAutoClaim, workspaceRoot);
                         }
                     } catch (e) {
                         console.error('[TaskViewerProvider] Brain watcher debounce callback failed:', e);
@@ -1885,7 +1992,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             if (fs.existsSync(fullPath)) {
                                 await this._ensureTombstonesLoaded(workspaceRoot);
                                 // fs.watch "rename" is the closest signal to create/delete.
-                                await this._mirrorBrainPlan(fullPath, _eventType === 'rename');
+                                await this._mirrorBrainPlan(fullPath, _eventType === 'rename', workspaceRoot);
                             }
                         } catch (e) {
                             console.error('[TaskViewerProvider] Brain fs.watch debounce callback failed:', e);
@@ -2086,8 +2193,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private _getRecoverablePlans(): Array<{ planId: string; topic: string; sourceType: string; status: string; brainSourcePath?: string; localPlanPath?: string; updatedAt: string }> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = workspaceFolders ? workspaceFolders[0].uri.fsPath : '';
+        const workspaceRoot = this._resolveWorkspaceRoot() || '';
         const mirrorDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'plans') : '';
 
         // Pre-scan archive plans directory once for efficiency
@@ -2221,9 +2327,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleRestorePlan(planId: string): Promise<boolean> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return false;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return false;
+        await this._activateWorkspaceContext(workspaceRoot);
 
         const entry = this._planRegistry.entries[planId];
         if (!entry) {
@@ -2280,7 +2386,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             resolvedSessionId = runSheetId;
             await this._restoreRunSheet(workspaceRoot, runSheetId, path.resolve(entry.brainSourcePath));
             // Trigger re-mirror
-            await this._mirrorBrainPlan(path.resolve(entry.brainSourcePath));
+            await this._mirrorBrainPlan(path.resolve(entry.brainSourcePath), false, workspaceRoot);
         } else if (entry.sourceType === 'local') {
             resolvedSessionId = planId;
             // Restore the run sheet for local plans so the plan re-appears in the dropdown
@@ -2292,7 +2398,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             planId,
             topic: entry.topic
         });
-        await this._refreshRunSheets();
+        await this._refreshRunSheets(workspaceRoot);
         if (resolvedSessionId) {
             this._view?.webview.postMessage({ type: 'selectSession', sessionId: resolvedSessionId });
         }
@@ -2732,9 +2838,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     public async seedBrainPlanBlacklistFromCurrentBrainSnapshot(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
         const entries = fs.existsSync(brainDir)
             ? this._collectBrainPlanBlacklistEntries(brainDir)
@@ -3109,15 +3214,15 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return false;
     }
 
-    private async _mirrorBrainPlan(brainFilePath: string, allowAutoClaim: boolean = false): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
+    private async _mirrorBrainPlan(brainFilePath: string, allowAutoClaim: boolean = false, workspaceRoot?: string): Promise<void> {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) return;
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const stagingDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'plans');
+        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
 
         try {
-            await this._ensureTombstonesLoaded(workspaceRoot);
+            await this._ensureTombstonesLoaded(resolvedWorkspaceRoot);
             const stat = fs.statSync(brainFilePath);
             if (stat.size > TaskViewerProvider.MAX_BRAIN_PLAN_SIZE_BYTES) return;
             const mtimeMs = stat.mtimeMs;
@@ -3144,12 +3249,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const mirrorPath = path.join(stagingDir, mirrorFilename);
             const runSheetId = `antigravity_${pathHash}`;
             const runSheetPath = path.join(sessionsDir, `${runSheetId}.json`);
-            const existingRunSheetPath = await this._findExistingRunSheetPath(workspaceRoot, runSheetId);
-            const runSheetKnown = await this._runSheetExists(workspaceRoot, runSheetId);
+            const existingRunSheetPath = await this._findExistingRunSheetPath(resolvedWorkspaceRoot, runSheetId);
+            const runSheetKnown = await this._runSheetExists(resolvedWorkspaceRoot, runSheetId);
 
             // Hard-stop: never recreate active antigravity runsheets/mirrors when a completed
             // archived sibling already exists for this deterministic session ID.
-            if (await this._hasArchivedCompletedRunSheet(workspaceRoot, runSheetId)) {
+            if (await this._hasArchivedCompletedRunSheet(resolvedWorkspaceRoot, runSheetId)) {
                 if (fs.existsSync(runSheetPath)) {
                     try {
                         const activeSheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
@@ -3166,7 +3271,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             // Guard: workspace scoping via registry ownership.
             // New runtime-created plans may auto-claim so they appear immediately in dropdown.
-            const eligibility = this._isPlanEligibleForWorkspace(stablePath, workspaceRoot);
+            const eligibility = this._isPlanEligibleForWorkspace(stablePath, resolvedWorkspaceRoot);
             const existingEntry = this._planRegistry.entries[pathHash];
             const shouldAutoClaim = !eligibility.eligible && allowAutoClaim && !existingEntry;
             if (!eligibility.eligible && !shouldAutoClaim) {
@@ -3201,9 +3306,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
 
             if (shouldAutoClaim) {
-                const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
+                const wsId = await this._getOrCreateWorkspaceId(resolvedWorkspaceRoot);
                 const now = new Date().toISOString();
-                await this._registerPlan(workspaceRoot, {
+                await this._registerPlan(resolvedWorkspaceRoot, {
                     planId: pathHash,
                     ownerWorkspaceId: wsId,
                     sourceType: 'brain',
@@ -3252,7 +3357,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
             const runSheet = {
                 sessionId: runSheetId,
-                planFile: path.relative(workspaceRoot, mirrorPath),
+                planFile: path.relative(resolvedWorkspaceRoot, mirrorPath),
                 brainSourcePath: baseBrainPath,
                 topic,
                 createdAt: originalCreatedAt || new Date(fileCreationTimeMs).toISOString(),
@@ -3262,27 +3367,27 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             await fs.promises.writeFile(runSheetPath, JSON.stringify(runSheet, null, 2));
 
             console.log(`[TaskViewerProvider] Mirrored brain plan: ${topic}`);
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
             this._view?.webview.postMessage({ type: 'selectSession', sessionId: runSheetId });
         } catch (e) {
             console.error('[TaskViewerProvider] Failed to mirror brain plan:', e);
         }
     }
 
-    private async _handlePlanCreation(uri: vscode.Uri) {
+    private async _handlePlanCreation(uri: vscode.Uri, workspaceRoot?: string) {
         const stablePath = this._normalizePendingPlanPath(uri.fsPath);
         if (this._pendingPlanCreations.has(stablePath)) {
             console.log(`[TaskViewerProvider] Ignoring internal plan creation: ${uri.fsPath}`);
             this._logEvent('plan_management', { operation: 'watcher_suppressed', file: uri.fsPath });
             return;
         }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
-        const planFileRelative = path.relative(workspaceRoot, uri.fsPath);
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+        if (!resolvedWorkspaceRoot) return;
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const statePath = path.join(resolvedWorkspaceRoot, '.switchboard', 'state.json');
+        const planFileRelative = path.relative(resolvedWorkspaceRoot, uri.fsPath);
         const normalizedPlanFileRelative = planFileRelative.replace(/\\/g, '/');
-        const log = this._getSessionLog(workspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
 
         try {
             // Deduplicate: if any runsheet (active or completed) already points at this exact
@@ -3291,7 +3396,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 includeCompleted: true
             });
             if (existingForPlan) {
-                await this._refreshRunSheets();
+                await this._refreshRunSheets(resolvedWorkspaceRoot);
                 return;
             }
 
@@ -3351,8 +3456,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             console.log(`[TaskViewerProvider] Created Run Sheet for session ${sessionId}: ${topic}`);
 
             // Register local plan in ownership registry
-            const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
-            await this._registerPlan(workspaceRoot, {
+            const wsId = await this._getOrCreateWorkspaceId(resolvedWorkspaceRoot);
+            await this._registerPlan(resolvedWorkspaceRoot, {
                 planId: sessionId,
                 ownerWorkspaceId: wsId,
                 sourceType: 'local',
@@ -3363,7 +3468,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 status: 'active'
             });
 
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
             // Auto-focus the new plan in the dropdown
             this._view?.webview.postMessage({ type: 'selectSession', sessionId });
         } catch (e) {
@@ -3371,13 +3476,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _resolvePlanContextForSession(sessionId: string): Promise<{ planFileAbsolute: string; topic: string }> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+    private async _resolvePlanContextForSession(sessionId: string, workspaceRoot?: string): Promise<{ planFileAbsolute: string; topic: string; workspaceRoot: string }> {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
             throw new Error('No workspace folder found.');
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
         const content = await fs.promises.readFile(runSheetPath, 'utf8');
         const sheet = JSON.parse(content);
 
@@ -3389,8 +3495,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             throw new Error('No plan file associated with this session.');
         }
 
-        const planFileAbsolute = path.resolve(workspaceRoot, planPath);
-        if (!this._isPathWithinRoot(planFileAbsolute, workspaceRoot)) {
+        const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, planPath);
+        if (!this._isPathWithinRoot(planFileAbsolute, resolvedWorkspaceRoot)) {
             throw new Error('Plan file path is outside the workspace boundary.');
         }
 
@@ -3398,7 +3504,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             ? sheet.topic.trim()
             : path.basename(planFileAbsolute);
 
-        return { planFileAbsolute, topic };
+        return { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot };
     }
 
     private _getPlanPathFromSheet(workspaceRoot: string, sheet: any): string {
@@ -3552,11 +3658,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         columns: { id: string; label: string }[];
         canEditMetadata: boolean;
     }> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
             throw new Error('No workspace folder found.');
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        await this._activateWorkspaceContext(workspaceRoot);
         const log = this._getSessionLog(workspaceRoot);
         const sheet = await log.getRunSheet(sessionId);
         if (!sheet) {
@@ -3566,7 +3672,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const planFileAbsolute = this._getPlanPathFromSheet(workspaceRoot, sheet);
         const planText = await fs.promises.readFile(planFileAbsolute, 'utf8');
         const stats = await fs.promises.stat(planFileAbsolute);
-        const customAgents = await this.getCustomAgents();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
         const columns = buildKanbanColumns(customAgents).map(column => ({ id: column.id, label: column.label }));
         const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
         const dependencies = this._parsePlanDependencies(planText);
@@ -3617,17 +3723,17 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         message: string;
         data?: Awaited<ReturnType<TaskViewerProvider['getReviewTicketData']>>;
     }> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-            return { ok: false, message: 'No workspace folder found.' };
-        }
-
         const sessionId = String(request?.sessionId || '').trim();
         if (!sessionId) {
             return { ok: false, message: 'Session ID is required.' };
         }
 
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
+            return { ok: false, message: 'No workspace folder found.' };
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+
         const log = this._getSessionLog(workspaceRoot);
         const sheet = await log.getRunSheet(sessionId);
         if (!sheet) {
@@ -3764,34 +3870,35 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _handleViewPlan(sessionId: string) {
+    private async _handleViewPlan(sessionId: string, workspaceRoot?: string) {
         try {
-            const { planFileAbsolute } = await this._resolvePlanContextForSession(sessionId);
+            const { planFileAbsolute } = await this._resolvePlanContextForSession(sessionId, workspaceRoot);
             await vscode.commands.executeCommand('switchboard.openPlan', vscode.Uri.file(planFileAbsolute));
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to open plan: ${e}`);
         }
     }
 
-    private async _handleReviewPlan(sessionId: string) {
+    private async _handleReviewPlan(sessionId: string, workspaceRoot?: string) {
         try {
-            const { planFileAbsolute, topic } = await this._resolvePlanContextForSession(sessionId);
-            await vscode.commands.executeCommand('switchboard.reviewPlan', { sessionId, planFileAbsolute, topic });
+            const { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot } = await this._resolvePlanContextForSession(sessionId, workspaceRoot);
+            await vscode.commands.executeCommand('switchboard.reviewPlan', { sessionId, planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot });
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to open review panel: ${e}`);
         }
     }
 
     /** Called by the Kanban board to copy a plan link to clipboard. Returns true on success. */
-    public async handleKanbanCopyPlan(sessionId: string, column?: string): Promise<boolean> {
-        return await this._handleCopyPlanLink(sessionId, column);
+    public async handleKanbanCopyPlan(sessionId: string, column?: string, workspaceRoot?: string): Promise<boolean> {
+        return await this._handleCopyPlanLink(sessionId, column, workspaceRoot);
     }
 
-    private async _handleCopyPlanLink(sessionId: string, column?: string): Promise<boolean> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return false;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+    private async _handleCopyPlanLink(sessionId: string, column?: string, workspaceRoot?: string): Promise<boolean> {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) return false;
+        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
 
         try {
             const content = await fs.promises.readFile(runSheetPath, 'utf8');
@@ -3800,9 +3907,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             let planPathAbsolute: string | undefined;
             if (typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
-                planPathAbsolute = path.resolve(workspaceRoot, sheet.planFile.trim());
+                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.planFile.trim());
             } else if (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim()) {
-                planPathAbsolute = path.resolve(workspaceRoot, sheet.brainSourcePath.trim());
+                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.brainSourcePath.trim());
             }
 
             if (!planPathAbsolute) {
@@ -3810,11 +3917,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
 
             // F-06 SECURITY: Enforce workspace containment for plan paths
-            if (!this._isPathWithinRoot(planPathAbsolute, workspaceRoot)) {
+            if (!this._isPathWithinRoot(planPathAbsolute, resolvedWorkspaceRoot)) {
                 throw new Error('Plan file path is outside the workspace boundary.');
             }
 
-            const customAgents = await this.getCustomAgents();
+            const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
             const effectiveColumn = column || deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgents);
             const planUri = vscode.Uri.file(planPathAbsolute).toString();
             const markdownLink = `[${topic}](${planUri})`;
@@ -3877,11 +3984,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return destPath;
     }
 
-    private async _handleCompletePlan(sessionId: string) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
+    private async _handleCompletePlan(sessionId: string, workspaceRoot?: string) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) return;
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
         try {
             const sheet = await log.getRunSheet(sessionId);
             if (!sheet) return;
@@ -3916,16 +4024,16 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     );
                 }
                 const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                await this._addTombstone(workspaceRoot, pathHash);
+                await this._addTombstone(resolvedWorkspaceRoot, pathHash);
                 // Update plan registry status
-                await this._updatePlanRegistryStatus(workspaceRoot, pathHash, 'archived');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, pathHash, 'archived');
             } else {
                 // Local plan: use sessionId as planId
-                await this._updatePlanRegistryStatus(workspaceRoot, sessionId, 'archived');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, sessionId, 'archived');
             }
 
             // Autoban engine doesn't track individual sessions — no cleanup needed
-            const db = await this._getKanbanDb(workspaceRoot);
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
             if (db) {
                 await db.updateStatus(sessionId, 'completed');
             }
@@ -3935,7 +4043,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 planFile: sheet.planFile,
                 topic: sheet.topic
             });
-            await this._archiveCompletedSession(sessionId, log, workspaceRoot);
+            await this._archiveCompletedSession(sessionId, log, resolvedWorkspaceRoot);
             await this._refreshRunSheets();
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to mark plan complete: ${e}`);
@@ -3943,9 +4051,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleClaimPlan(brainSourcePath: string): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
+        await this._activateWorkspaceContext(workspaceRoot);
 
         try {
             const resolvedPath = path.resolve(brainSourcePath);
@@ -3993,7 +4101,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             });
 
             // Trigger mirror to create local artifacts
-            await this._mirrorBrainPlan(resolvedPath);
+            await this._mirrorBrainPlan(resolvedPath, false, workspaceRoot);
             await this._logEvent('plan_management', {
                 operation: 'claim_plan',
                 planId,
@@ -4008,9 +4116,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
 
     private async _handleMergeAllPlans() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
+        await this._activateWorkspaceContext(workspaceRoot);
         const log = this._getSessionLog(workspaceRoot);
 
         try {
@@ -4267,9 +4375,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
      * Files older than 10 minutes are moved to .switchboard/archive/reviews/.
      */
     private async _sweepOrphanedReviews() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const log = this._getSessionLog(workspaceRoot);
 
         const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
@@ -4304,11 +4411,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _handleDeletePlan(sessionId: string) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
+    private async _handleDeletePlan(sessionId: string, workspaceRoot?: string) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) return;
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
         console.log(`[TaskViewerProvider] _handleDeletePlan: sessionId=${sessionId}`);
         try {
             // Resolve mirror/plan path and brainSourcePath from runsheet
@@ -4322,9 +4431,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     brainSourcePath = sheet.brainSourcePath;
                 }
                 if (sheet.planFile) {
-                    const abs = path.resolve(workspaceRoot, sheet.planFile);
+                    const abs = path.resolve(resolvedWorkspaceRoot, sheet.planFile);
                     const absNorm = process.platform === 'win32' ? abs.toLowerCase() : abs;
-                    const rootNorm = process.platform === 'win32' ? workspaceRoot.toLowerCase() : workspaceRoot;
+                    const rootNorm = process.platform === 'win32' ? resolvedWorkspaceRoot.toLowerCase() : resolvedWorkspaceRoot;
                     if (absNorm.startsWith(rootNorm + path.sep) || absNorm.startsWith(rootNorm + '/')) {
                         mirrorPath = abs;
                     } else {
@@ -4346,7 +4455,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             console.log(`[TaskViewerProvider] _handleDeletePlan: mirrorPath=${mirrorPath}, brainSourcePath=${brainSourcePath}`);
 
             // Discover associated review files
-            const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
+            const reviewsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'reviews');
             const reviewFiles = await this._findReviewFilesForSession(sessionId, reviewsDir);
 
             // AP-3: Two distinct dialog texts — accurate language for each plan type
@@ -4361,7 +4470,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             if (brainSourcePath) {
                 const stablePath = this._getStablePath(this._getBaseBrainPath(brainSourcePath));
                 const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                await this._addTombstone(workspaceRoot, pathHash);
+                await this._addTombstone(resolvedWorkspaceRoot, pathHash);
             }
 
             // AP-1: Atomic deletion — brain first, then mirror, then runsheet; halt on any failure
@@ -4403,28 +4512,28 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             if (brainSourcePath) {
                 const stablePath = this._getStablePath(this._getBaseBrainPath(brainSourcePath));
                 const planId = this._getPlanIdFromStableBrainPath(stablePath);
-                await this._updatePlanRegistryStatus(workspaceRoot, planId, 'deleted');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, planId, 'deleted');
             } else {
                 // Local plan: use sessionId as planId
-                await this._updatePlanRegistryStatus(workspaceRoot, sessionId, 'deleted');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, sessionId, 'deleted');
             }
 
             await this._logEvent('plan_management', {
                 operation: 'delete_plan',
                 sessionId
             });
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to delete plan: ${e}`);
         }
     }
 
-    private async _handlePlanTitleSync(uri: vscode.Uri) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        const relPath = path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, '/');
+    private async _handlePlanTitleSync(uri: vscode.Uri, workspaceRoot?: string) {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+        if (!resolvedWorkspaceRoot) return;
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
+        const relPath = path.relative(resolvedWorkspaceRoot, uri.fsPath).replace(/\\/g, '/');
         try {
             const content = await fs.promises.readFile(uri.fsPath, 'utf8');
             const h1Match = content.match(/^#\s+(.+)$/m);
@@ -4440,7 +4549,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     const sheetRelPath = (sheet.planFile || '').replace(/\\/g, '/');
                     if (sheetRelPath === relPath && sheet.topic !== newTopic) {
                         const sessionId = path.basename(file, '.json');
-                        const log = this._getSessionLog(workspaceRoot);
+                        const log = this._getSessionLog(resolvedWorkspaceRoot);
                         await log.updateRunSheet(sessionId, (s: any) => {
                             s.topic = newTopic;
                             return s;
@@ -4451,14 +4560,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             if (entry && entry.topic !== newTopic) {
                                 entry.topic = newTopic;
                                 entry.updatedAt = new Date().toISOString();
-                                await this._savePlanRegistry(workspaceRoot);
+                                await this._savePlanRegistry(resolvedWorkspaceRoot);
                             }
                         }
-                        const db = await this._getKanbanDb(workspaceRoot);
+                        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
                         if (db) {
                             await db.updateTopic(sessionId, newTopic);
                         }
-                        await this._refreshRunSheets();
+                        await this._refreshRunSheets(resolvedWorkspaceRoot);
                         return;
                     }
                 } catch { }
@@ -4466,13 +4575,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         } catch { }
     }
 
-    private async _updateSessionRunSheet(sessionId: string, workflow: string, outcome?: string, isStop: boolean = false) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    private async _updateSessionRunSheet(sessionId: string, workflow: string, outcome?: string, isStop: boolean = false, workspaceRoot?: string) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) return;
 
         try {
-            await this._getSessionLog(workspaceRoot).updateRunSheet(sessionId, (runSheet: any) => {
+            await this._getSessionLog(resolvedWorkspaceRoot).updateRunSheet(sessionId, (runSheet: any) => {
                 if (!runSheet.events) runSheet.events = [];
                 // Avoid duplicate events if workflow and action haven't actually changed
                 const action = isStop ? 'stop' : 'start';
@@ -4495,11 +4605,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 runSheet.events.push(event);
                 return runSheet;
             });
-            const updatedSheet = await this._getSessionLog(workspaceRoot).getRunSheet(sessionId);
+            const updatedSheet = await this._getSessionLog(resolvedWorkspaceRoot).getRunSheet(sessionId);
             if (updatedSheet) {
-                const customAgents = await this.getCustomAgents();
-                await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, [updatedSheet], customAgents, false);
-                await this._refreshKanbanMetadataFromSheet(workspaceRoot, updatedSheet);
+                const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
+                await this._syncKanbanDbFromSheetsSnapshot(resolvedWorkspaceRoot, [updatedSheet], customAgents, false);
+                await this._refreshKanbanMetadataFromSheet(resolvedWorkspaceRoot, updatedSheet);
             }
             console.log(`[TaskViewerProvider] Updated Run Sheet for session ${sessionId} -> ${workflow} (${isStop ? 'stop' : 'start'})`);
             this._refreshRunSheets();
@@ -4508,15 +4618,17 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private async _refreshRunSheets() {
+    private async _refreshRunSheets(workspaceRoot?: string) {
         if (!this._view) return;
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : this._resolveWorkspaceRoot();
+        if (!resolvedWorkspaceRoot) return;
 
         try {
-            const allSheets = await this._collectAndSyncKanbanSnapshot(workspaceRoot, true);
+            await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+            const allSheets = await this._collectAndSyncKanbanSnapshot(resolvedWorkspaceRoot, true);
             const ownedActiveEntries = Object.values(this._planRegistry.entries).filter((entry) =>
                 entry.ownerWorkspaceId === this._workspaceId && entry.status === 'active'
             );
@@ -4604,10 +4716,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _executeRemote(terminalName: string, command: string) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
 
         // F-04 SECURITY: Validate agent name before using as path segment
         if (!this._isValidAgentName(terminalName)) {
@@ -4987,41 +5097,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             console.error('Failed to set chat agent role:', e);
         }
     }
-
-
-
-    private async _getAgentNameForRole(role: string): Promise<string | undefined> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return undefined;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
-
-        try {
-            if (!fs.existsSync(statePath)) return undefined;
-            const content = await fs.promises.readFile(statePath, 'utf8');
-            const state = JSON.parse(content);
-
-            // Check terminals first
-            if (state.terminals) {
-                for (const [name, info] of Object.entries(state.terminals) as [string, any][]) {
-                    if (info.role === role) return name;
-                }
-            }
-
-            // Check chat agents
-            if (state.chatAgents) {
-                for (const [name, info] of Object.entries(state.chatAgents) as [string, any][]) {
-                    if (info.role === role) return name;
-                }
-            }
-
-            return undefined;
-        } catch {
-            return undefined;
-        }
-    }
-
     private _detectPlanBandCoverage(planContent: string): { hasBandA: boolean; hasBandB: boolean } {
         const splitMatch = planContent.match(/##\s+Task Split([\s\S]*?)(?:\n##\s+|$)/i);
         const taskSplitContent = splitMatch ? splitMatch[1] : '';
@@ -5187,11 +5262,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return true;
     }
 
-    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string): Promise<boolean> {
-        return this._handleTriggerAgentActionInternal(role, sessionId, instruction);
+    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
+        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot);
     }
 
-    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string): Promise<boolean> {
+    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
         const dedupeKey = `${role}::${sessionId}::${instruction || ''}`;
         const acquireDispatchLock = () => {
             if (this._recentActionDispatches.has(dedupeKey)) return;
@@ -5207,7 +5282,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
         };
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
         if (this._recentActionDispatches.has(dedupeKey)) {
             console.log(`[TaskViewerProvider] Ignoring duplicate triggerAgentAction: ${dedupeKey}`);
             return false;
@@ -5219,16 +5293,18 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             role,
             sessionId,
             instruction: instruction || ''
-        }, requestId);
+        }, requestId, workspaceRoot);
 
-        if (!workspaceFolders) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
             clearDispatchLock();
             return false;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
         // 1. Get Plan File Path from Session
-        const sessionPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
         if (!fs.existsSync(sessionPath)) {
             clearDispatchLock();
             vscode.window.showErrorMessage(`Session file not found: ${sessionId}`);
@@ -5251,7 +5327,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return false;
         }
 
-        const planFileAbsolute = path.resolve(workspaceRoot, planFileRelative);
+        const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, planFileRelative);
 
         // Safety invariant: jules_monitor is monitor-only and cannot receive execute dispatches.
         if (role === 'jules_monitor') {
@@ -5262,16 +5338,16 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
 
         if (role === 'jules') {
-            const pushGuard = await this._isPlanFilePushedToRemote(workspaceRoot, planFileAbsolute);
+            const pushGuard = await this._isPlanFilePushedToRemote(resolvedWorkspaceRoot, planFileAbsolute);
             if (!pushGuard.ok) {
                 clearDispatchLock();
                 vscode.window.showWarningMessage(pushGuard.message);
                 this._view?.webview.postMessage({ type: 'actionTriggered', role: 'jules', success: false });
                 return false;
             }
-            await this._updateSessionRunSheet(sessionId, 'jules');
-            await this._updateKanbanColumnForSession(workspaceRoot, sessionId, this._targetColumnForRole('jules')); 
-            await this._startJulesRemoteSession(workspaceRoot, planFileAbsolute, sessionId);
+            await this._updateSessionRunSheet(sessionId, 'jules', undefined, false, resolvedWorkspaceRoot);
+            await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole('jules'));
+            await this._startJulesRemoteSession(resolvedWorkspaceRoot, planFileAbsolute, sessionId);
             return true;
         }
 
@@ -5281,8 +5357,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 const planContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
                 const { hasBandA, hasBandB } = this._detectPlanBandCoverage(planContent);
 
-                const leadAgent = await this._getAgentNameForRole('lead');
-                const coderAgent = await this._getAgentNameForRole('coder');
+                const leadAgent = await this._getAgentNameForRole('lead', resolvedWorkspaceRoot);
+                const coderAgent = await this._getAgentNameForRole('coder', resolvedWorkspaceRoot);
 
                 const dispatches: Array<{ role: 'lead' | 'coder'; agent: string; payload: string; metadata: Record<string, any> }> = [];
                 const focusDirective = `FOCUS DIRECTIVE: You are working on the file at ${planFileAbsolute}. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing. Treat the provided path as the single source of truth.`;
@@ -5341,15 +5417,15 @@ ${focusDirective}`),
 
                 for (let i = 0; i < dispatches.length; i++) {
                     const dispatch = dispatches[i];
-                    await this._dispatchExecuteMessage(workspaceRoot, dispatch.agent, dispatch.payload, dispatch.metadata);
+                    await this._dispatchExecuteMessage(resolvedWorkspaceRoot, dispatch.agent, dispatch.payload, dispatch.metadata);
                     if (i === 0) {
                         vscode.commands.executeCommand('switchboard.focusTerminalByName', dispatch.agent);
                     }
                 }
 
                 // Dispatch succeeded — now update runsheet
-                await this._updateSessionRunSheet(sessionId, 'handoff');
-                await this._updateKanbanColumnForSession(workspaceRoot, sessionId, this._targetColumnForRole('team')); 
+                await this._updateSessionRunSheet(sessionId, 'handoff', undefined, false, resolvedWorkspaceRoot);
+                await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole('team'));
 
                 const summary = dispatches.map(d => `${d.role} (${d.agent})`).join(', ');
                 vscode.window.showInformationMessage(`Team coding started: ${summary}`);
@@ -5376,7 +5452,7 @@ ${focusDirective}`),
         }
 
         let targetAgent: string | undefined;
-        targetAgent = await this._getAgentNameForRole(role);
+        targetAgent = await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
 
         if (!targetAgent) {
             clearDispatchLock();
@@ -5395,7 +5471,7 @@ ${focusDirective}`),
         vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
 
         // 3. Construct Payload & Side Effects
-        const inboxDir = path.join(workspaceRoot, '.switchboard', 'inbox', targetAgent);
+        const inboxDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'inbox', targetAgent);
         if (!fs.existsSync(inboxDir)) {
             fs.mkdirSync(inboxDir, { recursive: true });
         }
@@ -5412,7 +5488,7 @@ ${focusDirective}`),
 - List at least 2 concrete flaws/edge cases and how you'll address them.
 - Then execute using those corrections.
 - Do NOT start \`/challenge\` or any auxiliary workflow for this step.`;
-        const customAgents = await this.getCustomAgents();
+        const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
         const customAgent = findCustomAgentByRole(customAgents, role);
         const grumpyReviewPath = `.switchboard/reviews/grumpy_critique_${sessionId}.md`;
         const balancedReviewPath = `.switchboard/reviews/balanced_review_${sessionId}.md`;
@@ -5693,13 +5769,13 @@ ${focusDirective}`);
         // 4. Send Message (Write to Inbox) — dispatch FIRST, then update runsheet on success.
         // This prevents cards from advancing in the kanban when the terminal dispatch fails.
         try {
-            await this._dispatchExecuteMessage(workspaceRoot, targetAgent, messagePayload, messageMetadata);
+            await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, messagePayload, messageMetadata);
 
             // Dispatch succeeded — now update runsheet
             if (workflowName) {
-                await this._updateSessionRunSheet(sessionId, workflowName);
+                await this._updateSessionRunSheet(sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
             }
-            await this._updateKanbanColumnForSession(workspaceRoot, sessionId, this._targetColumnForRole(role));
+            await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole(role));
 
             this._view?.webview.postMessage({ type: 'actionTriggered', role, success: true });
             await this._logEvent('dispatch', {
@@ -5842,8 +5918,7 @@ ${focusDirective}`);
             return;
         }
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = workspaceFolders?.[0]?.uri.fsPath || '';
+        const workspaceRoot = this._resolveWorkspaceRoot() || '';
         const outputDir = path.join(workspaceRoot, '.switchboard', 'context-maps');
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
         const outputPath = path.join(outputDir, `context-map_${timestamp}.md`);
@@ -5882,13 +5957,11 @@ ${focusDirective}`);
         return `@[/improve-plan] Please review and expand the initial plan.\n\n${focusDirective}`;
     }
 
-    private async _createInitiatedPlan(title: string, idea: string): Promise<{ sessionId: string; planFileAbsolute: string; }> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+    private async _createInitiatedPlan(title: string, idea: string, isAirlock: boolean): Promise<{ sessionId: string; planFileAbsolute: string; }> {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             throw new Error('No workspace folder found.');
         }
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const plansDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         fs.mkdirSync(plansDir, { recursive: true });
@@ -5905,9 +5978,10 @@ ${focusDirective}`);
         this._pendingPlanCreations.add(stablePlanPath);
         try {
             const isFullPlan = idea.includes('## Proposed Changes') || idea.includes('## Goal');
+            const headerText = isAirlock ? '## Notebook Plan\n\n' : '';
             const content = isFullPlan
                 ? idea
-                : `# ${title}\n\n## Notebook Plan\n\n${idea}\n\n## Goal\n- Clarify expected outcome and scope.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
+                : `# ${title}\n\n${headerText}${idea}\n\n## Goal\n- Clarify expected outcome and scope.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
             await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
 
             const sessionId = `sess_${Date.now()}`;
@@ -5981,7 +6055,7 @@ ${focusDirective}`);
         console.log(`[TaskViewerProvider] Auto-promoted plan to brain: ${fileName}`);
     }
 
-    private async _handleInitiatePlan(title: string, idea: string, mode: 'send' | 'copy' | 'local' | 'review') {
+    private async _handleInitiatePlan(title: string, idea: string, mode: 'send' | 'copy' | 'local' | 'review', isAirlock: boolean) {
         const trimmedTitle = title.trim();
         const trimmedIdea = idea.trim();
 
@@ -5991,11 +6065,10 @@ ${focusDirective}`);
         }
 
         try {
-            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(trimmedTitle, trimmedIdea);
+            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(trimmedTitle, trimmedIdea, isAirlock);
 
             if (mode === 'local') {
                 this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                vscode.window.showInformationMessage('Airlock: Plan saved.');
                 return;
             }
 
@@ -6038,10 +6111,8 @@ ${focusDirective}`);
     };
 
     private async _getRoleForAgent(agentName: string): Promise<string | undefined> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return undefined;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return undefined;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
 
         try {
@@ -6061,10 +6132,8 @@ ${focusDirective}`);
         const personaFile = TaskViewerProvider.ROLE_TO_PERSONA_FILE[role];
         if (!personaFile) return undefined;
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return undefined;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return undefined;
         const personaPath = path.join(workspaceRoot, '.agent', 'personas', 'roles', personaFile);
 
         try {
@@ -6156,10 +6225,9 @@ ${focusDirective}`);
 
 
     private async _refreshSessionStatus() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || !this._view) return;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        if (!this._view) return;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
 
         try {
@@ -6241,9 +6309,8 @@ ${focusDirective}`);
         this._isRefreshingJules = true;
 
         try {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders) return;
-            const workspaceRoot = workspaceFolders[0].uri.fsPath;
+            const workspaceRoot = this._resolveWorkspaceRoot();
+            if (!workspaceRoot) return;
 
             const tracked = await this._getTrackedJulesSessions();
             let listedSessions: JulesSessionRecord[] = [];
@@ -6599,10 +6666,8 @@ ${focusDirective}`);
     }
 
     private async _getTrackedJulesSessions(): Promise<JulesSessionRecord[]> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return [];
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return [];
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
         if (!fs.existsSync(statePath)) return [];
 
@@ -6950,10 +7015,9 @@ ${focusDirective}`);
     }
 
     private async _refreshTerminalStatuses() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || !this._view) return;
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        if (!this._view) return;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
 
         try {
@@ -7149,12 +7213,11 @@ ${focusDirective}`);
     // ── Web AI Airlock ──────────────────────────────────────────────────
 
     private async _handleAirlockExport(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_exportError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
         try {
             // 1. Scaffold airlock directory
@@ -7267,7 +7330,7 @@ ${focusDirective}`);
     private static readonly MAX_AIRLOCK_TEXT_BYTES = 2 * 1024 * 1024; // 2MB
 
     private async _handleKanbanWorkflowEvent(workflow: string, sessionId?: string): Promise<void> {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) return;
         try {
             const log = this._getSessionLog(workspaceRoot);
@@ -7300,12 +7363,11 @@ ${focusDirective}`);
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'Text exceeds 2MB limit. Please reduce the size.' });
             return;
         }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
         try {
             // Save the patch as a markdown file
@@ -7342,12 +7404,11 @@ ${focusDirective}`);
     }
 
     private async _handleAirlockSyncRepo(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_syncError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
 
         try {
             const gitExtension = vscode.extensions.getExtension('vscode.git');
@@ -7396,12 +7457,12 @@ ${focusDirective}`);
     }
 
     private async _handleAirlockOpenFolder(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             vscode.window.showWarningMessage('Airlock: No workspace open.');
             return;
         }
-        const airlockDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'airlock');
+        const airlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
         if (!fs.existsSync(airlockDir)) {
             vscode.window.showWarningMessage('Airlock: Folder does not exist yet. Click BUNDLE CODE first.');
             return;

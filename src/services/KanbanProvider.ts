@@ -21,6 +21,7 @@ export interface KanbanCard {
     column: KanbanColumn;
     lastActivity: string;
     complexity: 'Unknown' | 'Low' | 'High';
+    workspaceRoot: string;
 }
 
 /**
@@ -30,7 +31,7 @@ export interface KanbanCard {
 export class KanbanProvider implements vscode.Disposable {
     private _panel?: vscode.WebviewPanel;
     private _disposables: vscode.Disposable[] = [];
-    private _sessionLog?: SessionActionLog;
+    private _sessionLogs = new Map<string, SessionActionLog>();
     private _sessionWatcher?: vscode.FileSystemWatcher;
     private _stateWatcher?: vscode.FileSystemWatcher;
     private _fsSessionWatcher?: fs.FSWatcher;
@@ -40,8 +41,9 @@ export class KanbanProvider implements vscode.Disposable {
     private _cliTriggersEnabled: boolean;
     private _lastColumnsSignature: string | null = null;
     private _autobanState?: AutobanConfigState;
-    private _kanbanDb?: KanbanDatabase;
+    private _kanbanDbs = new Map<string, KanbanDatabase>();
     private _lastCards: KanbanCard[] = [];
+    private _currentWorkspaceRoot: string | null = null;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
@@ -53,6 +55,36 @@ export class KanbanProvider implements vscode.Disposable {
 
     public get cliTriggersEnabled(): boolean {
         return this._cliTriggersEnabled;
+    }
+
+    private _getWorkspaceRoots(): string[] {
+        return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+    }
+
+    private _resolveWorkspaceRoot(workspaceRoot?: string): string | null {
+        const roots = this._getWorkspaceRoots();
+        if (roots.length === 0) {
+            return null;
+        }
+        if (workspaceRoot) {
+            const resolved = path.resolve(workspaceRoot);
+            if (roots.includes(resolved)) {
+                this._currentWorkspaceRoot = resolved;
+                return resolved;
+            }
+        }
+        if (this._currentWorkspaceRoot && roots.includes(this._currentWorkspaceRoot)) {
+            return this._currentWorkspaceRoot;
+        }
+        this._currentWorkspaceRoot = roots[0];
+        return this._currentWorkspaceRoot;
+    }
+
+    private _getWorkspaceItems(): Array<{ label: string; workspaceRoot: string }> {
+        return (vscode.workspace.workspaceFolders || []).map(folder => ({
+            label: folder.name,
+            workspaceRoot: folder.uri.fsPath
+        }));
     }
 
     dispose() {
@@ -103,7 +135,7 @@ export class KanbanProvider implements vscode.Disposable {
             this._lastColumnsSignature = null;
         }, null, this._disposables);
 
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (workspaceRoot) {
             void this._getKanbanDb(workspaceRoot).ensureReady();
         }
@@ -142,7 +174,7 @@ export class KanbanProvider implements vscode.Disposable {
 
         // Native fs.watch fallback — VS Code's createFileSystemWatcher can miss
         // gitignored directories (.switchboard is gitignored).
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (workspaceRoot) {
             const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
             const stateFile = path.join(workspaceRoot, '.switchboard', 'state.json');
@@ -178,17 +210,25 @@ export class KanbanProvider implements vscode.Disposable {
     }
 
     private _getSessionLog(workspaceRoot: string): SessionActionLog {
-        if (!this._sessionLog) {
-            this._sessionLog = new SessionActionLog(workspaceRoot);
+        const resolvedRoot = path.resolve(workspaceRoot);
+        const existing = this._sessionLogs.get(resolvedRoot);
+        if (existing) {
+            return existing;
         }
-        return this._sessionLog;
+        const created = new SessionActionLog(resolvedRoot);
+        this._sessionLogs.set(resolvedRoot, created);
+        return created;
     }
 
     private _getKanbanDb(workspaceRoot: string): KanbanDatabase {
-        if (!this._kanbanDb) {
-            this._kanbanDb = KanbanDatabase.forWorkspace(workspaceRoot);
+        const resolvedRoot = path.resolve(workspaceRoot);
+        const existing = this._kanbanDbs.get(resolvedRoot);
+        if (existing) {
+            return existing;
         }
-        return this._kanbanDb;
+        const created = KanbanDatabase.forWorkspace(resolvedRoot);
+        this._kanbanDbs.set(resolvedRoot, created);
+        return created;
     }
 
     private _deriveLastAction(events: any[]): string {
@@ -214,22 +254,22 @@ export class KanbanProvider implements vscode.Disposable {
         }
     }
 
-    private async _refreshBoard() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || !this._panel) return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    private async _refreshBoard(workspaceRoot?: string) {
+        if (!this._panel) return;
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) return;
 
         try {
-            const activeSheets = await this._getActiveSheets(workspaceRoot);
-            const customAgents = await this._getCustomAgents(workspaceRoot);
+            const activeSheets = await this._getActiveSheets(resolvedWorkspaceRoot);
+            const customAgents = await this._getCustomAgents(resolvedWorkspaceRoot);
             const columns = buildKanbanColumns(customAgents);
-            const workspaceId = await this._readWorkspaceId(workspaceRoot);
+            const workspaceId = await this._readWorkspaceId(resolvedWorkspaceRoot);
 
             const legacySnapshot = await Promise.all(
                 activeSheets.map(async (sheet: any) => {
                     const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
                     const planFile = typeof sheet.planFile === 'string' ? sheet.planFile : '';
-                    const complexity = await this.getComplexityFromPlan(workspaceRoot, planFile);
+                    const complexity = await this.getComplexityFromPlan(resolvedWorkspaceRoot, planFile);
                     return {
                         planId: String(sheet._kanbanPlanId || sheet.sessionId || ''),
                         sessionId: String(sheet.sessionId || ''),
@@ -252,10 +292,11 @@ export class KanbanProvider implements vscode.Disposable {
                 planFile: row.planFile,
                 column: row.kanbanColumn,
                 lastActivity: row.updatedAt || row.createdAt,
-                complexity: row.complexity
+                complexity: row.complexity,
+                workspaceRoot: resolvedWorkspaceRoot
             }));
 
-            const db = this._getKanbanDb(workspaceRoot);
+            const db = this._getKanbanDb(resolvedWorkspaceRoot);
             const snapshotRows = legacySnapshot.filter(row => row.planId && row.sessionId && row.workspaceId);
             if (workspaceId && await db.ensureReady()) {
                 const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, snapshotRows);
@@ -264,14 +305,20 @@ export class KanbanProvider implements vscode.Disposable {
                     : false;
                 if (synced) {
                     const dbRows = await db.getBoard(workspaceId);
-                    cards = dbRows.map(row => ({
-                        sessionId: row.sessionId,
-                        topic: row.topic || row.planFile || 'Untitled',
-                        planFile: row.planFile || '',
-                        column: row.kanbanColumn || 'CREATED',
-                        lastActivity: row.updatedAt || row.createdAt || '',
-                        complexity: row.complexity
-                    }));
+                    const dbRowsBySession = new Map(dbRows.map(row => [row.sessionId, row]));
+                    const dbRowsByPlanId = new Map(dbRows.map(row => [row.planId, row]));
+                    cards = snapshotRows.map(row => {
+                        const dbRow = dbRowsBySession.get(row.sessionId) || dbRowsByPlanId.get(row.planId);
+                        return {
+                            sessionId: row.sessionId,
+                            topic: dbRow?.topic || row.topic || row.planFile || 'Untitled',
+                            planFile: dbRow?.planFile || row.planFile || '',
+                            column: dbRow?.kanbanColumn || row.kanbanColumn || 'CREATED',
+                            lastActivity: dbRow?.updatedAt || row.updatedAt || row.createdAt || '',
+                            complexity: dbRow?.complexity || row.complexity,
+                            workspaceRoot: resolvedWorkspaceRoot
+                        };
+                    });
                 } else {
                     console.warn('[KanbanProvider] Kanban DB sync failed, using file-derived fallback for this refresh.');
                 }
@@ -279,14 +326,19 @@ export class KanbanProvider implements vscode.Disposable {
                 console.warn(`[KanbanProvider] Kanban DB unavailable, using file-derived fallback: ${db.lastInitError || 'unknown error'}`);
             }
 
-            const agentNames = await this._getAgentNames(workspaceRoot);
-            const visibleAgents = await this._getVisibleAgents(workspaceRoot);
+            const agentNames = await this._getAgentNames(resolvedWorkspaceRoot);
+            const visibleAgents = await this._getVisibleAgents(resolvedWorkspaceRoot);
 
             const nextColumnsSignature = this._columnsSignature(columns);
             if (this._lastColumnsSignature !== nextColumnsSignature) {
                 this._panel.webview.postMessage({ type: 'updateColumns', columns });
                 this._lastColumnsSignature = nextColumnsSignature;
             }
+            this._panel.webview.postMessage({
+                type: 'updateWorkspaceSelection',
+                workspaceRoot: resolvedWorkspaceRoot,
+                workspaces: this._getWorkspaceItems()
+            });
             this._lastCards = cards;
             this._panel.webview.postMessage({ type: 'updateBoard', cards });
             this._panel.webview.postMessage({ type: 'updateTarget', column: 'CODED', target: this._codedColumnTarget });
@@ -371,14 +423,13 @@ ${this._formatCardsForPrompt(cards, workspaceRoot, true)}
 After completing all plans, summarize what was changed and any verification steps needed.`;
     }
 
-    private async _getEligibleSessionIds(sessionIds: string[], expectedColumn: string): Promise<string[]> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || sessionIds.length === 0) {
+    private async _getEligibleSessionIds(sessionIds: string[], expectedColumn: string, workspaceRoot?: string): Promise<string[]> {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot || sessionIds.length === 0) {
             return [];
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
-        const customAgents = await this._getCustomAgents(workspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
+        const customAgents = await this._getCustomAgents(resolvedWorkspaceRoot);
         const eligible: string[] = [];
 
         for (const sessionId of sessionIds) {
@@ -396,14 +447,13 @@ After completing all plans, summarize what was changed and any verification step
         return eligible;
     }
 
-    private async _advanceSessionsInColumn(sessionIds: string[], expectedColumn: string, workflow: string): Promise<string[]> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || sessionIds.length === 0) {
+    private async _advanceSessionsInColumn(sessionIds: string[], expectedColumn: string, workflow: string, workspaceRoot?: string): Promise<string[]> {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot || sessionIds.length === 0) {
             return [];
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
-        const customAgents = await this._getCustomAgents(workspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
+        const customAgents = await this._getCustomAgents(resolvedWorkspaceRoot);
         const advanced: string[] = [];
 
         for (const sessionId of sessionIds) {
@@ -610,9 +660,9 @@ After completing all plans, summarize what was changed and any verification step
     /** Send current visible agents to the kanban webview panel. */
     public async sendVisibleAgents() {
         if (!this._panel) return;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const visibleAgents = await this._getVisibleAgents(workspaceFolders[0].uri.fsPath);
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) return;
+        const visibleAgents = await this._getVisibleAgents(workspaceRoot);
         this._panel.webview.postMessage({ type: 'visibleAgents', agents: visibleAgents });
     }
 
@@ -631,7 +681,7 @@ After completing all plans, summarize what was changed and any verification step
     /**
      * Map a runsheet to a Kanban card by inspecting its events array.
      */
-    private _sheetToCard(sheet: any, complexity: 'Unknown' | 'Low' | 'High' = 'Unknown', customAgents: CustomAgentConfig[] = []): KanbanCard {
+    private _sheetToCard(workspaceRoot: string, sheet: any, complexity: 'Unknown' | 'Low' | 'High' = 'Unknown', customAgents: CustomAgentConfig[] = []): KanbanCard {
         const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
         const column = deriveKanbanColumn(events, customAgents);
         let lastActivity = sheet.createdAt || '';
@@ -647,7 +697,8 @@ After completing all plans, summarize what was changed and any verification step
             planFile: sheet.planFile || '',
             column,
             lastActivity,
-            complexity
+            complexity,
+            workspaceRoot
         };
     }
 
@@ -734,7 +785,14 @@ After completing all plans, summarize what was changed and any verification step
     private async _handleMessage(msg: any) {
         switch (msg.type) {
             case 'refresh':
-                await this._refreshBoard();
+                await this._refreshBoard(msg.workspaceRoot);
+                break;
+            case 'selectWorkspace':
+                if (typeof msg.workspaceRoot === 'string' && msg.workspaceRoot.trim()) {
+                    this._resolveWorkspaceRoot(msg.workspaceRoot);
+                    this._setupSessionWatcher();
+                    await this._refreshBoard(msg.workspaceRoot);
+                }
                 break;
             case 'toggleAutoban': {
                 const enabled = !!msg.enabled;
@@ -755,22 +813,36 @@ After completing all plans, summarize what was changed and any verification step
                     break;
                 }
 
-                // Reject if the target agent is hidden or unassigned
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                let workspaceRoot: string | undefined;
-                let canDispatch = true;
-                if (workspaceFolders) {
-                    workspaceRoot = workspaceFolders[0].uri.fsPath;
-                    canDispatch = await this._canAssignRole(workspaceRoot, role);
-                }
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                const canDispatch = workspaceRoot ? await this._canAssignRole(workspaceRoot, role) : false;
                 if (!canDispatch) {
                     break;
                 }
 
                 const instruction = role === 'planner' ? 'enhance' : undefined;
-                const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', role, sessionId, instruction);
+                const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', role, sessionId, instruction, workspaceRoot);
                 if (dispatched && workspaceRoot) {
                     await this._getKanbanDb(workspaceRoot).updateColumn(sessionId, targetColumn);
+                }
+                break;
+            }
+            case 'triggerBatchAction': {
+                if (!this._cliTriggersEnabled) {
+                    break;
+                }
+                const { sessionIds, targetColumn } = msg;
+                const role = this._columnToRole(targetColumn);
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (role && Array.isArray(sessionIds) && sessionIds.length > 0) {
+                    await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, sessionIds, undefined, workspaceRoot);
+                }
+                break;
+            }
+            case 'moveCardBackwards': {
+                const { sessionIds, targetColumn } = msg;
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (Array.isArray(sessionIds) && sessionIds.length > 0) {
+                    await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', sessionIds, targetColumn, workspaceRoot);
                 }
                 break;
             }
@@ -779,69 +851,66 @@ After completing all plans, summarize what was changed and any verification step
                 await this._context.workspaceState.update('kanban.cliTriggersEnabled', this._cliTriggersEnabled);
                 break;
             case 'batchPlannerPrompt': {
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (!workspaceFolders) {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) {
                     break;
                 }
-                const workspaceRoot = workspaceFolders[0].uri.fsPath;
-                await this._refreshBoard();
-                const sourceCards = this._lastCards.filter(card => card.column === 'CREATED');
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === 'CREATED');
                 if (sourceCards.length === 0) {
                     vscode.window.showInformationMessage('No CREATED plans available for batch planner prompt.');
                     break;
                 }
                 const prompt = this._generateBatchPlannerPrompt(sourceCards, workspaceRoot);
                 await vscode.env.clipboard.writeText(prompt);
-                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'CREATED', 'improve-plan');
-                await this._refreshBoard();
+                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'CREATED', 'improve-plan', workspaceRoot);
+                await this._refreshBoard(workspaceRoot);
                 vscode.window.showInformationMessage(`Copied batch planner prompt (${sourceCards.length} plans). Advanced ${advanced.length} plans to PLAN REVIEWED.`);
                 break;
             }
             case 'batchLowComplexity': {
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (!workspaceFolders) {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) {
                     break;
                 }
-                const workspaceRoot = workspaceFolders[0].uri.fsPath;
-                await this._refreshBoard();
-                const sourceCards = this._lastCards.filter(card => card.column === 'PLAN REVIEWED' && this._isLowComplexity(card));
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === 'PLAN REVIEWED' && this._isLowComplexity(card));
                 if (sourceCards.length === 0) {
                     vscode.window.showInformationMessage('No LOW-complexity PLAN REVIEWED plans available for batch coding prompt.');
                     break;
                 }
                 const prompt = this._generateBatchLowComplexityPrompt(sourceCards, workspaceRoot);
                 await vscode.env.clipboard.writeText(prompt);
-                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED', 'handoff');
-                await this._refreshBoard();
+                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED', 'handoff', workspaceRoot);
+                await this._refreshBoard(workspaceRoot);
                 vscode.window.showInformationMessage(`Copied batch low-complexity prompt (${sourceCards.length} plans). Advanced ${advanced.length} plans to CODED.`);
                 break;
             }
             case 'julesLowComplexity': {
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (!workspaceFolders) {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) {
                     break;
                 }
-                const workspaceRoot = workspaceFolders[0].uri.fsPath;
                 const visibleAgents = await this._getVisibleAgents(workspaceRoot);
                 if (visibleAgents.jules === false) {
                     vscode.window.showWarningMessage('Jules is currently disabled in setup.');
                     break;
                 }
-                await this._refreshBoard();
-                const sourceCards = this._lastCards.filter(card => card.column === 'PLAN REVIEWED' && this._isLowComplexity(card));
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === 'PLAN REVIEWED' && this._isLowComplexity(card));
                 if (sourceCards.length === 0) {
                     vscode.window.showInformationMessage('No LOW-complexity PLAN REVIEWED plans available for Jules dispatch.');
                     break;
                 }
-                const eligibleSessionIds = await this._getEligibleSessionIds(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED');
+                const eligibleSessionIds = await this._getEligibleSessionIds(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED', workspaceRoot);
                 let dispatchedCount = 0;
                 for (const sessionId of eligibleSessionIds) {
-                    const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', 'jules', sessionId);
+                    const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', 'jules', sessionId, undefined, workspaceRoot);
                     if (dispatched) {
                         dispatchedCount++;
                     }
                 }
-                await this._refreshBoard();
+                await this._refreshBoard(workspaceRoot);
                 vscode.window.showInformationMessage(`Dispatched ${dispatchedCount} LOW-complexity plans to Jules.`);
                 break;
             }
@@ -854,23 +923,22 @@ After completing all plans, summarize what was changed and any verification step
             }
             case 'completePlan':
                 if (msg.sessionId) {
-                    // Delegate to the sidebar's completePlan handler via internal method
-                    await vscode.commands.executeCommand('switchboard.completePlanFromKanban', msg.sessionId);
+                    await vscode.commands.executeCommand('switchboard.completePlanFromKanban', msg.sessionId, msg.workspaceRoot);
                 }
                 break;
             case 'viewPlan':
                 if (msg.sessionId) {
-                    await vscode.commands.executeCommand('switchboard.viewPlanFromKanban', msg.sessionId);
+                    await vscode.commands.executeCommand('switchboard.viewPlanFromKanban', msg.sessionId, msg.workspaceRoot);
                 }
                 break;
             case 'reviewPlan':
                 if (msg.sessionId) {
-                    await vscode.commands.executeCommand('switchboard.reviewPlanFromKanban', msg.sessionId);
+                    await vscode.commands.executeCommand('switchboard.reviewPlanFromKanban', msg.sessionId, msg.workspaceRoot);
                 }
                 break;
             case 'copyPlanLink':
                 if (msg.sessionId) {
-                    const success = await vscode.commands.executeCommand<boolean>('switchboard.copyPlanFromKanban', msg.sessionId, msg.column);
+                    const success = await vscode.commands.executeCommand<boolean>('switchboard.copyPlanFromKanban', msg.sessionId, msg.column, msg.workspaceRoot);
                     this._panel?.webview.postMessage({ type: 'copyPlanLinkResult', sessionId: msg.sessionId, success });
                 }
                 break;

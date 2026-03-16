@@ -10,9 +10,11 @@ const z = require("zod");
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { createRequire } = require('module');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
+const runtimeRequire = createRequire(__filename);
 
 const { loadState, updateState } = require("./state-manager");
 const { getWorkflow, WORKFLOWS } = require("./workflows");
@@ -287,8 +289,28 @@ function getWorkspaceRoot() {
 
 let sqlJsInitPromise = null;
 
+function resolveSqlJsModulePath(workspaceRoot) {
+    const candidates = [
+        path.join(__dirname, '..', 'sql-wasm.js'),
+        path.join(__dirname, '..', '..', 'sql-wasm.js'),
+        path.join(process.cwd(), 'dist', 'sql-wasm.js'),
+        path.join(workspaceRoot, 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+        path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+        path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+        path.join(__dirname, '..', '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.js'),
+        path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', 'sql-wasm.js')
+    ];
+    for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+    }
+    throw new Error(`Unable to locate sql-wasm.js. Checked: ${candidates.join(', ')}`);
+}
+
 function resolveSqlWasmPath(workspaceRoot) {
     const candidates = [
+        path.join(__dirname, '..', 'sql-wasm.wasm'),
+        path.join(__dirname, '..', '..', 'sql-wasm.wasm'),
+        path.join(process.cwd(), 'dist', 'sql-wasm.wasm'),
         path.join(workspaceRoot, 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
         path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
         path.join(__dirname, '..', '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm'),
@@ -304,7 +326,7 @@ function resolveSqlWasmPath(workspaceRoot) {
 async function getSqlJs(workspaceRoot) {
     if (!sqlJsInitPromise) {
         sqlJsInitPromise = (async () => {
-            const initSqlJsModule = require('sql.js');
+            const initSqlJsModule = runtimeRequire(resolveSqlJsModulePath(workspaceRoot));
             const initSqlJs = typeof initSqlJsModule === 'function' ? initSqlJsModule : initSqlJsModule.default;
             if (typeof initSqlJs !== 'function') {
                 throw new Error('sql.js initializer function is unavailable');
@@ -348,7 +370,8 @@ async function readKanbanStateFromDb(workspaceRoot, workspaceId) {
             columns[col].push({
                 topic: row.topic || 'Untitled',
                 sessionId: row.session_id || '',
-                createdAt: row.created_at || ''
+                createdAt: row.created_at || '',
+                complexity: 'unknown'
             });
         }
         stmt.free();
@@ -608,6 +631,25 @@ function coercePositiveInt(value, fallback) {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
     return Math.floor(parsed);
+}
+
+// TODO: Regex logic duplicated from KanbanProvider.ts `getComplexityFromPlan`.
+// Canonical source is KanbanProvider.ts.
+function getComplexityFromContent(content) {
+    if (!content) return 'unknown';
+    const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
+    if (!auditMatch) return 'unknown';
+    const afterAudit = content.slice(auditMatch.index + auditMatch[0].length);
+    const bandBMatch = afterAudit.match(/\bBand\s+B\b/i);
+    if (!bandBMatch) return 'low';
+    const bandBStart = bandBMatch.index + bandBMatch[0].length;
+    const afterBandB = afterAudit.slice(bandBStart);
+    const nextSection = afterBandB.match(/^#{1,4}\s|\bBand\s+[C-Z]\b/im);
+    const bandBContent = nextSection
+        ? afterBandB.slice(0, nextSection.index).trim()
+        : afterBandB.trim();
+    const isEmptyRegex = /^[\*\-\`\s]*(none|n\/?a|\u2014|-)($|[\s\.,;:!?]+)/i;
+    return (bandBContent === '' || isEmptyRegex.test(bandBContent)) ? 'low' : 'high';
 }
 
 function sanitizeIsoTimestamp(value) {
@@ -2039,11 +2081,24 @@ function registerTools(server) {
                     const entry = registry.entries[planId];
                     if (!entry || entry.ownerWorkspaceId !== workspaceId || entry.status !== 'active') continue;
 
+                    let complexity = 'unknown';
+                    try {
+                        if (sheet.planFile) {
+                            const planPath = path.resolve(workspaceRoot, sheet.planFile);
+                            if (fs.existsSync(planPath)) {
+                                const planContent = fs.readFileSync(planPath, 'utf8');
+                                complexity = getComplexityFromContent(planContent);
+                            }
+                        }
+                    } catch (e) { /* non-fatal */ }
+
                     const col = deriveKanbanColumn(sheet.events || []);
+                    if (!columns[col]) columns[col] = [];
                     columns[col].push({
                         topic: sheet.topic || sheet.planFile || 'Untitled',
                         sessionId: sheet.sessionId,
-                        createdAt: sheet.createdAt
+                        createdAt: sheet.createdAt,
+                        complexity
                     });
                 } catch (e) {}
             }

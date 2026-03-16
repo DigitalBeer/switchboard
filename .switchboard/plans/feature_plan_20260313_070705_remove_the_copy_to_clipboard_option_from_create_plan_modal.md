@@ -15,7 +15,8 @@ Remove the redundant "COPY TO CLIPBOARD" button from the Create Plan modal to de
 - Removing the DOM manipulation references to `btn-copy-prompt` inside the modal lifecycle functions (`openInitiatePlanModal` and `closeInitiatePlanModal`).
 
 ### Band B — Complex / Risky
-- None. This is a safe presentation-layer adjustment.
+- None.
+
 
 ## Edge-Case Audit
 - **Race Conditions:** None.

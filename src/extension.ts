@@ -178,6 +178,29 @@ function isPathWithinRoot(candidate: string, root: string): boolean {
     return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+function findWorkspaceRootForPath(candidate: string): string | null {
+    const absoluteCandidate = path.resolve(candidate);
+    for (const folder of vscode.workspace.workspaceFolders || []) {
+        const workspaceRoot = folder.uri.fsPath;
+        if (isPathWithinRoot(absoluteCandidate, workspaceRoot)) {
+            return workspaceRoot;
+        }
+    }
+    return null;
+}
+
+function getPreferredWorkspaceRoot(): string | null {
+    const activeUri = vscode.window.activeTextEditor?.document?.uri;
+    if (activeUri) {
+        const folder = vscode.workspace.getWorkspaceFolder(activeUri);
+        if (folder) {
+            return folder.uri.fsPath;
+        }
+    }
+    const [firstFolder] = vscode.workspace.workspaceFolders || [];
+    return firstFolder?.uri.fsPath || null;
+}
+
 function isCompatibleIdeName(termIdeName: string | undefined, currentIdeName: string): boolean {
     const normalizedTermIde = (termIdeName || '').toLowerCase();
     const normalizedCurrentIde = (currentIdeName || '').toLowerCase();
@@ -667,7 +690,7 @@ function syncSettingsToMcp() {
 
 
 export async function activate(context: vscode.ExtensionContext) {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspaceRoot = getPreferredWorkspaceRoot();
     const strictInboxAuthSetting = getEnforcedSwitchboardBooleanSetting('security.strictInboxAuth', true);
     const workspaceModeSetting = getEnforcedSwitchboardBooleanSetting('runtime.workspaceMode', false);
     const dispatchSigningKey = await getOrCreateDispatchSigningKey(context);
@@ -799,33 +822,38 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(openKanbanDisposable);
 
     // Helper commands for Kanban ↔ sidebar delegation
-    const triggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerAgentFromKanban', async (role: string, sessionId: string, instruction?: string) => {
-        return await taskViewerProvider.handleKanbanTrigger(role, sessionId, instruction);
+    const triggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerAgentFromKanban', async (role: string, sessionId: string, instruction?: string, workspaceRoot?: string) => {
+        return await taskViewerProvider.handleKanbanTrigger(role, sessionId, instruction, workspaceRoot);
     });
     context.subscriptions.push(triggerFromKanbanDisposable);
 
-    const batchTriggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string) => {
-        return taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction);
+    const batchTriggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string, workspaceRoot?: string) => {
+        return taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot);
     });
     context.subscriptions.push(batchTriggerFromKanbanDisposable);
 
-    const completePlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.completePlanFromKanban', async (sessionId: string) => {
-        taskViewerProvider.handleKanbanCompletePlan(sessionId);
+    const kanbanBackwardMoveDisposable = vscode.commands.registerCommand('switchboard.kanbanBackwardMove', async (sessionIds: string[], targetColumn: string, workspaceRoot?: string) => {
+        taskViewerProvider.handleKanbanBackwardMove(sessionIds, targetColumn, workspaceRoot);
+    });
+    context.subscriptions.push(kanbanBackwardMoveDisposable);
+
+    const completePlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.completePlanFromKanban', async (sessionId: string, workspaceRoot?: string) => {
+        taskViewerProvider.handleKanbanCompletePlan(sessionId, workspaceRoot);
     });
     context.subscriptions.push(completePlanFromKanbanDisposable);
 
-    const copyPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.copyPlanFromKanban', async (sessionId: string, column?: string) => {
-        return await taskViewerProvider.handleKanbanCopyPlan(sessionId, column);
+    const copyPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.copyPlanFromKanban', async (sessionId: string, column?: string, workspaceRoot?: string) => {
+        return await taskViewerProvider.handleKanbanCopyPlan(sessionId, column, workspaceRoot);
     });
     context.subscriptions.push(copyPlanFromKanbanDisposable);
 
-    const viewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.viewPlanFromKanban', async (sessionId: string) => {
-        taskViewerProvider.handleKanbanViewPlan(sessionId);
+    const viewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.viewPlanFromKanban', async (sessionId: string, workspaceRoot?: string) => {
+        taskViewerProvider.handleKanbanViewPlan(sessionId, workspaceRoot);
     });
     context.subscriptions.push(viewPlanFromKanbanDisposable);
 
-    const reviewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.reviewPlanFromKanban', async (sessionId: string) => {
-        taskViewerProvider.handleKanbanReviewPlan(sessionId);
+    const reviewPlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.reviewPlanFromKanban', async (sessionId: string, workspaceRoot?: string) => {
+        taskViewerProvider.handleKanbanReviewPlan(sessionId, workspaceRoot);
     });
     context.subscriptions.push(reviewPlanFromKanbanDisposable);
 
@@ -1162,6 +1190,13 @@ export async function activate(context: vscode.ExtensionContext) {
             // Fallback for non-workspace context if needed
             await handleMcpSetup(context, taskViewerProvider);
         }
+
+        if (vscode.env.appName.toLowerCase().includes('windsurf')) {
+            vscode.window.showInformationMessage(
+                '💡 Windsurf MCP Tip: To get Windsurf to recognise new MCP servers, you may need to install an official Windsurf Marketplace MCP server (we recommend GitHub MCP). Alternatively, disable then re-enable any official Windsurf MCP server in the Marketplace to trigger activation of non-official servers.',
+                'Got it'
+            );
+        }
     });
     context.subscriptions.push(connectMcpDisposable);
 
@@ -1317,12 +1352,14 @@ export async function activate(context: vscode.ExtensionContext) {
         let planFileAbsolute = '';
         let sessionId: string | undefined;
         let topic: string | undefined;
+        let workspaceRoot: string | undefined;
 
         if (typeof target === 'object' && !(target instanceof vscode.Uri) && 'planFileAbsolute' in target) {
             const candidate = target as ReviewPlanContext;
             planFileAbsolute = String(candidate.planFileAbsolute || '').trim();
             sessionId = candidate.sessionId;
             topic = candidate.topic;
+            workspaceRoot = typeof candidate.workspaceRoot === 'string' ? candidate.workspaceRoot.trim() : undefined;
         } else if (target instanceof vscode.Uri) {
             planFileAbsolute = target.fsPath;
         } else if (typeof target === 'string') {
@@ -1334,15 +1371,13 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const absolutePath = path.resolve(planFileAbsolute);
+        const resolvedWorkspaceRoot = workspaceRoot || findWorkspaceRootForPath(absolutePath);
+        if (!resolvedWorkspaceRoot) {
             vscode.window.showErrorMessage('Failed to open review panel: no workspace folder found.');
             return;
         }
-
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const absolutePath = path.resolve(planFileAbsolute);
-        if (!isPathWithinRoot(absolutePath, workspaceRoot)) {
+        if (!isPathWithinRoot(absolutePath, resolvedWorkspaceRoot)) {
             vscode.window.showErrorMessage('Review plan path is outside the workspace boundary.');
             return;
         }
@@ -1351,7 +1386,8 @@ export async function activate(context: vscode.ExtensionContext) {
             await reviewProvider.open({
                 sessionId,
                 topic,
-                planFileAbsolute: absolutePath
+                planFileAbsolute: absolutePath,
+                workspaceRoot: resolvedWorkspaceRoot
             });
         } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
@@ -1363,12 +1399,6 @@ export async function activate(context: vscode.ExtensionContext) {
     const sendReviewCommentDisposable = vscode.commands.registerCommand(
         'switchboard.sendReviewComment',
         async (request: ReviewCommentRequest): Promise<ReviewCommentResult> => {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders) {
-                return { ok: false, message: 'No workspace folder found.' };
-            }
-            const workspaceRoot = workspaceFolders[0].uri.fsPath;
-
             const selectedText = typeof request?.selectedText === 'string' ? request.selectedText.trim() : '';
             const comment = typeof request?.comment === 'string' ? request.comment.trim() : '';
             const planFileAbsolute = typeof request?.planFileAbsolute === 'string' ? request.planFileAbsolute.trim() : '';
@@ -1384,6 +1414,10 @@ export async function activate(context: vscode.ExtensionContext) {
             }
 
             const absolutePlanPath = path.resolve(planFileAbsolute);
+            const workspaceRoot = findWorkspaceRootForPath(absolutePlanPath);
+            if (!workspaceRoot) {
+                return { ok: false, message: 'No workspace folder found.' };
+            }
             if (!isPathWithinRoot(absolutePlanPath, workspaceRoot)) {
                 return { ok: false, message: 'Plan path is outside workspace boundary.' };
             }
@@ -1720,7 +1754,7 @@ export async function activate(context: vscode.ExtensionContext) {
 async function handleMcpSetup(context: vscode.ExtensionContext, provider: TaskViewerProvider) {
     const folders = vscode.workspace.workspaceFolders || [];
     let serverPath: string | undefined;
-    const workspaceRoot = folders[0]?.uri.fsPath;
+    const workspaceRoot = getPreferredWorkspaceRoot();
 
     // 1. Auto-Detection Strategy (Multi-Root Support)
     for (const folder of folders) {
@@ -2377,7 +2411,7 @@ async function autoRegisterTerminals(workspaceRoot: string) {
  * Show interactive setup wizard
  */
 async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvider?: TaskViewerProvider) {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspaceRoot = getPreferredWorkspaceRoot();
     if (!workspaceRoot) {
         vscode.window.showErrorMessage('No workspace folder open');
         return;
@@ -2565,6 +2599,12 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
             mcpOutputChannel?.appendLine(`[Setup] MCP auto-configuration failed: ${e}`);
         }
 
+        if (targets.includes('windsurf')) {
+            vscode.window.showInformationMessage(
+                '💡 Windsurf MCP Tip: To get Windsurf to recognise new MCP servers, you may need to install an official Windsurf Marketplace MCP server (we recommend GitHub MCP). Alternatively, disable then re-enable any official Windsurf MCP server in the Marketplace to trigger activation of non-official servers.',
+                'Got it'
+            );
+        }
 
         // Hide status bar item if it exists
         if (setupStatusBarItem) {

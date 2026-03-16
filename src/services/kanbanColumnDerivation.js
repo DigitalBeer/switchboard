@@ -19,6 +19,10 @@ function deriveKanbanColumn(events = [], customAgents = []) {
             continue;
         }
 
+        if (workflow === 'reset-to-created') return 'CREATED';
+        if (workflow === 'reset-to-plan-reviewed') return 'PLAN REVIEWED';
+        if (workflow === 'reset-to-coded') return 'CODED';
+
         if (workflow.includes('reviewer') || workflow === 'review') {
             return 'CODE REVIEWED';
         }

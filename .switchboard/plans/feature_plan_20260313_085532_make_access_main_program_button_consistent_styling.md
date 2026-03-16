@@ -18,7 +18,8 @@ Standardize the initial appearance of the "Access main program" button (the Jura
 - Removing the inline `color` and `border-color` CSS properties from a single HTML element in `src/webview/implementation.html`.
 
 ### Band B — Complex / Risky
-- None. This is an isolated presentation-layer update.
+- None.
+
 
 ## Edge-Case Audit
 - **Race Conditions:** None.

@@ -32,7 +32,7 @@
             font-family: var(--font-family);
             height: 100vh;
             display: grid;
-            grid-template-rows: auto auto minmax(0, 1fr) auto;
+            grid-template-rows: auto auto minmax(0, 1fr) auto auto;
         }
 
         .header {
@@ -81,7 +81,7 @@
 
         .meta-grid {
             display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 12px;
             padding: 14px 18px;
             border-bottom: 1px solid var(--border);
@@ -194,35 +194,37 @@
             display: flex;
             flex-direction: column;
             gap: 10px;
-            max-height: 240px;
+            max-height: 120px;
             overflow: auto;
+            font-size: 11px;
         }
 
         .log-item {
             border: 1px solid var(--border);
             border-radius: 6px;
             background: var(--panel-alt);
-            padding: 10px 12px;
+            padding: 6px 10px;
         }
 
         .log-head {
             display: flex;
             justify-content: space-between;
             gap: 10px;
-            font-size: 12px;
-            margin-bottom: 4px;
+            font-size: 11px;
+            margin-bottom: 2px;
         }
 
         .log-workflow {
             color: var(--accent);
             font-family: var(--mono);
+            font-size: 10px;
         }
 
         .log-timestamp,
         .log-details,
         .empty-state {
             color: var(--muted);
-            font-size: 12px;
+            font-size: 11px;
         }
 
         button {
@@ -272,6 +274,83 @@
             color: var(--danger);
         }
 
+        .markdown-body {
+            font-family: var(--font-family);
+            line-height: 1.6;
+            font-size: 14px;
+            padding: 16px;
+            overflow: auto;
+            display: none;
+            flex: 1;
+            min-height: 0;
+            background: #0b0d12;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+
+        .markdown-body.active {
+            display: block;
+        }
+
+        .editor.hidden {
+            display: none;
+        }
+
+        .comment-popup {
+            position: fixed;
+            z-index: 999;
+            width: min(420px, calc(100vw - 24px));
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            box-shadow: var(--shadow);
+            display: none;
+        }
+
+        .comment-popup.visible {
+            display: block;
+        }
+
+        .popup-label {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            font-family: var(--mono);
+        }
+
+        .selected-preview {
+            font-size: 12px;
+            color: var(--text);
+            background: rgba(61, 219, 217, 0.08);
+            border: 1px solid rgba(61, 219, 217, 0.22);
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 8px;
+            max-height: 80px;
+            overflow: auto;
+        }
+
+        .comment-popup textarea {
+            width: 100%;
+            min-height: 76px;
+            resize: vertical;
+            background: #0b0d12;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px;
+            font-family: var(--font-family);
+            font-size: 13px;
+            margin-bottom: 10px;
+        }
+
+        .popup-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
         @media (max-width: 960px) {
             .meta-grid {
                 grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -280,6 +359,10 @@
             .field.dependencies {
                 grid-column: span 2;
             }
+        }
+
+        #session-display-field {
+            display: none;
         }
 
         @media (max-width: 640px) {
@@ -337,10 +420,6 @@
                 <option value="High">High</option>
             </select>
         </div>
-        <div class="field">
-            <label for="session-display">Session</label>
-            <input id="session-display" type="text" readonly />
-        </div>
         <div class="field dependencies">
             <label for="dependencies-input">Dependencies</label>
             <input id="dependencies-input" type="text" placeholder="Comma-separated session IDs or topic names" />
@@ -350,9 +429,13 @@
     <div class="editor-shell">
         <div class="editor-toolbar">
             <div class="editor-title">Plan Text</div>
-            <div class="editor-hint">Use Ctrl/Cmd+S to save changes</div>
+            <div style="display:flex; align-items:center; gap: 8px;">
+                <div class="editor-hint">Use Ctrl/Cmd+S to save changes</div>
+                <button id="toggle-preview" class="secondary-btn" style="padding: 2px 6px; font-size: 11px;">Preview</button>
+            </div>
         </div>
         <textarea class="editor" id="plan-editor" spellcheck="false"></textarea>
+        <div id="markdown-content" class="markdown-body"></div>
     </div>
 
     <div class="log-shell">
@@ -367,6 +450,16 @@
         <span id="mtime-message"></span>
     </div>
 
+    <div class="comment-popup" id="comment-popup">
+        <div class="popup-label">Comment on selection</div>
+        <div class="selected-preview" id="selected-preview"></div>
+        <textarea id="comment-input" placeholder="Add your contextual feedback..."></textarea>
+        <div class="popup-actions">
+            <button id="cancel-comment">Cancel</button>
+            <button class="primary" id="submit-comment">Submit Comment</button>
+        </div>
+    </div>
+
     <script>
         const vscode = acquireVsCodeApi();
 
@@ -375,9 +468,13 @@
         const topicInputEl = document.getElementById('topic-input');
         const columnSelectEl = document.getElementById('column-select');
         const complexitySelectEl = document.getElementById('complexity-select');
-        const sessionDisplayEl = document.getElementById('session-display');
         const dependenciesInputEl = document.getElementById('dependencies-input');
         const planEditorEl = document.getElementById('plan-editor');
+        const markdownContentEl = document.getElementById('markdown-content');
+        const togglePreviewBtn = document.getElementById('toggle-preview');
+        const popupEl = document.getElementById('comment-popup');
+        const selectedPreviewEl = document.getElementById('selected-preview');
+        const commentInputEl = document.getElementById('comment-input');
         const actionLogEl = document.getElementById('action-log');
         const savePlanButtonEl = document.getElementById('save-plan');
         const reloadTicketButtonEl = document.getElementById('reload-ticket');
@@ -395,8 +492,119 @@
             planText: '',
             planMtimeMs: 0,
             canEditMetadata: false,
-            pendingCount: 0
+            pendingCount: 0,
+            selectedText: '',
+            isPreview: false
         };
+
+        function hidePopup(clear = false) {
+            popupEl.classList.remove('visible');
+            if (clear) {
+                commentInputEl.value = '';
+                state.selectedText = '';
+            }
+        }
+
+        function showPopup(rect, selectedText) {
+            const maxLeft = window.innerWidth - popupEl.offsetWidth - 12;
+            const targetLeft = Math.max(12, Math.min(rect.left, maxLeft > 12 ? maxLeft : rect.left));
+            const targetTop = Math.min(window.innerHeight - 12, rect.bottom + 10);
+
+            popupEl.style.left = `${targetLeft}px`;
+            popupEl.style.top = `${targetTop}px`;
+            selectedPreviewEl.textContent = selectedText;
+            popupEl.classList.add('visible');
+            commentInputEl.focus();
+        }
+
+        function handleSelectionEvent() {
+            const selection = window.getSelection();
+            if (!selection || selection.rangeCount === 0 || !state.isPreview) {
+                hidePopup();
+                return;
+            }
+
+            const text = selection.toString().trim();
+            if (!text) {
+                hidePopup();
+                return;
+            }
+
+            const range = selection.getRangeAt(0);
+            const rect = range.getBoundingClientRect();
+            const payloadRect = {
+                top: rect.top,
+                left: rect.left,
+                width: rect.width,
+                height: rect.height,
+                bottom: rect.bottom,
+                right: rect.right
+            };
+
+            state.selectedText = text;
+            vscode.postMessage({
+                type: 'selectionChanged',
+                selectedText: text,
+                selectionRect: payloadRect
+            });
+
+            showPopup(rect, text);
+        }
+
+        document.addEventListener('mouseup', () => {
+            setTimeout(handleSelectionEvent, 0);
+        });
+
+        document.addEventListener('mousedown', (event) => {
+            if (!popupEl.contains(event.target)) {
+                const selection = window.getSelection();
+                const selectedText = selection ? selection.toString().trim() : '';
+                if (!selectedText) {
+                    hidePopup();
+                }
+            }
+        });
+
+        document.getElementById('cancel-comment').addEventListener('click', () => {
+            hidePopup(true);
+        });
+
+        document.getElementById('submit-comment').addEventListener('click', () => {
+            const comment = commentInputEl.value.trim();
+            if (!state.selectedText) {
+                setStatus('Select text before submitting a comment.', 'error');
+                return;
+            }
+            if (!comment) {
+                setStatus('Comment is required.', 'error');
+                return;
+            }
+
+            setBusy(true);
+            setStatus('Sending comment...');
+            vscode.postMessage({
+                type: 'submitComment',
+                sessionId: state.sessionId,
+                topic: state.topic,
+                planFileAbsolute: state.planFileAbsolute,
+                selectedText: state.selectedText,
+                comment
+            });
+        });
+
+        togglePreviewBtn.addEventListener('click', () => {
+            state.isPreview = !state.isPreview;
+            if (state.isPreview) {
+                planEditorEl.classList.add('hidden');
+                markdownContentEl.classList.add('active');
+                togglePreviewBtn.textContent = 'Edit';
+            } else {
+                planEditorEl.classList.remove('hidden');
+                markdownContentEl.classList.remove('active');
+                togglePreviewBtn.textContent = 'Preview';
+                hidePopup(true);
+            }
+        });
 
         function setBusy(isBusy) {
             state.pendingCount = Math.max(0, state.pendingCount + (isBusy ? 1 : -1));
@@ -479,11 +687,15 @@
             headerTitleEl.textContent = state.topic || 'Ticket';
             headerPathEl.textContent = state.planFileAbsolute;
             topicInputEl.value = state.topic;
-            sessionDisplayEl.value = state.sessionId || 'No session';
             renderColumns(Array.isArray(message.columns) ? message.columns : [], state.column);
             complexitySelectEl.value = state.complexity;
             dependenciesInputEl.value = state.dependencies.join(', ');
             planEditorEl.value = state.planText;
+            if (message.renderedHtml) {
+                markdownContentEl.innerHTML = message.renderedHtml;
+            } else {
+                markdownContentEl.innerHTML = `<pre>${escapeHtml(state.planText)}</pre>`;
+            }
             renderActionLog(Array.isArray(message.actionLog) ? message.actionLog : []);
             mtimeMessageEl.textContent = state.planMtimeMs ? `Loaded: ${formatTimestamp(state.planMtimeMs)}` : '';
             setStatus('Ticket loaded.');

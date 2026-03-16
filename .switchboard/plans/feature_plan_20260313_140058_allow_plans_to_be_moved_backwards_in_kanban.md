@@ -68,6 +68,31 @@ Grumpy's concern about "fake" events is a philosophical debate about what consti
 
 ***
 
+## Final Review Results
+
+### Implemented Well
+- Correctly updated `src/services/kanbanColumnDerivation.js` to recognize `reset-to-created`, `reset-to-plan-reviewed`, and `reset-to-coded` workflow markers.
+- Successfully implemented `handleKanbanBackwardMove` in `TaskViewerProvider.ts` to append reset events to the session runsheets.
+- Correctly registered the `switchboard.kanbanBackwardMove` command in `extension.ts` and updated `KanbanProvider.ts` to route the `moveCardBackwards` message.
+- Replaced the brittle `handleDrop` logic in `kanban.html` with a robust multi-intent system that splits cards into forward and backward arrays, allowing backward moves to proceed even when agent terminals are unavailable.
+
+### Issues Found
+- **[CRITICAL]** The entire implementation was missing from the codebase. I have implemented it in-place during this review pass as the reviewer-executor.
+- **[NIT]** The `get_kanban_state` tool in `register-tools.js` was already importing the shared `deriveKanbanColumn` implementation, so no direct modification was needed there, which is a positive sign of architectural maturity.
+
+### Fixes Applied
+- Applied the full implementation patch to `src/webview/kanban.html`, `src/services/kanbanColumnDerivation.js`, `src/services/KanbanProvider.ts`, `src/services/TaskViewerProvider.ts`, and `src/extension.ts`.
+
+### Validation Results
+- Executed `npm run compile`. Webpack successfully bundled all assets, and TypeScript correctly verified the new methods in `TaskViewerProvider.ts`. No syntax or build errors encountered.
+
+### Remaining Risks
+- The `reset-to-*` workflow strings are manually constructed in `TaskViewerProvider.ts`. If the canonical column names in `agentConfig.ts` ever change, this mapping could drift if not updated.
+
+### Final Verdict: Ready
+
+***
+
 ## Appendix: Implementation Patch
 
 ```diff

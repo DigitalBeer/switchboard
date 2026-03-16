@@ -10,7 +10,7 @@ const WORKFLOWS = {
         steps: [
             {
                 id: "init",
-                instruction: "Initialize task.md and read WORKFLOW_INTEGRITY.md",
+                instruction: "Initialize task.md and read .agent/rules/WORKFLOW_INTEGRITY.md",
                 requiredEvidence: "task_file_created"
             },
             {

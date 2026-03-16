@@ -7,6 +7,7 @@ export type ReviewPlanContext = {
     sessionId?: string;
     topic?: string;
     planFileAbsolute: string;
+    workspaceRoot?: string;
 };
 
 export type ReviewCommentRequest = {
@@ -43,6 +44,7 @@ export type ReviewTicketData = {
     complexity: 'Unknown' | 'Low' | 'High';
     dependencies: string[];
     planText: string;
+    renderedHtml?: string;
     planMtimeMs: number;
     actionLog: ReviewTicketLogEntry[];
     columns: ReviewTicketColumnOption[];
@@ -221,6 +223,10 @@ export class ReviewProvider implements vscode.Disposable {
 
         const planText = await fs.promises.readFile(this._currentPlan.planFileAbsolute, 'utf8');
         const stats = await fs.promises.stat(this._currentPlan.planFileAbsolute);
+        
+        // Render markdown
+        const renderedHtml = await vscode.commands.executeCommand<string>('markdown.api.render', planText) || '';
+
         return {
             sessionId: this._currentPlan.sessionId,
             topic: this._currentPlan.topic?.trim() || path.basename(this._currentPlan.planFileAbsolute),
@@ -229,6 +235,7 @@ export class ReviewProvider implements vscode.Disposable {
             complexity: 'Unknown',
             dependencies: [],
             planText,
+            renderedHtml,
             planMtimeMs: stats.mtimeMs,
             actionLog: [],
             columns: [],
@@ -245,6 +252,14 @@ export class ReviewProvider implements vscode.Disposable {
             topic: ticketData.topic,
             planFileAbsolute: ticketData.planFileAbsolute
         };
+
+        if (ticketData.planText && !ticketData.renderedHtml) {
+            try {
+                ticketData.renderedHtml = await vscode.commands.executeCommand<string>('markdown.api.render', ticketData.planText) || '';
+            } catch (e) {
+                ticketData.renderedHtml = `<pre>${ticketData.planText}</pre>`;
+            }
+        }
 
         const title = ticketData.topic?.trim() || path.basename(ticketData.planFileAbsolute);
         this._panel.title = `Ticket: ${title}`;

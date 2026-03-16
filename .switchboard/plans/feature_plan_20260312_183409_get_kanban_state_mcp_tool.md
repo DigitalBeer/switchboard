@@ -52,6 +52,21 @@ Grumpy has a fair point about file bloat in `register-tools.js`, but extracting 
 3. Verify the agent successfully calls `get_kanban_state` as a native tool instead of calling `run_command` with the node script.
 4. Verify the output correctly lists the plans in that column.
 
+## Implementation Results
+- **Files Modified:**
+  - `src/mcp-server/register-tools.js`: Implemented `get_kanban_state` tool with centralized `deriveKanbanColumn` and tombstone/blacklist filtering.
+  - `AGENTS.md`: Updated pre-flight checklist to use the MCP tool.
+  - `.agent/skills/get_kanban_state/SKILL.md`: Replaced bash command with MCP tool instruction.
+- **Validation Results:**
+  - Executed `get_kanban_state` tool directly; correctly identified current plan in `CODE REVIEWED`.
+  - Verified `crypto` and `deriveKanbanColumn` are correctly imported and utilized in the MCP server.
+- **Remaining Risks:**
+  - Column derivation remains heuristic-based; new workflows must be manually added to `kanbanColumnDerivation.ts`.
+  - SQLite fallback is used if file-based parsing is unavailable; ensures robustness but adds dependency on database state.
+
+## Final Status
+**READY** - All requirements met and verified. Logic is superior to the original plan by including UI-level filtering parity.
+
 ## Appendix: Implementation Patch
 Apply the following changes:
 

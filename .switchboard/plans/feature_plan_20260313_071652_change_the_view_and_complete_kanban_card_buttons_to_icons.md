@@ -14,7 +14,8 @@ Improve Kanban card density and visual hierarchy by replacing text-based "VIEW" 
 - Adding tooltip attributes (`title`) to the new icon buttons.
 
 ### Band B — Complex / Risky
-- None. This is an isolated presentation-layer update.
+- None.
+
 
 ## Edge-Case Audit
 - **Race Conditions:** None. These are static DOM structural changes.

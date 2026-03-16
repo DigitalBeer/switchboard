@@ -52,24 +52,13 @@ export class KanbanMigration {
         const ready = await db.ensureReady();
         if (!ready) return false;
 
-        const activePlanIds = new Set<string>();
-        const newRows: KanbanPlanRecord[] = [];
+        const rows: KanbanPlanRecord[] = snapshotRows.map(row => ({
+            ...row,
+            status: 'active'
+        }));
 
-        for (const row of snapshotRows) {
-            activePlanIds.add(row.planId);
-            if (await db.hasPlan(row.sessionId)) {
-                continue;
-            }
-            newRows.push({
-                ...row,
-                status: 'active'
-            });
-        }
-
-        const upserted = await db.upsertPlans(newRows);
+        const upserted = await db.upsertPlans(rows);
         if (!upserted) return false;
-        const archived = await db.markMissingAsArchived(workspaceId, activePlanIds);
-        if (!archived) return false;
 
         const currentVersion = await db.getMigrationVersion();
         if (currentVersion < KanbanMigration.SCHEMA_VERSION) {
