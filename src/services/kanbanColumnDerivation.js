@@ -7,6 +7,30 @@ function hasCustomAgentRole(customAgents, role) {
     return customAgents.some(agent => agent && typeof agent.role === 'string' && agent.role.toLowerCase() === role);
 }
 
+function deriveSyntheticMoveColumn(workflow, customAgents) {
+    if (!workflow || (!workflow.startsWith('reset-to-') && !workflow.startsWith('move-to-'))) {
+        return null;
+    }
+
+    const target = workflow.startsWith('reset-to-')
+        ? workflow.slice('reset-to-'.length)
+        : workflow.slice('move-to-'.length);
+    if (!target) {
+        return null;
+    }
+
+    if (target === 'created') return 'CREATED';
+    if (target === 'plan-reviewed') return 'PLAN REVIEWED';
+    if (target === 'coded' || target === 'lead-coded') return 'LEAD CODED';
+    if (target === 'coder-coded') return 'CODER CODED';
+    if (target === 'code-reviewed') return 'CODE REVIEWED';
+    if (hasCustomAgentRole(customAgents, target)) {
+        return target;
+    }
+
+    return null;
+}
+
 function deriveKanbanColumn(events = [], customAgents = []) {
     if (!Array.isArray(events) || events.length === 0) {
         return 'CREATED';
@@ -19,16 +43,21 @@ function deriveKanbanColumn(events = [], customAgents = []) {
             continue;
         }
 
-        if (workflow === 'reset-to-created') return 'CREATED';
-        if (workflow === 'reset-to-plan-reviewed') return 'PLAN REVIEWED';
-        if (workflow === 'reset-to-coded') return 'CODED';
+        const syntheticMoveColumn = deriveSyntheticMoveColumn(workflow, customAgents);
+        if (syntheticMoveColumn) {
+            return syntheticMoveColumn;
+        }
 
         if (workflow.includes('reviewer') || workflow === 'review') {
             return 'CODE REVIEWED';
         }
 
-        if (workflow === 'lead' || workflow === 'coder' || workflow === 'handoff' || workflow === 'team' || workflow === 'handoff-lead' || workflow === 'jules') {
-            return 'CODED';
+        if (workflow === 'lead' || workflow === 'handoff-lead' || workflow === 'team' || workflow === 'coded') {
+            return 'LEAD CODED';
+        }
+
+        if (workflow === 'coder' || workflow === 'handoff' || workflow === 'jules') {
+            return 'CODER CODED';
         }
 
         if (

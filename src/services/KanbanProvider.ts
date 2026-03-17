@@ -7,9 +7,10 @@ import { buildKanbanColumns, CustomAgentConfig, parseCustomAgents } from './agen
 import { deriveKanbanColumn } from './kanbanColumnDerivation';
 import { KanbanDatabase } from './KanbanDatabase';
 import { KanbanMigration } from './KanbanMigration';
+import type { AutobanConfigState } from './autobanState';
 
 export type KanbanColumn = string;
-type AutobanConfigState = { enabled: boolean; batchSize: number; rules: Record<string, { enabled: boolean; intervalMinutes: number }>; lastTickAt?: Record<string, number> };
+type McpMoveTargetResolution = { role: string; normalizedTarget: string; usesComplexityRouting: boolean };
 
 /** Column ordering: each column maps to its next column. */
 const NEXT_COLUMN: Record<string, KanbanColumn | null> = {};
@@ -37,7 +38,6 @@ export class KanbanProvider implements vscode.Disposable {
     private _fsSessionWatcher?: fs.FSWatcher;
     private _fsStateWatcher?: fs.FSWatcher;
     private _refreshDebounceTimer?: NodeJS.Timeout;
-    private _codedColumnTarget: string;
     private _cliTriggersEnabled: boolean;
     private _lastColumnsSignature: string | null = null;
     private _autobanState?: AutobanConfigState;
@@ -49,7 +49,6 @@ export class KanbanProvider implements vscode.Disposable {
         private readonly _extensionUri: vscode.Uri,
         private readonly _context: vscode.ExtensionContext
     ) {
-        this._codedColumnTarget = this._context.workspaceState.get<string>('kanban.codedTarget') || 'lead';
         this._cliTriggersEnabled = this._context.workspaceState.get<boolean>('kanban.cliTriggersEnabled', true);
     }
 
@@ -231,6 +230,11 @@ export class KanbanProvider implements vscode.Disposable {
         return created;
     }
 
+    private _normalizeLegacyKanbanColumn(column: string | null | undefined): string {
+        const normalized = String(column || '').trim();
+        return normalized === 'CODED' ? 'LEAD CODED' : normalized;
+    }
+
     private _deriveLastAction(events: any[]): string {
         for (let i = events.length - 1; i >= 0; i--) {
             const workflow = String(events[i]?.workflow || '').trim();
@@ -290,7 +294,7 @@ export class KanbanProvider implements vscode.Disposable {
                 sessionId: row.sessionId,
                 topic: row.topic,
                 planFile: row.planFile,
-                column: row.kanbanColumn,
+                column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
                 lastActivity: row.updatedAt || row.createdAt,
                 complexity: row.complexity,
                 workspaceRoot: resolvedWorkspaceRoot
@@ -313,7 +317,7 @@ export class KanbanProvider implements vscode.Disposable {
                             sessionId: row.sessionId,
                             topic: dbRow?.topic || row.topic || row.planFile || 'Untitled',
                             planFile: dbRow?.planFile || row.planFile || '',
-                            column: dbRow?.kanbanColumn || row.kanbanColumn || 'CREATED',
+                            column: this._normalizeLegacyKanbanColumn(dbRow?.kanbanColumn || row.kanbanColumn) || 'CREATED',
                             lastActivity: dbRow?.updatedAt || row.updatedAt || row.createdAt || '',
                             complexity: dbRow?.complexity || row.complexity,
                             workspaceRoot: resolvedWorkspaceRoot
@@ -341,7 +345,6 @@ export class KanbanProvider implements vscode.Disposable {
             });
             this._lastCards = cards;
             this._panel.webview.postMessage({ type: 'updateBoard', cards });
-            this._panel.webview.postMessage({ type: 'updateTarget', column: 'CODED', target: this._codedColumnTarget });
             this._panel.webview.postMessage({ type: 'cliTriggersState', enabled: this._cliTriggersEnabled });
             this._panel.webview.postMessage({ type: 'updateAgentNames', agentNames });
             this._panel.webview.postMessage({ type: 'visibleAgents', agents: visibleAgents });
@@ -673,11 +676,6 @@ After completing all plans, summarize what was changed and any verification step
         this._panel.webview.postMessage({ type: 'updateAutobanConfig', state });
     }
 
-    /** Expose coded column target for Autoban engine. */
-    public getCodedColumnTarget(): string {
-        return this._codedColumnTarget;
-    }
-
     /**
      * Map a runsheet to a Kanban card by inspecting its events array.
      */
@@ -744,38 +742,203 @@ After completing all plans, summarize what was changed and any verification step
                 ? afterBandB.slice(0, nextSection.index).trim()
                 : afterBandB.trim();
 
-            // Band B content typically starts with a label line like "— Complex / Risky".
-            // Strip that label, then check whether the remaining lines contain real tasks.
-            const lines = bandBContent
-                .split(/\r?\n/)
-                .map(line => line.trim())
-                .filter(line => line.length > 0);
-
-            // Normalize markdown variants so "- **None**" / "* none" / "N/A" are treated as empty.
-            const normalizedLines = lines
-                .map(line => line
-                    .replace(/^[\s>*\-+]+/, '')
-                    .replace(/^[\s:–—-]*(?:\([^)]*\)|[–—-]\s*)?(?:complex(?:\/|\s+\/\s+|\s+and\s+)?risky|complex|high\s+complexity|risky)\b[\s:–—-]*$/i, '')
+            const normalizeBandBLine = (line: string): string => (
+                line
+                    .replace(/^[\s>*\-+\u2013\u2014:]+/, '')
                     .replace(/[*_`~]/g, '')
+                    .trim()
+                    .replace(/^\((.*)\)$/, '$1')
+                    .replace(/[\s:\u2013\u2014-]+$/g, '')
                     .replace(/\s+/g, ' ')
                     .trim()
                     .toLowerCase()
-                )
-                .filter(line => line.length > 0);
+            );
+
+            const isBandBLabel = (line: string): boolean => (
+                /^(complex(?:\s*(?:\/|and)\s*|\s+)risky|complex|risky|high complexity)\.?$/.test(line)
+            );
 
             const isEmptyMarker = (line: string): boolean => {
                 if (!line) return true;
-                if (/^[—-]+$/.test(line)) return true;
+                if (/^(?:\u2014|-)+$/.test(line)) return true;
                 return /^(none|n\/?a)\.?$/.test(line);
             };
 
-            const meaningful = normalizedLines.filter(line => !isEmptyMarker(line) && !/^recommendation\b/.test(line));
-            const isEmpty = meaningful.length === 0;
+            const meaningful = bandBContent
+                .split(/\r?\n/)
+                .map(line => line.trim())
+                .filter(line => line.length > 0)
+                .map(normalizeBandBLine)
+                .filter(line => line.length > 0)
+                .filter(line => !isEmptyMarker(line) && !isBandBLabel(line) && !/^recommendation\b/.test(line));
 
-            return isEmpty ? 'Low' : 'High';
+            return meaningful.length === 0 ? 'Low' : 'High';
         } catch {
             return 'Unknown';
         }
+    }
+
+    private _normalizeMcpTarget(target: string): string {
+        let normalized = String(target || '')
+            .toLowerCase()
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        normalized = normalized.replace(/^to\s+/, '').trim();
+        normalized = normalized.replace(/^the\s+/, '').trim();
+        while (/\s+(column|lane|stage|queue|agent|role|terminal)$/.test(normalized)) {
+            normalized = normalized.replace(/\s+(column|lane|stage|queue|agent|role|terminal)$/, '').trim();
+        }
+        return normalized;
+    }
+
+    private _registerMcpTargetAlias(
+        aliases: Map<string, { role: string; usesComplexityRouting: boolean }>,
+        alias: string,
+        role: string,
+        usesComplexityRouting: boolean = false
+    ): void {
+        const normalized = this._normalizeMcpTarget(alias);
+        if (!normalized || aliases.has(normalized)) {
+            return;
+        }
+        aliases.set(normalized, { role, usesComplexityRouting });
+    }
+
+    private _buildMcpTargetAliases(customAgents: CustomAgentConfig[]): Map<string, { role: string; usesComplexityRouting: boolean }> {
+        const aliases = new Map<string, { role: string; usesComplexityRouting: boolean }>();
+
+        this._registerMcpTargetAlias(aliases, 'planner', 'planner');
+        this._registerMcpTargetAlias(aliases, 'planned', 'planner');
+        this._registerMcpTargetAlias(aliases, 'plan reviewed', 'planner');
+        this._registerMcpTargetAlias(aliases, 'planning', 'planner');
+
+        this._registerMcpTargetAlias(aliases, 'reviewer', 'reviewer');
+        this._registerMcpTargetAlias(aliases, 'reviewed', 'reviewer');
+        this._registerMcpTargetAlias(aliases, 'review', 'reviewer');
+        this._registerMcpTargetAlias(aliases, 'code reviewed', 'reviewer');
+
+        this._registerMcpTargetAlias(aliases, 'lead', 'lead');
+        this._registerMcpTargetAlias(aliases, 'lead coder', 'lead');
+        this._registerMcpTargetAlias(aliases, 'coder', 'coder');
+        this._registerMcpTargetAlias(aliases, 'jules', 'jules');
+
+        this._registerMcpTargetAlias(aliases, 'team', 'team', true);
+        this._registerMcpTargetAlias(aliases, 'coded', 'lead', true);
+
+        for (const column of buildKanbanColumns(customAgents)) {
+            if (column.id === 'CREATED') {
+                continue;
+            }
+            const role = this._columnToRole(column.id);
+            if (!role) {
+                continue;
+            }
+            this._registerMcpTargetAlias(aliases, column.id, role);
+            this._registerMcpTargetAlias(aliases, column.label, role);
+        }
+
+        for (const agent of customAgents.filter(item => item.includeInKanban)) {
+            this._registerMcpTargetAlias(aliases, agent.role, agent.role);
+            this._registerMcpTargetAlias(aliases, agent.name, agent.role);
+        }
+
+        return aliases;
+    }
+
+    private async _resolveComplexityRoutedRole(workspaceRoot: string, sessionId: string): Promise<'lead' | 'coder'> {
+        const log = this._getSessionLog(workspaceRoot);
+        const sheet = await log.getRunSheet(sessionId);
+        if (!sheet?.planFile) {
+            return 'lead';
+        }
+        const complexity = await this.getComplexityFromPlan(workspaceRoot, sheet.planFile);
+        return complexity === 'Low' ? 'coder' : 'lead';
+    }
+
+    private async _resolveMcpMoveTarget(workspaceRoot: string, sessionId: string, target: string): Promise<McpMoveTargetResolution | null> {
+        const customAgents = await this._getCustomAgents(workspaceRoot);
+        const normalizedTarget = this._normalizeMcpTarget(target);
+        if (!normalizedTarget) {
+            return null;
+        }
+
+        const resolved = this._buildMcpTargetAliases(customAgents).get(normalizedTarget);
+        if (!resolved) {
+            return null;
+        }
+
+        if (!resolved.usesComplexityRouting) {
+            return {
+                role: resolved.role,
+                normalizedTarget,
+                usesComplexityRouting: false
+            };
+        }
+
+        return {
+            role: await this._resolveComplexityRoutedRole(workspaceRoot, sessionId),
+            normalizedTarget,
+            usesComplexityRouting: true
+        };
+    }
+
+    /** Called by the MCP server to conversationally route a plan through the Kanban dispatch path. */
+    public async handleMcpMove(sessionId: string, target: string, workspaceRoot?: string): Promise<boolean> {
+        const trimmedSessionId = String(sessionId || '').trim();
+        const trimmedTarget = String(target || '').trim();
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+
+        if (!resolvedWorkspaceRoot) {
+            vscode.window.showErrorMessage('No workspace folder found for kanban routing.');
+            return false;
+        }
+        if (!trimmedSessionId) {
+            vscode.window.showErrorMessage('Cannot route a kanban plan without a session ID.');
+            return false;
+        }
+        if (!trimmedTarget) {
+            vscode.window.showErrorMessage('Cannot route a kanban plan without a target.');
+            return false;
+        }
+
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
+        const sheet = await log.getRunSheet(trimmedSessionId);
+        if (!sheet || sheet.completed === true) {
+            vscode.window.showErrorMessage(`Plan session '${trimmedSessionId}' was not found or is already completed.`);
+            return false;
+        }
+
+        const resolvedTarget = await this._resolveMcpMoveTarget(resolvedWorkspaceRoot, trimmedSessionId, trimmedTarget);
+        if (!resolvedTarget) {
+            vscode.window.showErrorMessage(`Unsupported kanban target '${trimmedTarget}'. Use a dispatchable column, built-in role, or kanban-enabled custom agent.`);
+            return false;
+        }
+
+        if (!(await this._canAssignRole(resolvedWorkspaceRoot, resolvedTarget.role))) {
+            vscode.window.showErrorMessage(`Agent for conversational target '${trimmedTarget}' resolved to '${resolvedTarget.role}', but that role is not assigned or visible.`);
+            return false;
+        }
+
+        const instruction = resolvedTarget.role === 'planner' ? 'improve-plan' : undefined;
+        const dispatched = await vscode.commands.executeCommand<boolean>(
+            'switchboard.triggerAgentFromKanban',
+            resolvedTarget.role,
+            trimmedSessionId,
+            instruction,
+            resolvedWorkspaceRoot
+        );
+
+        if (!dispatched) {
+            const routingLabel = resolvedTarget.usesComplexityRouting
+                ? `${trimmedTarget} -> ${resolvedTarget.role}`
+                : trimmedTarget;
+            vscode.window.showErrorMessage(`Failed to route plan '${trimmedSessionId}' via '${routingLabel}'.`);
+            return false;
+        }
+
+        return true;
     }
 
     private async _handleMessage(msg: any) {
@@ -815,7 +978,7 @@ After completing all plans, summarize what was changed and any verification step
                     break;
                 }
 
-                const instruction = role === 'planner' ? 'enhance' : undefined;
+                const instruction = role === 'planner' ? 'improve-plan' : undefined;
                 const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', role, sessionId, instruction, workspaceRoot);
                 if (dispatched && workspaceRoot) {
                     await this._getKanbanDb(workspaceRoot).updateColumn(sessionId, targetColumn);
@@ -872,6 +1035,14 @@ After completing all plans, summarize what was changed and any verification step
                 vscode.window.showInformationMessage(`Copied batch planner prompt (${sourceCards.length} plans). Advanced ${advanced.length} plans to PLAN REVIEWED.`);
                 break;
             }
+            case 'batchDispatchLow': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) {
+                    break;
+                }
+                await vscode.commands.executeCommand('switchboard.batchDispatchLow', workspaceRoot);
+                break;
+            }
             case 'batchLowComplexity': {
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot) {
@@ -887,7 +1058,7 @@ After completing all plans, summarize what was changed and any verification step
                 await vscode.env.clipboard.writeText(prompt);
                 const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED', 'handoff', workspaceRoot);
                 await this._refreshBoard(workspaceRoot);
-                vscode.window.showInformationMessage(`Copied batch low-complexity prompt (${sourceCards.length} plans). Advanced ${advanced.length} plans to CODED.`);
+                vscode.window.showInformationMessage(`Copied batch low-complexity prompt (${sourceCards.length} plans). Advanced ${advanced.length} plans to CODER CODED.`);
                 break;
             }
             case 'julesLowComplexity': {
@@ -916,13 +1087,6 @@ After completing all plans, summarize what was changed and any verification step
                 }
                 await this._refreshBoard(workspaceRoot);
                 vscode.window.showInformationMessage(`Dispatched ${dispatchedCount} LOW-complexity plans to Jules.`);
-                break;
-            }
-            case 'setColumnTarget': {
-                if (msg.column === 'CODED' && msg.target) {
-                    this._codedColumnTarget = msg.target;
-                    await this._context.workspaceState.update('kanban.codedTarget', msg.target);
-                }
                 break;
             }
             case 'completePlan':
@@ -958,7 +1122,9 @@ After completing all plans, summarize what was changed and any verification step
     private _columnToRole(column: string): string | null {
         switch (column) {
             case 'PLAN REVIEWED': return 'planner';
-            case 'CODED': return this._codedColumnTarget;
+            case 'LEAD CODED': return 'lead';
+            case 'CODER CODED': return 'coder';
+            case 'CODED': return 'lead';
             case 'CODE REVIEWED': return 'reviewer';
             default: return column.startsWith('custom_agent_') ? column : null;
         }

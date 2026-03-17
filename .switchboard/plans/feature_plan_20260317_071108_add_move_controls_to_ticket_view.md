@@ -150,3 +150,41 @@ Add three action controls to the ticket view header so the user can manage the p
 
 ## Agent Recommendation
 Send it to the **Coder agent** — the Complete handler reuses existing code. Send to Agent and Delete are moderate but well-scoped with clear backend patterns to follow.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation successfully added the ticket-view header controls and wired the core send, complete, and delete actions through the review panel and backend commands.
+- Three material gaps were found during review:
+  1. The ticket view did not receive completion state, so it could not disable lifecycle controls for completed plans as required.
+  2. The delete flow did not surface the required extra warning when a session was currently in `_activeDispatchSessions`.
+  3. The delete flow removed files and runsheets but did not explicitly remove the corresponding Kanban DB row, leaving stale DB state behind.
+
+### Fixed Items
+- Added `isCompleted` to review ticket data so the ticket view can disable lifecycle actions for completed plans.
+- Updated the review webview action-state logic so completed tickets disable `Send to Agent`, `Complete`, and `Delete`, and show completed-safe button labels.
+- Hardened plan deletion with an in-flight processing warning when the session is currently active in `_activeDispatchSessions`.
+- Added an explicit `deletePlan(sessionId)` operation to `KanbanDatabase` and invoked it from the review delete flow so deleted plans are removed from the Kanban DB instead of lingering as stale records.
+- Added a focused regression test covering Kanban DB deletion semantics.
+
+### Files Changed During Reviewer Pass
+- `src/services/ReviewProvider.ts`
+- `src/webview/review.html`
+- `src/services/KanbanDatabase.ts`
+- `src/services/TaskViewerProvider.ts`
+- `src/test/kanban-database-delete.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `npm run compile-tests` ✅ Passed.
+- `node src\test\delete-plan.test.js` ✅ Passed.
+- `node src\test\kanban-database-delete.test.js` ✅ Passed.
+- `npm run lint` was not rerun for this pass because repository linting is currently blocked by the pre-existing ESLint 9 config issue identified in the previous reviewer pass (`eslint.config.*` missing).
+
+### Remaining Risks
+- The review UI action disabling for completed plans is now covered in code, but there is still no dedicated automated UI test around the review webview button state transitions.
+- Repository linting remains unavailable until the ESLint configuration is migrated or restored for ESLint 9.
+
+### Final Reviewer Assessment
+- Ready. The material gaps found during review have been fixed, and the reviewed implementation now satisfies the plan requirements for ticket-view lifecycle controls.

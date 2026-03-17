@@ -157,6 +157,10 @@ export class SessionActionLog {
             const sourceSessionId = typeof sourcePayload.sessionId === 'string' ? sourcePayload.sessionId : '';
             const sourceRole = typeof sourcePayload.role === 'string' ? sourcePayload.role : '';
             const sourceType = String(source.type || '').toLowerCase();
+            if (sourceType === 'autoban_dispatch') {
+                output.push(source);
+                continue;
+            }
             const isUiTrigger = sourceType === 'ui_action'
                 && sourcePayload.action === 'triggerAgentAction'
                 && sourceSessionId.length > 0;

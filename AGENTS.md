@@ -71,6 +71,8 @@ All inter-agent completion signals use the yield pattern (NO POLLING).
 All CLI terminal payloads MUST be a single line: "Please execute the plan at: [ABSOLUTE PATH]"
 ```
 
+Conversational routing: when the intent is to advance a kanban card or send a plan to the next agent/stage, prefer `move_kanban_card(sessionId, target)` over raw `send_message`. The `target` may be a kanban column label, a built-in role, or a kanban-enabled custom agent name; generic conversational `coded` / `team` targets are smart-routed by plan complexity.
+
 ### ⏱️ Timeout & Completion
 
 - **Initial wait**: 120 seconds before first check-in.

@@ -94,3 +94,35 @@ This type does **not** include `lastTickAt` or `nextTickAt` fields.
 
 ## Agent Recommendation
 Send it to the **Coder agent** — the backend changes are routine; the webview countdown is moderate but well-scoped with the existing `formatCountdown()` helper.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation successfully added `lastTickAt` tracking, relayed countdown state into the Kanban webview, and rendered a live `Next: MM:SS` countdown with a `Dispatching...` fallback.
+- One material defect remained in the state synchronization path: when the Kanban provider was attached after autoban was already running, `TaskViewerProvider` could seed it with the raw `_autobanState` object, which omitted the live `lastTickAt` map. In that case the board could reopen with an incorrect fresh countdown until the next backend tick broadcast arrived.
+
+### Fixed Items
+- Added a shared autoban-state broadcast helper so the countdown relay always includes `lastTickAt`.
+- Updated `TaskViewerProvider.setKanbanProvider()` to seed the Kanban provider with the merged autoban broadcast state instead of the raw `_autobanState`.
+- Updated `_postAutobanState()` and `_tryRestoreAutoban()` to use the same merged broadcast state path for consistency.
+- Added a focused regression test covering autoban broadcast state merging.
+
+### Files Changed During Reviewer Pass
+- `src/services/autobanState.ts`
+- `src/services/TaskViewerProvider.ts`
+- `src/services/KanbanProvider.ts`
+- `src/test/autoban-state-regression.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `npm run compile-tests` ✅ Passed.
+- `node src\test\autoban-state-regression.test.js` ✅ Passed.
+- `npm run lint` was not rerun for this pass because repository linting remains blocked by the pre-existing ESLint 9 configuration issue (`eslint.config.*` missing).
+
+### Remaining Risks
+- The focused regression test validates the autoban broadcast merge logic, but there is still no browser-level end-to-end test that exercises the live Kanban countdown after reopening the panel mid-run.
+- Repository linting remains unavailable until the ESLint configuration is migrated or restored for ESLint 9.
+
+### Final Reviewer Assessment
+- Ready. The countdown implementation now satisfies the plan requirements, and the live `lastTickAt` synchronization defect has been corrected and verified.

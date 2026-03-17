@@ -194,6 +194,31 @@
             box-shadow: 0 0 15px var(--accent-teal);
         }
 
+        .btn-batch {
+            background: color-mix(in srgb, var(--accent-teal) 12%, transparent);
+            border: 1px solid color-mix(in srgb, var(--accent-teal) 28%, transparent);
+            color: var(--accent-teal);
+            font-family: var(--font-mono);
+            font-size: 9px;
+            font-weight: bold;
+            letter-spacing: 0.6px;
+            line-height: 1;
+            min-height: 18px;
+            padding: 3px 6px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border-radius: 2px;
+            transition: all 0.15s;
+        }
+
+        .btn-batch:hover {
+            background: var(--accent-teal);
+            color: var(--panel-bg);
+            box-shadow: 0 0 12px color-mix(in srgb, var(--accent-teal) 60%, transparent);
+        }
+
         .kanban-board {
             display: flex;
             gap: 12px;
@@ -491,8 +516,8 @@
     </div>
     <div class="controls-strip">
         <button class="strip-btn" id="btn-autoban" title="Start or stop the autoban engine">▶ START AUTOBAN</button>
-        <button class="strip-btn" id="btn-batch-planner" title="Copy improve-plan prompt for all CREATED plans to clipboard">📋 COPY PLANNER PROMPT</button>
-        <button class="strip-btn" id="btn-batch-low" title="Copy coding prompt for low-complexity PLAN REVIEWED plans to clipboard">📋 COPY CODER PROMPT</button>
+        <button class="strip-btn" id="btn-batch-planner" title="Copy improve-plan prompt and advance all CREATED plans to PLAN REVIEWED">📋 COPY PLANNER PROMPT</button>
+        <button class="strip-btn" id="btn-copy-low" title="Copy coding prompt and advance low-complexity PLAN REVIEWED plans to the Coder column">📋 COPY CODER PROMPT</button>
         <button class="strip-btn" id="btn-jules-low" title="Send low-complexity plans to Jules" style="display:none">🚀 SEND TO JULES</button>
         <button class="strip-btn" id="btn-refresh-strip" title="Sync board with latest backend state">↻ SYNC BOARD</button>
     </div>
@@ -511,14 +536,14 @@
         let columnDefinitions = [
             { id: 'CREATED', label: 'New', role: null, autobanEnabled: true },
             { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', autobanEnabled: true },
-            { id: 'CODED', label: 'Coded', role: 'coder', autobanEnabled: true },
+            { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', autobanEnabled: true },
+            { id: 'CODER CODED', label: 'Coder', role: 'coder', autobanEnabled: true },
             { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: false }
         ];
         let columns = columnDefinitions.map(col => col.id);
         let currentCards = [];
         let lastAgentNames = {};
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
-        let currentCodedTarget = 'lead';
         let cliTriggersEnabled = true;
         let autobanConfig = null; // Received from backend: { enabled, batchSize, rules }
         let autobanCountdownTimer = null;
@@ -578,7 +603,7 @@
         function buildBoardSignature(cards) {
             if (!Array.isArray(cards) || cards.length === 0) return '';
             return cards
-                .map(card => `${card.workspaceRoot || ''}|${card.sessionId}|${card.column}|${card.topic || ''}|${card.planFile || ''}|${card.complexity || 'Unknown'}`)
+                .map(card => `${card.workspaceRoot || ''}|${card.sessionId}|${card.column}|${card.topic || ''}|${card.planFile || ''}|${card.complexity || 'Unknown'}|${card.lastActivity || ''}`)
                 .sort()
                 .join('||');
         }
@@ -609,21 +634,18 @@
         function renderColumns() {
             kanbanBoard.innerHTML = columnDefinitions.map(def => {
                 const isCreated = def.id === 'CREATED';
-                const isCoded = def.id === 'CODED';
+                const isPlanReviewed = def.id === 'PLAN REVIEWED';
                 const hasAgent = !isCreated;
                 const rightSide = isCreated
                     ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
                             <button class="btn-add-plan" id="btn-add-plan" title="Add Plan">+</button>
                             <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
                        </div>`
-                    : isCoded
-                        ? `<div style="display: flex; align-items: center; gap: 12px;">
-                                <select id="coded-target-select" class="column-select">
-                                    <option value="lead">Lead Coder</option>
-                                    <option value="coder">Coder</option>
-                                </select>
-                                <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
-                           </div>`
+                    : isPlanReviewed
+                            ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
+                                    <button class="btn-batch" id="btn-batch-low" title="Batch dispatch all Low complexity plans">⚡ Low</button>
+                                    <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
+                               </div>`
                         : `<span class="column-count" id="count-${escapeAttr(def.id)}">0</span>`;
                 const subline = hasAgent
                     ? `<div class="column-agent" id="agent-${escapeAttr(def.id)}"></div>`
@@ -651,15 +673,9 @@
                 postKanbanMessage({ type: 'createPlan' });
             });
 
-            const codedTargetSelect = document.getElementById('coded-target-select');
-            if (codedTargetSelect) {
-                codedTargetSelect.value = currentCodedTarget;
-                codedTargetSelect.addEventListener('change', (e) => {
-                    currentCodedTarget = e.target.value;
-                    updateAllColumnAgents();
-                    postKanbanMessage({ type: 'setColumnTarget', column: 'CODED', target: e.target.value });
-                });
-            }
+            document.getElementById('btn-batch-low')?.addEventListener('click', () => {
+                postKanbanMessage({ type: 'batchDispatchLow' });
+            });
 
             document.querySelectorAll('.column-body').forEach(container => {
                 const col = container.id.replace(/^col-/, '');
@@ -672,7 +688,6 @@
 
         /** Map a kanban column to its assigned agent role. */
         function columnToRole(col) {
-            if (col === 'CODED') return currentCodedTarget;
             const def = getColumnDefinition(col);
             return def ? (def.role || null) : null;
         }
@@ -729,7 +744,7 @@
             const isEnabled = !!(autobanConfig && autobanConfig.enabled);
             autobanBtn.classList.toggle('is-active', isEnabled);
             autobanBtn.textContent = isEnabled ? '⏸ STOP AUTOBAN' : '▶ START AUTOBAN';
-            autobanBtn.title = isEnabled ? 'Stop the autoban engine' : 'Start the autoban engine';
+            autobanBtn.title = isEnabled ? 'Stop autoban engine' : 'Start autoban engine';
         }
 
         function syncAutobanCountdownTimer() {
@@ -1034,14 +1049,6 @@
                         updateAutobanIndicators();
                     }
                     break;
-                case 'updateTarget':
-                    if (msg.column === 'CODED' && msg.target) {
-                        const selectEl = document.getElementById('coded-target-select');
-                        if (selectEl) selectEl.value = msg.target;
-                        currentCodedTarget = msg.target;
-                        updateAllColumnAgents();
-                    }
-                    break;
                 case 'updateAgentNames':
                     lastAgentNames = msg.agentNames || {};
                     updateAllColumnAgents();
@@ -1136,7 +1143,7 @@
         document.getElementById('btn-batch-planner')?.addEventListener('click', () => {
             postKanbanMessage({ type: 'batchPlannerPrompt' });
         });
-        document.getElementById('btn-batch-low')?.addEventListener('click', () => {
+        document.getElementById('btn-copy-low')?.addEventListener('click', () => {
             postKanbanMessage({ type: 'batchLowComplexity' });
         });
         document.getElementById('btn-jules-low')?.addEventListener('click', () => {

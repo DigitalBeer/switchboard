@@ -49,6 +49,7 @@ export type ReviewTicketData = {
     topic: string;
     planFileAbsolute: string;
     column: string;
+    isCompleted: boolean;
     complexity: 'Unknown' | 'Low' | 'High';
     dependencies: string[];
     planText: string;
@@ -332,6 +333,7 @@ export class ReviewProvider implements vscode.Disposable {
             topic: this._currentPlan.topic?.trim() || path.basename(this._currentPlan.planFileAbsolute),
             planFileAbsolute: this._currentPlan.planFileAbsolute,
             column: '',
+            isCompleted: false,
             complexity: 'Unknown',
             dependencies: [],
             planText,

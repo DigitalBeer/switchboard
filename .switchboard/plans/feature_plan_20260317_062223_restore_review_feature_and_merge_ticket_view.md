@@ -132,3 +132,32 @@ Current layout (from HTML structure, lines 393–461):
 
 ## Agent Recommendation
 Send it to the **Coder agent** — these are 9 small, well-scoped UI changes in a single file with one moderate backend addition (dependencies modal data source).
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation successfully restored the review-mode workflow inside the merged ticket view: existing tickets now default to review mode, the toolbar copy is mode-aware, the action log lives in a modal, dependencies are managed through a modal populated from open plans, and the header includes the requested copy-link action.
+- One material defect remained: the redundant metadata-grid title field had reappeared. That violated this plan’s explicit "Topic field is useless, remove it" requirement and duplicated the header title area, making the merged review/ticket UI regress back toward the clutter this plan was meant to remove.
+
+### Fixed Items
+- Removed the redundant metadata-grid title field from `review.html`.
+- Moved editable title handling into the header area so the merged ticket view stays aligned with this plan while preserving later title-rename-on-save behavior.
+- Updated the review ticket regression test to enforce the new header-title editing path and ensure the old `topic-input` field does not return.
+
+### Files Changed During Reviewer Pass
+- `src/webview/review.html`
+- `src/test/review-ticket-title-regression.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `node src\test\review-ticket-title-regression.test.js` ✅ Passed.
+- `rg "topic-input" src` ✅ Only the regression test references the removed field.
+- `npm run lint` was not rerun for this pass because repository linting remains blocked by the pre-existing ESLint 9 configuration issue (`eslint.config.*` missing).
+
+### Remaining Risks
+- There is still no browser-level end-to-end test that exercises the full merged panel behavior across review mode, edit mode, dependency modal, log modal, and copy-link actions in one flow.
+- The header now owns title editing in edit mode. That is cleaner than the old metadata field, but future review-panel work should avoid reintroducing a second title control elsewhere in the layout.
+
+### Final Reviewer Assessment
+- Ready. The merged review/ticket view now satisfies the plan requirements again, and the redundant title-field regression has been corrected and verified.

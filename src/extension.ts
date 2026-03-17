@@ -524,6 +524,20 @@ function attachMcpListeners(process: ChildProcess, workspaceRoot: string) {
                     }
                     break;
                 }
+                case 'triggerKanbanMove': {
+                    const { sessionId, target, workspaceRoot: messageWorkspaceRoot } = message;
+                    if (typeof sessionId !== 'string' || !sessionId.trim() || typeof target !== 'string' || !target.trim()) {
+                        mcpOutputChannel?.appendLine('[MCP] Ignored malformed triggerKanbanMove payload.');
+                        break;
+                    }
+                    await vscode.commands.executeCommand(
+                        'switchboard.mcpMoveKanbanCard',
+                        sessionId,
+                        target,
+                        messageWorkspaceRoot || workspaceRoot
+                    );
+                    break;
+                }
             }
         } catch (e) {
             mcpOutputChannel?.appendLine(`[MCP] Error handling IPC message: ${e}`);
@@ -822,15 +836,20 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(openKanbanDisposable);
 
     // Helper commands for Kanban ↔ sidebar delegation
-    const triggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerAgentFromKanban', async (role: string, sessionId: string, instruction?: string, workspaceRoot?: string) => {
-        return await taskViewerProvider.handleKanbanTrigger(role, sessionId, instruction, workspaceRoot);
+    const triggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerAgentFromKanban', async (role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch?: boolean) => {
+        return await taskViewerProvider.handleKanbanTrigger(role, sessionId, instruction, workspaceRoot, Boolean(isFinalInBatch));
     });
     context.subscriptions.push(triggerFromKanbanDisposable);
 
-    const batchTriggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string, workspaceRoot?: string) => {
-        return taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot);
+    const batchTriggerFromKanbanDisposable = vscode.commands.registerCommand('switchboard.triggerBatchAgentFromKanban', async (role: string, sessionIds: string[], instruction?: string, workspaceRoot?: string, isFinalInBatch?: boolean, targetTerminalOverride?: string) => {
+        return taskViewerProvider.handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot, Boolean(isFinalInBatch), targetTerminalOverride);
     });
     context.subscriptions.push(batchTriggerFromKanbanDisposable);
+
+    const batchDispatchLowDisposable = vscode.commands.registerCommand('switchboard.batchDispatchLow', async (workspaceRoot?: string) => {
+        return taskViewerProvider.handleBatchDispatchLow(workspaceRoot);
+    });
+    context.subscriptions.push(batchDispatchLowDisposable);
 
     const kanbanBackwardMoveDisposable = vscode.commands.registerCommand('switchboard.kanbanBackwardMove', async (sessionIds: string[], targetColumn: string, workspaceRoot?: string) => {
         return taskViewerProvider.handleKanbanBackwardMove(sessionIds, targetColumn, workspaceRoot);
@@ -866,6 +885,11 @@ export async function activate(context: vscode.ExtensionContext) {
         taskViewerProvider.handleKanbanReviewPlan(sessionId, workspaceRoot);
     });
     context.subscriptions.push(reviewPlanFromKanbanDisposable);
+
+    const mcpMoveKanbanCardDisposable = vscode.commands.registerCommand('switchboard.mcpMoveKanbanCard', async (sessionId: string, target: string, workspaceRoot?: string) => {
+        return kanbanProvider.handleMcpMove(sessionId, target, workspaceRoot);
+    });
+    context.subscriptions.push(mcpMoveKanbanCardDisposable);
 
     const setAutobanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.setAutobanEnabledFromKanban', async (enabled: boolean) => {
         await taskViewerProvider.setAutobanEnabledFromKanban(!!enabled);

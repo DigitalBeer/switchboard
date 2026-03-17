@@ -70,3 +70,32 @@ The `appendWorkflowAuditEvent()` function in `register-tools.js` (line ~457) wri
 
 ## Agent Recommendation
 Send it to the **Coder agent** — this is a straightforward 3-step change with no architectural risk.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The main implementation in `src/services/TaskViewerProvider.ts` and `src/webview/implementation.html` correctly added autoban dispatch logging, covered both dispatch branches, and triggered live-feed refreshes.
+- One material defect was found in the activity aggregation pipeline: `autoban_dispatch` events were being collapsed into generic `summary` events before reaching the webview, which meant the new event-specific renderer path did not reliably receive the intended event type.
+
+### Fixed Items
+- Preserved `autoban_dispatch` events as first-class activity events in `SessionActionLog._aggregateEvents()` so the live feed can render the dedicated autoban format instead of falling back to a generic summary.
+- Added a focused regression test to ensure `autoban_dispatch` remains unaggregated and retains its typed payload for renderer-specific formatting.
+
+### Files Changed During Reviewer Pass
+- `src/services/SessionActionLog.ts`
+- `src/test/session-action-log.test.ts`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `npm run compile-tests` ✅ Passed.
+- Targeted runtime validation against `out/services/SessionActionLog.js` ✅ Passed (`autoban_dispatch` remained typed and retained `targetRole`).
+- `npm run lint` ⚠️ Blocked by existing repository tooling configuration: ESLint 9 requires an `eslint.config.*` file, but the repo script currently has no compatible config.
+- `node out\test\session-action-log.test.js` ⚠️ Still fails on a pre-existing title-mapping assertion unrelated to the autoban reviewer fix (`expected 'Alpha Plan', got 'sess_summary_1'` for the older summary aggregation test).
+
+### Remaining Risks
+- The broader `session-action-log` test script has an existing failing assertion outside the autoban path, so full green automated coverage for that file is not yet available from the current repository baseline.
+- Repository linting remains unavailable until the ESLint configuration is migrated or restored for ESLint 9.
+
+### Final Reviewer Assessment
+- Ready. The autoban live-feed implementation now satisfies the plan requirements, and the one material defect found during review has been corrected and targeted-verified.

@@ -142,6 +142,22 @@ async function run() {
     assert.strictEqual(summaryEvent?.payload?.planTitle, 'Alpha Plan');
     assert.ok(String(summaryEvent?.payload?.message || '').includes('SENT TO'), `expected SENT TO in message, got: ${summaryEvent?.payload?.message}`);
 
+    // Test 6b: autoban dispatch events stay typed so the live-feed renderer can format them
+    const autobanSessionId = 'sess_autoban_1';
+    await log.createRunSheet(autobanSessionId, { planName: 'Autoban Plan', events: [] });
+    await log.logEvent('autoban_dispatch', {
+        sessionId: autobanSessionId,
+        sourceColumn: 'PLAN REVIEWED',
+        targetRole: 'coder',
+        sessionIds: [autobanSessionId],
+        batchSize: 1,
+        message: 'Autoban moved 1 plan(s) from PLAN REVIEWED -> coder'
+    });
+    const autobanPage = await log.getRecentActivity(200);
+    const autobanEvent = autobanPage.events.find(event => event.type === 'autoban_dispatch' && event.payload?.sessionId === autobanSessionId);
+    assert.ok(autobanEvent, 'expected autoban_dispatch event to remain unaggregated for renderer-specific formatting');
+    assert.strictEqual(autobanEvent?.payload?.targetRole, 'coder');
+
     // Test 7: Run Sheet Management
     await log.createRunSheet('sess_test_1', { topic: 'test', events: [] });
     let sheet = await log.getRunSheet('sess_test_1');

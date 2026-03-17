@@ -14,6 +14,13 @@ import { CustomAgentConfig, findCustomAgentByRole, parseCustomAgents, buildKanba
 import { deriveKanbanColumn } from './kanbanColumnDerivation';
 import { KanbanDatabase, KanbanPlanRecord } from './KanbanDatabase';
 import { KanbanMigration } from './KanbanMigration';
+import {
+    AutobanConfigState,
+    buildAutobanBroadcastState,
+    DEFAULT_AUTOBAN_GLOBAL_SESSION_CAP,
+    MAX_AUTOBAN_TERMINALS_PER_ROLE,
+    normalizeAutobanConfigState
+} from './autobanState';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
     syncMirrorToBrain: (options: {
         mirrorPath: string;
@@ -30,6 +37,18 @@ type DispatchReadinessEntry = {
     state: DispatchReadinessState;
     terminalName?: string;
     source?: string;
+};
+
+type KanbanDispatchCard = {
+    sessionId: string;
+    lastActivity: string;
+    planFile?: string;
+};
+
+type AutobanTerminalSelection = {
+    terminalName: string;
+    remainingCapacity: number;
+    effectivePool: string[];
 };
 
 type JulesSessionRecord = {
@@ -105,20 +124,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _autobanLastTickAt = new Map<string, number>();
     // Serialization queue: ensures only one column tick runs at a time to prevent terminal dispatch contention.
     private _autobanTickQueue: Promise<void> = Promise.resolve();
-    private _autobanState: {
-        enabled: boolean;
-        batchSize: number;
-        rules: Record<string, { enabled: boolean; intervalMinutes: number }>;
-        lastTickAt?: Record<string, number>;
-    } = {
-        enabled: false,
-        batchSize: 3,
-        rules: {
-            'CREATED': { enabled: true, intervalMinutes: 10 },
-            'PLAN REVIEWED': { enabled: true, intervalMinutes: 20 },
-            'CODED': { enabled: true, intervalMinutes: 15 }
-        }
-    };
+    private _autobanState: AutobanConfigState = normalizeAutobanConfigState();
     // Tracks session IDs currently dispatched, keyed by the source column that dispatched them.
     // Prevents duplicate dispatch within the same column while still allowing downstream column ticks.
     private _activeDispatchSessions = new Map<string, string>();
@@ -169,8 +175,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._needsSetup = needsSetup;
         this._pipeline = new PipelineOrchestrator(
             () => this._postPipelineState(),
-            async (role, sessionId, instruction) => {
-                const dispatched = await this._handleTriggerAgentActionInternal(role, sessionId, instruction);
+            async (role, sessionId, instruction, isFinalInBatch) => {
+                const dispatched = await this._handleTriggerAgentActionInternal(role, sessionId, instruction, undefined, isFinalInBatch);
                 if (!dispatched) {
                     throw new Error(`Pipeline dispatch failed for role '${role}' in session '${sessionId}'.`);
                 }
@@ -182,10 +188,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             this._context.globalState
         );
         // Restore persisted Autoban state
-        const savedAutoban = this._context.workspaceState.get<typeof this._autobanState>('autoban.state');
-        if (savedAutoban) {
-            this._autobanState = savedAutoban;
-        }
+        const savedAutoban = this._context.workspaceState.get<Partial<AutobanConfigState>>('autoban.state');
+        this._autobanState = normalizeAutobanConfigState(savedAutoban);
         this._setupStateWatcher();
         this._setupPlanWatcher();
         this._setupSessionWatcher();
@@ -609,7 +613,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     public setKanbanProvider(provider: KanbanProvider) {
         this._kanbanProvider = provider;
-        this._kanbanProvider.updateAutobanConfig(this._autobanState);
+        this._kanbanProvider.updateAutobanConfig(this._getAutobanBroadcastState());
     }
 
     private _deriveLastActionFromEvents(events: any[]): string {
@@ -620,6 +624,33 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return '';
     }
 
+    private _normalizeLegacyKanbanColumn(column: string | null | undefined): string {
+        const normalized = String(column || '').trim();
+        return normalized === 'CODED' ? 'LEAD CODED' : normalized;
+    }
+
+    private _codedColumnForRole(role: string): string | null {
+        switch (role) {
+            case 'lead':
+            case 'team':
+                return 'LEAD CODED';
+            case 'coder':
+            case 'jules':
+                return 'CODER CODED';
+            default:
+                return null;
+        }
+    }
+
+    private _codedColumnForDispatchRoles(roles: string[]): string {
+        return roles.includes('lead') ? 'LEAD CODED' : 'CODER CODED';
+    }
+
+    private _isCompletedCodingColumn(column: string | null | undefined): boolean {
+        const normalizedColumn = this._normalizeLegacyKanbanColumn(column);
+        return normalizedColumn === 'LEAD CODED' || normalizedColumn === 'CODER CODED';
+    }
+
     private _targetColumnForRole(role: string): string | null {
         switch (role) {
             case 'planner':
@@ -628,7 +659,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             case 'coder':
             case 'jules':
             case 'team':
-                return 'CODED';
+                return this._codedColumnForRole(role);
             case 'reviewer':
                 return 'CODE REVIEWED';
             default:
@@ -637,15 +668,59 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private _roleForKanbanColumn(column: string): string | null {
-        switch (column) {
+        switch (this._normalizeLegacyKanbanColumn(column)) {
             case 'PLAN REVIEWED':
                 return 'planner';
-            case 'CODED':
-                return this._autobanCodedTarget();
+            case 'LEAD CODED':
+                return 'lead';
+            case 'CODER CODED':
+                return 'coder';
             case 'CODE REVIEWED':
                 return 'reviewer';
             default:
                 return column.startsWith('custom_agent_') ? column : null;
+        }
+    }
+
+    private async _resolvePlanReviewedDispatchRole(sessionId: string, workspaceRoot: string): Promise<'lead' | 'coder'> {
+        if (!this._kanbanProvider) {
+            return 'lead';
+        }
+
+        const sheet = await this._getSessionLog(workspaceRoot).getRunSheet(sessionId);
+        if (!sheet?.planFile) {
+            return 'lead';
+        }
+
+        const complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, sheet.planFile);
+        return complexity === 'Low' ? 'coder' : 'lead';
+    }
+
+    private async _getNextKanbanColumnForSession(
+        currentColumn: string,
+        sessionId: string,
+        workspaceRoot: string,
+        customAgents: CustomAgentConfig[]
+    ): Promise<string | null> {
+        const normalizedCurrent = this._normalizeLegacyKanbanColumn(currentColumn);
+        switch (normalizedCurrent) {
+            case 'CREATED':
+                return 'PLAN REVIEWED';
+            case 'PLAN REVIEWED':
+                return this._targetColumnForRole(await this._resolvePlanReviewedDispatchRole(sessionId, workspaceRoot));
+            case 'LEAD CODED':
+            case 'CODER CODED':
+                return 'CODE REVIEWED';
+            case 'CODE REVIEWED':
+                return null;
+            default: {
+                const columnIds = buildKanbanColumns(customAgents).map(column => column.id);
+                const currentIndex = columnIds.indexOf(normalizedCurrent);
+                if (currentIndex < 0 || currentIndex >= columnIds.length - 1) {
+                    return null;
+                }
+                return columnIds[currentIndex + 1];
+            }
         }
     }
 
@@ -833,8 +908,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     /** Called by the Kanban board to trigger an agent action on a plan session. */
-    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
-        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot);
+    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
+        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot, isFinalInBatch);
     }
 
     /** Called by the Kanban board to silently reset a card to an earlier stage. */
@@ -853,16 +928,37 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private _workflowForForwardMove(targetColumn: string): string | null {
-        switch (targetColumn) {
-            case 'PLAN REVIEWED':
-                return 'improve-plan';
-            case 'CODED':
-                return this._autobanCodedTarget() === 'coder' ? 'handoff' : 'handoff-lead';
-            case 'CODE REVIEWED':
-                return 'reviewer-pass';
-            default:
-                return targetColumn.startsWith('custom_agent_') ? `custom-agent:${targetColumn}` : null;
+        const normalizedTarget = String(targetColumn || '').trim().toLowerCase().replace(/\s+/g, '-');
+        return normalizedTarget ? `move-to-${normalizedTarget}` : null;
+    }
+
+    private _plannerWorkflowNameForInstruction(instruction?: string): string | undefined {
+        const { baseInstruction } = this._parsePromptInstruction(instruction);
+        if (baseInstruction === 'improve-plan') {
+            return 'Improved plan';
         }
+        if (baseInstruction === 'enhance') {
+            return 'Enhanced plan';
+        }
+        return undefined;
+    }
+
+    private _parsePromptInstruction(instruction?: string): { baseInstruction?: string; includeInlineChallenge: boolean } {
+        if (!instruction) {
+            return { baseInstruction: undefined, includeInlineChallenge: false };
+        }
+
+        if (instruction === 'with-challenge') {
+            return { baseInstruction: undefined, includeInlineChallenge: true };
+        }
+
+        const challengeSuffix = ':with-challenge';
+        if (instruction.endsWith(challengeSuffix)) {
+            const baseInstruction = instruction.slice(0, -challengeSuffix.length) || undefined;
+            return { baseInstruction, includeInlineChallenge: true };
+        }
+
+        return { baseInstruction: instruction, includeInlineChallenge: false };
     }
 
     public async handleKanbanForwardMove(sessionIds: string[], targetColumn: string, workspaceRoot?: string) {
@@ -886,7 +982,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
      * Sequentially updates runsheets to avoid file-lock contention, then constructs
      * a single multi-plan prompt and dispatches it to the target agent.
      */
-    public async handleKanbanBatchTrigger(role: string, sessionIds: string[], instruction?: string, workspaceRoot?: string): Promise<boolean> {
+    public async handleKanbanBatchTrigger(
+        role: string,
+        sessionIds: string[],
+        instruction?: string,
+        workspaceRoot?: string,
+        isFinalInBatch: boolean = false,
+        targetTerminalOverride?: string
+    ): Promise<boolean> {
         if (sessionIds.length === 0) { return false; }
         const resolvedWorkspaceRoot = workspaceRoot
             ? this._resolveWorkspaceRoot(workspaceRoot)
@@ -894,12 +997,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (!resolvedWorkspaceRoot) { return false; }
         await this._activateWorkspaceContext(resolvedWorkspaceRoot);
 
-        // If only one plan, fall through to single dispatch for simplicity
-        if (sessionIds.length === 1) {
-            return this._handleTriggerAgentAction(role, sessionIds[0], instruction, resolvedWorkspaceRoot);
+        // If only one plan, fall through to single dispatch for simplicity unless autoban
+        // needs an explicit terminal override for pooled round-robin routing.
+        if (sessionIds.length === 1 && !targetTerminalOverride) {
+            return this._handleTriggerAgentAction(role, sessionIds[0], instruction, resolvedWorkspaceRoot, isFinalInBatch);
         }
 
-        const targetAgent = await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
+        const targetAgent = String(targetTerminalOverride || '').trim() || await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
         if (!targetAgent) {
             vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Cannot dispatch batch.`);
             return false;
@@ -942,29 +1046,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             'lead': 'handoff-lead',
             'coder': 'handoff'
         };
-        if (role === 'planner' && instruction === 'enhance') {
-            // Special case for enhance
-        }
         const workflowName = role === 'planner'
-            ? (instruction === 'improve-plan'
-                ? 'Improved plan'
-                : instruction === 'enhance'
-                    ? 'Enhanced plan'
-                    : workflowMap[role])
+            ? (this._plannerWorkflowNameForInstruction(instruction) || workflowMap[role])
             : workflowMap[role];
 
-        // Construct batched prompt
-        const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
-
-        let prompt = `Please process the following ${validPlans.length} plans.\nIf your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.\n\nCRITICAL INSTRUCTIONS:\n1. Treat each file path below as a completely isolated context. Do not mix requirements between plans.\n2. Execute each plan fully before moving to the next (if sequential).\n\n${focusDirective}\n\nPLANS TO PROCESS:\n`;
-
-        for (const plan of validPlans) {
-            prompt += `- [${plan.topic}] Plan File: ${plan.absolutePath}\n`;
-        }
-
-        if (role === 'coder') {
-            prompt = this._withCoderAccuracyInstruction(prompt);
-        }
+        const prompt = this._buildKanbanBatchPrompt(role, validPlans, instruction);
 
         // Dispatch the batched prompt FIRST, then update runsheets only on success.
         // This prevents cards from being moved forward if the dispatch fails.
@@ -974,6 +1060,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 batch: true,
                 sessionIds: validPlans.map(p => p.sessionId)
             });
+            if (isFinalInBatch && role === 'reviewer') {
+                await this._dispatchReviewerBatchSummary(resolvedWorkspaceRoot, targetAgent, {
+                    sessionIds: validPlans.map(p => p.sessionId)
+                });
+            }
 
             for (const plan of validPlans) {
                 if (workflowName) {
@@ -1020,13 +1111,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         const ticketData = await this.getReviewTicketData(sessionId);
         const customAgents = await this.getCustomAgents(workspaceRoot);
-        const columnIds = buildKanbanColumns(customAgents).map(column => column.id);
-        const currentIndex = columnIds.indexOf(ticketData.column);
-        if (currentIndex < 0 || currentIndex >= columnIds.length - 1) {
+        const currentColumn = this._normalizeLegacyKanbanColumn(ticketData.column);
+        const targetColumn = await this._getNextKanbanColumnForSession(currentColumn, sessionId, workspaceRoot, customAgents);
+        if (!targetColumn) {
             return { ok: false, message: 'Plan is already in the final column.' };
         }
-
-        const targetColumn = columnIds[currentIndex + 1];
         if (!this._kanbanProvider?.cliTriggersEnabled) {
             await this.handleKanbanForwardMove([sessionId], targetColumn, workspaceRoot);
             return { ok: true, message: `Moved to ${targetColumn}. CLI triggers are off, so no agent was dispatched.` };
@@ -1038,7 +1127,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return { ok: true, message: `Moved to ${targetColumn}.` };
         }
 
-        const instruction = role === 'planner' ? 'enhance' : undefined;
+        const instruction = role === 'planner' ? 'improve-plan' : undefined;
         const dispatched = await this.handleKanbanTrigger(role, sessionId, instruction, workspaceRoot);
         if (!dispatched) {
             return { ok: false, message: `Failed to send plan to ${targetColumn}.` };
@@ -1248,11 +1337,460 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private _postAutobanState(): void {
-        const state = {
+    private async _persistAutobanState(): Promise<void> {
+        await this._context.workspaceState.update('autoban.state', this._autobanState);
+    }
+
+    private _resetAutobanSessionCounters(): void {
+        this._autobanState = normalizeAutobanConfigState({
             ...this._autobanState,
-            lastTickAt: Object.fromEntries(this._autobanLastTickAt.entries())
+            sessionSendCount: 0,
+            sendCounts: {},
+            poolCursor: {}
+        });
+    }
+
+    private _autobanPoolRoles(): string[] {
+        return ['planner', 'coder', 'lead', 'reviewer'];
+    }
+
+    private _normalizeAutobanPoolRole(role: string): string {
+        return this._normalizeAgentKey(role);
+    }
+
+    private _limitAutobanPool(entries: string[]): string[] {
+        return Array.from(new Set(
+            entries
+                .map(entry => String(entry || '').trim())
+                .filter(Boolean)
+        )).slice(0, MAX_AUTOBAN_TERMINALS_PER_ROLE);
+    }
+
+    private _getConfiguredAutobanPool(role: string): string[] {
+        return this._limitAutobanPool(this._autobanState.terminalPools[this._normalizeAutobanPoolRole(role)] || []);
+    }
+
+    private _getManagedAutobanPool(role: string): string[] {
+        return this._limitAutobanPool(this._autobanState.managedTerminalPools[this._normalizeAutobanPoolRole(role)] || []);
+    }
+
+    private _getAutobanRoleLabel(role: string): string {
+        switch (this._normalizeAutobanPoolRole(role)) {
+            case 'planner': return 'Planner';
+            case 'coder': return 'Coder';
+            case 'lead': return 'Lead Coder';
+            case 'reviewer': return 'Reviewer';
+            default: return role.trim() || 'Agent';
+        }
+    }
+
+    private async _readTerminalRegistryState(workspaceRoot: string): Promise<Record<string, any>> {
+        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
+        try {
+            if (!fs.existsSync(statePath)) {
+                return {};
+            }
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            return state.terminals || {};
+        } catch (error) {
+            console.error('[Autoban] Failed to read terminal registry state:', error);
+            return {};
+        }
+    }
+
+    private async _getAliveAutobanTerminalRegistry(workspaceRoot: string): Promise<Record<string, any>> {
+        const terminalsMap = await this._readTerminalRegistryState(workspaceRoot);
+        const activeTerminals = vscode.window.terminals;
+        const activeNames = new Set<string>();
+        const activePids = new Set<number>();
+
+        for (const terminal of activeTerminals) {
+            activeNames.add(terminal.name);
+            const creationName = (terminal.creationOptions as vscode.TerminalOptions | undefined)?.name;
+            if (creationName) {
+                activeNames.add(creationName);
+            }
+        }
+
+        for (const terminal of activeTerminals) {
+            try {
+                const pid = await this._waitWithTimeout(terminal.processId, 1000, undefined);
+                if (pid) {
+                    activePids.add(pid);
+                }
+            } catch { }
+        }
+
+        const currentIdeName = (vscode.env.appName || '').toLowerCase();
+        const aliveTerminals: Record<string, any> = {};
+
+        for (const [name, rawInfo] of Object.entries(terminalsMap)) {
+            const info = { ...(rawInfo as any) };
+            const friendlyName = typeof info.friendlyName === 'string' ? info.friendlyName : name;
+            const nameMatch = activeNames.has(name) || activeNames.has(friendlyName);
+            const pidMatch = activePids.has(info.pid) || activePids.has(info.childPid);
+            const termIdeName = (info.ideName || '').toLowerCase();
+            const ideMatches = !termIdeName ||
+                termIdeName === currentIdeName ||
+                (termIdeName === 'antigravity' && currentIdeName.includes('visual studio code')) ||
+                (termIdeName.includes('visual studio code') && currentIdeName === 'antigravity');
+            const isLocal = pidMatch || (nameMatch && ideMatches);
+            const lastSeenMs = Date.parse(info.lastSeen || '');
+            const heartbeatAlive = !Number.isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < 60_000;
+            const alive = isLocal || heartbeatAlive;
+
+            if (!alive) {
+                continue;
+            }
+
+            aliveTerminals[name] = {
+                ...info,
+                alive,
+                _isLocal: isLocal
+            };
+        }
+
+        return aliveTerminals;
+    }
+
+    private async _getAliveAutobanTerminalNames(role: string, workspaceRoot: string): Promise<string[]> {
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const aliveTerminals = await this._getAliveAutobanTerminalRegistry(workspaceRoot);
+        return Object.entries(aliveTerminals)
+            .filter(([, info]) => this._normalizeAgentKey((info as any)?.role) === normalizedRole)
+            .map(([name]) => name)
+            .sort((a, b) => a.localeCompare(b));
+    }
+
+    private async _resolveAutobanEffectivePool(role: string, workspaceRoot: string): Promise<string[]> {
+        const aliveRoleTerminals = await this._getAliveAutobanTerminalNames(role, workspaceRoot);
+        const configuredPool = this._getConfiguredAutobanPool(role);
+        if (configuredPool.length > 0) {
+            return this._limitAutobanPool(configuredPool.filter(name => aliveRoleTerminals.includes(name)));
+        }
+        return this._limitAutobanPool(aliveRoleTerminals);
+    }
+
+    private _getAutobanRemainingSessionCapacity(): number {
+        return Math.max(
+            0,
+            (this._autobanState.globalSessionCap || DEFAULT_AUTOBAN_GLOBAL_SESSION_CAP) - (this._autobanState.sessionSendCount || 0)
+        );
+    }
+
+    private async _selectAutobanTerminal(role: string, workspaceRoot: string): Promise<AutobanTerminalSelection | null> {
+        const effectivePool = await this._resolveAutobanEffectivePool(role, workspaceRoot);
+        if (effectivePool.length === 0 || this._getAutobanRemainingSessionCapacity() <= 0) {
+            return null;
+        }
+
+        const maxSendsPerTerminal = Math.max(1, Number(this._autobanState.maxSendsPerTerminal) || 1);
+        const available = effectivePool
+            .map(name => {
+                const currentCount = this._autobanState.sendCounts[name] || 0;
+                return {
+                    name,
+                    count: currentCount,
+                    remaining: maxSendsPerTerminal - currentCount
+                };
+            })
+            .filter(entry => entry.remaining > 0);
+
+        if (available.length === 0) {
+            return null;
+        }
+
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const cursor = Math.max(0, this._autobanState.poolCursor[normalizedRole] || 0);
+        const rotatedPool = effectivePool.map((_, index) => effectivePool[(cursor + index) % effectivePool.length]);
+        const minCount = Math.min(...available.map(entry => entry.count));
+        const leastUsedNames = new Set(available.filter(entry => entry.count === minCount).map(entry => entry.name));
+        const selectedName = rotatedPool.find(name => leastUsedNames.has(name))
+            || rotatedPool.find(name => available.some(entry => entry.name === name))
+            || available[0].name;
+        const selectedEntry = available.find(entry => entry.name === selectedName) || available[0];
+
+        return {
+            terminalName: selectedEntry.name,
+            remainingCapacity: Math.min(selectedEntry.remaining, this._getAutobanRemainingSessionCapacity()),
+            effectivePool
         };
+    }
+
+    private async _recordAutobanDispatch(role: string, terminalName: string, dispatchedCount: number, effectivePool: string[]): Promise<void> {
+        if (dispatchedCount <= 0) {
+            return;
+        }
+
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const nextSendCounts = {
+            ...this._autobanState.sendCounts,
+            [terminalName]: (this._autobanState.sendCounts[terminalName] || 0) + dispatchedCount
+        };
+        const nextCursor = { ...this._autobanState.poolCursor };
+        const terminalIndex = effectivePool.indexOf(terminalName);
+        nextCursor[normalizedRole] = terminalIndex >= 0 ? terminalIndex + 1 : (nextCursor[normalizedRole] || 0) + 1;
+
+        this._autobanState = normalizeAutobanConfigState({
+            ...this._autobanState,
+            sendCounts: nextSendCounts,
+            sessionSendCount: (this._autobanState.sessionSendCount || 0) + dispatchedCount,
+            poolCursor: nextCursor
+        });
+        await this._persistAutobanState();
+    }
+
+    private async _allEnabledAutobanRolesExhausted(workspaceRoot: string): Promise<boolean> {
+        if (this._getAutobanRemainingSessionCapacity() <= 0) {
+            return true;
+        }
+
+        const rolesToCheck = new Set<string>();
+        for (const [column, rule] of Object.entries(this._autobanState.rules)) {
+            if (!rule.enabled) {
+                continue;
+            }
+            if (column === 'PLAN REVIEWED') {
+                if (this._autobanState.routingMode === 'all_coder') {
+                    rolesToCheck.add('coder');
+                } else if (this._autobanState.routingMode === 'all_lead') {
+                    rolesToCheck.add('lead');
+                } else {
+                    rolesToCheck.add('coder');
+                    rolesToCheck.add('lead');
+                }
+                continue;
+            }
+
+            const role = this._autobanColumnToRole(column);
+            if (role) {
+                rolesToCheck.add(role);
+            }
+        }
+
+        if (rolesToCheck.size === 0) {
+            return false;
+        }
+
+        for (const role of rolesToCheck) {
+            const selection = await this._selectAutobanTerminal(role, workspaceRoot);
+            if (selection) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private async _stopAutobanForExhaustion(message: string): Promise<void> {
+        this._autobanState = normalizeAutobanConfigState({
+            ...this._autobanState,
+            enabled: false
+        });
+        this._stopAutobanEngine();
+        await this._persistAutobanState();
+        this._postAutobanState();
+        vscode.window.showWarningMessage(message);
+    }
+
+    private async _removeAutobanTerminalReferences(terminalName: string): Promise<boolean> {
+        const trimmedName = String(terminalName || '').trim();
+        if (!trimmedName) {
+            return false;
+        }
+
+        let changed = false;
+        const nextSendCounts = { ...this._autobanState.sendCounts };
+        if (trimmedName in nextSendCounts) {
+            delete nextSendCounts[trimmedName];
+            changed = true;
+        }
+
+        const nextTerminalPools: Record<string, string[]> = {};
+        for (const [role, entries] of Object.entries(this._autobanState.terminalPools)) {
+            const filtered = entries.filter(entry => entry !== trimmedName);
+            if (filtered.length !== entries.length) {
+                changed = true;
+            }
+            if (filtered.length > 0) {
+                nextTerminalPools[role] = filtered;
+            }
+        }
+
+        const nextManagedPools: Record<string, string[]> = {};
+        for (const [role, entries] of Object.entries(this._autobanState.managedTerminalPools)) {
+            const filtered = entries.filter(entry => entry !== trimmedName);
+            if (filtered.length !== entries.length) {
+                changed = true;
+            }
+            if (filtered.length > 0) {
+                nextManagedPools[role] = filtered;
+            }
+        }
+
+        if (!changed) {
+            return false;
+        }
+
+        this._autobanState = normalizeAutobanConfigState({
+            ...this._autobanState,
+            sendCounts: nextSendCounts,
+            terminalPools: nextTerminalPools,
+            managedTerminalPools: nextManagedPools
+        });
+        await this._persistAutobanState();
+        this._postAutobanState();
+        return true;
+    }
+
+    private async _createAutobanTerminal(role: string, requestedName?: string): Promise<void> {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('No workspace folder found. Cannot create an autoban terminal.');
+            return;
+        }
+
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        if (!this._autobanPoolRoles().includes(normalizedRole)) {
+            vscode.window.showErrorMessage(`Unsupported autoban pool role '${role}'.`);
+            return;
+        }
+
+        const configuredPool = this._getConfiguredAutobanPool(normalizedRole);
+        const liveRoleTerminals = await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot);
+        const poolSize = configuredPool.length > 0 ? configuredPool.length : liveRoleTerminals.length;
+        if (poolSize >= MAX_AUTOBAN_TERMINALS_PER_ROLE) {
+            vscode.window.showWarningMessage(`${this._getAutobanRoleLabel(normalizedRole)} already has ${MAX_AUTOBAN_TERMINALS_PER_ROLE} autoban terminals.`);
+            return;
+        }
+
+        const terminalState = await this._readTerminalRegistryState(workspaceRoot);
+        const usedNames = new Set<string>([
+            ...Object.keys(terminalState),
+            ...vscode.window.terminals.map(terminal => terminal.name),
+            ...Array.from(this._registeredTerminals?.keys() || [])
+        ]);
+        const baseName = String(requestedName || '').trim() || `${this._getAutobanRoleLabel(normalizedRole)} Backup`;
+        let uniqueName = baseName;
+        let counter = 2;
+        while (usedNames.has(uniqueName)) {
+            uniqueName = `${baseName} ${counter++}`;
+        }
+
+        const terminal = vscode.window.createTerminal({
+            name: uniqueName,
+            location: vscode.TerminalLocation.Panel,
+            cwd: workspaceRoot
+        });
+        this._registeredTerminals?.set(uniqueName, terminal);
+        terminal.show();
+
+        let pid: number | undefined;
+        try {
+            pid = await this._waitWithTimeout(terminal.processId, 5000, undefined);
+        } catch { }
+
+        await this.updateState(async (state) => {
+            if (!state.terminals) {
+                state.terminals = {};
+            }
+            state.terminals[uniqueName] = {
+                purpose: 'autoban-backup',
+                role: normalizedRole,
+                pid: pid,
+                childPid: pid,
+                startTime: new Date().toISOString(),
+                status: 'active',
+                friendlyName: uniqueName,
+                icon: 'terminal',
+                color: 'cyan',
+                lastSeen: new Date().toISOString(),
+                ideName: vscode.env.appName
+            };
+        });
+
+        const seededPool = configuredPool.length > 0
+            ? configuredPool
+            : await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot);
+        const nextTerminalPools = {
+            ...this._autobanState.terminalPools,
+            [normalizedRole]: this._limitAutobanPool([...seededPool, uniqueName])
+        };
+        const nextManagedPools = {
+            ...this._autobanState.managedTerminalPools,
+            [normalizedRole]: this._limitAutobanPool([...this._getManagedAutobanPool(normalizedRole), uniqueName])
+        };
+        this._autobanState = normalizeAutobanConfigState({
+            ...this._autobanState,
+            terminalPools: nextTerminalPools,
+            managedTerminalPools: nextManagedPools
+        });
+        await this._persistAutobanState();
+
+        const startupCommands = await this.getStartupCommands(workspaceRoot);
+        const startupCommand = startupCommands[normalizedRole];
+        if (startupCommand && startupCommand.trim()) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            terminal.sendText(startupCommand.trim(), true);
+        }
+
+        this._refreshTerminalStatuses();
+        this._postAutobanState();
+    }
+
+    private async _removeAutobanTerminal(role: string, terminalName: string): Promise<void> {
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const trimmedName = String(terminalName || '').trim();
+        if (!trimmedName) {
+            return;
+        }
+
+        const isManaged = this._getManagedAutobanPool(normalizedRole).includes(trimmedName);
+        await this._removeAutobanTerminalReferences(trimmedName);
+
+        if (isManaged) {
+            await this._closeTerminal(trimmedName);
+        } else {
+            this._refreshTerminalStatuses();
+        }
+        this._postAutobanState();
+    }
+
+    private async _resetAutobanPools(): Promise<void> {
+        const managedTerminalNames = Array.from(new Set(
+            Object.values(this._autobanState.managedTerminalPools).flat()
+        ));
+        const wasEnabled = this._autobanState.enabled;
+
+        this._stopAutobanEngine();
+        this._resetAutobanSessionCounters();
+        this._autobanState = normalizeAutobanConfigState({
+            ...this._autobanState,
+            terminalPools: {},
+            managedTerminalPools: {},
+            enabled: wasEnabled
+        });
+        await this._persistAutobanState();
+
+        for (const terminalName of managedTerminalNames) {
+            await this._closeTerminal(terminalName);
+        }
+
+        if (wasEnabled) {
+            this._startAutobanEngine();
+        }
+
+        this._refreshTerminalStatuses();
+        this._postAutobanState();
+    }
+
+    private _getAutobanBroadcastState(): AutobanConfigState {
+        return buildAutobanBroadcastState(this._autobanState, this._autobanLastTickAt.entries());
+    }
+
+    private _postAutobanState(): void {
+        const state = this._getAutobanBroadcastState();
         this._view?.webview.postMessage({
             type: 'autobanStateSync',
             state
@@ -1270,7 +1808,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     /** Restore Autoban engine if it was running before reload. */
     private _tryRestoreAutoban(): void {
-        this._kanbanProvider?.updateAutobanConfig(this._autobanState);
+        this._kanbanProvider?.updateAutobanConfig(this._getAutobanBroadcastState());
         if (this._autobanState.enabled) {
             this._startAutobanEngine();
         }
@@ -1279,10 +1817,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     /** Called by Kanban controls strip to toggle the shared Autoban engine state. */
     public async setAutobanEnabledFromKanban(enabled: boolean): Promise<void> {
         const wasEnabled = this._autobanState.enabled;
-        this._autobanState = { ...this._autobanState, enabled };
-        await this._context.workspaceState.update('autoban.state', this._autobanState);
+        this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, enabled });
 
         if (enabled && !wasEnabled) {
+            this._resetAutobanSessionCounters();
             this._startAutobanEngine();
         } else if (!enabled && wasEnabled) {
             this._stopAutobanEngine();
@@ -1291,6 +1829,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             this._startAutobanEngine();
         }
 
+        await this._persistAutobanState();
         this._postAutobanState();
     }
 
@@ -1298,20 +1837,187 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _autobanColumnToRole(column: string): string | null {
         switch (column) {
             case 'CREATED': return 'planner';
-            case 'PLAN REVIEWED': return this._autobanCodedTarget();
-            case 'CODED': return 'reviewer';
+            case 'PLAN REVIEWED': return 'lead';
+            case 'LEAD CODED':
+            case 'CODER CODED':
+            case 'CODED':
+                return 'reviewer';
             default: return null;
         }
     }
 
-    private _autobanCodedTarget(): string {
-        return this._kanbanProvider?.getCodedColumnTarget?.() || 'lead';
+    private _normalizeAutobanComplexity(complexity: 'Unknown' | 'Low' | 'High' | undefined): 'Low' | 'High' {
+        return complexity === 'Low' ? 'Low' : 'High';
+    }
+
+    private _autobanMatchesComplexityFilter(
+        complexity: 'Low' | 'High',
+        filter: AutobanConfigState['complexityFilter']
+    ): boolean {
+        if (filter === 'low_only') {
+            return complexity === 'Low';
+        }
+        if (filter === 'high_only') {
+            return complexity === 'High';
+        }
+        return true;
+    }
+
+    private _autobanRoutePlanReviewedCard(
+        complexity: 'Low' | 'High',
+        routingMode: AutobanConfigState['routingMode']
+    ): 'coder' | 'lead' {
+        if (routingMode === 'all_coder') {
+            return 'coder';
+        }
+        if (routingMode === 'all_lead') {
+            return 'lead';
+        }
+        return complexity === 'Low' ? 'coder' : 'lead';
     }
 
     /** Column-to-instruction mapping for Autoban dispatches. */
     private _autobanColumnToInstruction(column: string): string | undefined {
         if (column === 'CREATED') { return 'improve-plan'; }
         return undefined;
+    }
+
+    private async _collectKanbanCardsInColumn(
+        workspaceRoot: string,
+        sourceColumn: string
+    ): Promise<{ cardsInColumn: KanbanDispatchCard[]; currentColumnBySession: Map<string, string> }> {
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const currentColumnBySession = new Map<string, string>();
+        const cardsInColumn: KanbanDispatchCard[] = [];
+
+        for (const sheet of sheets) {
+            if (!sheet.sessionId || sheet.completed) { continue; }
+            const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
+            const column = deriveKanbanColumn(events, customAgents);
+            currentColumnBySession.set(sheet.sessionId, column);
+            if (column !== sourceColumn) { continue; }
+
+            const rawPlanFile = typeof sheet.planFile === 'string' ? sheet.planFile.trim() : '';
+            const resolvedPlanPath = rawPlanFile
+                ? (path.isAbsolute(rawPlanFile) ? rawPlanFile : path.resolve(workspaceRoot, rawPlanFile))
+                : '';
+            if (!resolvedPlanPath || !fs.existsSync(resolvedPlanPath)) {
+                console.warn(`[Kanban Dispatch] Skipping session ${sheet.sessionId}: missing plan file (${rawPlanFile || 'none'})`);
+                continue;
+            }
+            let lastActivity = sheet.createdAt || '';
+            for (const e of events) {
+                if (e.timestamp && e.timestamp > lastActivity) {
+                    lastActivity = e.timestamp;
+                }
+            }
+            cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath });
+        }
+
+        try {
+            await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents, false);
+        } catch (e) {
+            console.warn('[Kanban Dispatch] DB sync failed; continuing with file-based snapshot:', e);
+        }
+
+        return { cardsInColumn, currentColumnBySession };
+    }
+
+    private _releaseSettledDispatchLocks(currentColumnBySession: Map<string, string>): void {
+        for (const [sessionId, dispatchedFromColumn] of this._activeDispatchSessions) {
+            if (currentColumnBySession.get(sessionId) !== dispatchedFromColumn) {
+                this._activeDispatchSessions.delete(sessionId);
+            }
+        }
+    }
+
+    private _buildKanbanBatchPrompt(
+        role: string,
+        plans: Array<{ topic: string; absolutePath: string }>,
+        instruction?: string
+    ): string {
+        const { baseInstruction, includeInlineChallenge } = this._parsePromptInstruction(instruction);
+        const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
+        const batchExecutionRules = `If your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.
+
+CRITICAL INSTRUCTIONS:
+1. Treat each plan file path below as a completely isolated context. Do not mix requirements between plans.
+2. Execute each plan fully before moving to the next (if sequential).
+3. If one plan hits an issue, report it clearly but continue processing the remaining plans when safe to do so.`;
+        const inlineChallengeDirective = `For each plan, before implementation:
+- perform a concise adversarial review of that specific plan,
+- list at least 2 concrete flaws/edge cases and how you'll address them,
+- then execute using those corrections,
+- do NOT start \`/challenge\` or any auxiliary workflow for this step.`;
+        const challengeBlock = includeInlineChallenge ? `\n\n${inlineChallengeDirective}` : '';
+        const planList = plans.map(plan => `- [${plan.topic}] Plan File: ${plan.absolutePath}`).join('\n');
+
+        if (role === 'planner') {
+            const plannerVerb = baseInstruction === 'enhance' ? 'enhance' : 'improve';
+            return `Please ${plannerVerb} the following ${plans.length} plans.
+
+${batchExecutionRules}
+
+For each plan:
+1. Read the plan file before editing.
+2. Add concrete implementation steps and referenced file paths where applicable.
+3. Capture dependency or conflict findings that materially affect execution.
+4. Update the Complexity Audit and recommendation so routing stays accurate.
+
+${focusDirective}
+
+PLANS TO PROCESS:
+${planList}`;
+        }
+
+        if (role === 'reviewer') {
+            return `Please review the following ${plans.length} plans.
+
+${batchExecutionRules}
+
+Review each plan independently and report concrete findings per plan.
+
+${focusDirective}
+
+PLANS TO PROCESS:
+${planList}`;
+        }
+
+        if (role === 'lead') {
+            return `Please execute the following ${plans.length} plans.
+
+${batchExecutionRules}${challengeBlock}
+
+${focusDirective}
+
+PLANS TO PROCESS:
+${planList}`;
+        }
+
+        if (role === 'coder') {
+            const intro = baseInstruction === 'low-complexity'
+                ? `Please execute the following ${plans.length} low-complexity plans from PLAN REVIEWED.`
+                : `Please execute the following ${plans.length} plans.`;
+            return this._withCoderAccuracyInstruction(`${intro}
+
+${batchExecutionRules}${challengeBlock}
+
+${focusDirective}
+
+PLANS TO PROCESS:
+${planList}`);
+        }
+
+        return `Please process the following ${plans.length} plans.
+
+${batchExecutionRules}
+
+${focusDirective}
+
+PLANS TO PROCESS:
+${planList}`;
     }
 
     /**
@@ -1371,121 +2077,195 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) { return; }
 
+        if (this._getAutobanRemainingSessionCapacity() <= 0) {
+            await this._stopAutobanForExhaustion(`Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`);
+            return;
+        }
+
         const role = this._autobanColumnToRole(sourceColumn);
         if (!role) { return; }
         const instruction = this._autobanColumnToInstruction(sourceColumn);
-
-        const log = this._getSessionLog(workspaceRoot);
-        const sheets = await log.getRunSheets();
-        const customAgents = await this.getCustomAgents(workspaceRoot);
-        let currentColumnBySession = new Map<string, string>();
-
-        // File-based fallback snapshot
-        let cardsInColumn: { sessionId: string; lastActivity: string; planFile?: string }[] = [];
-        for (const sheet of sheets) {
-            if (!sheet.sessionId || sheet.completed) { continue; }
-            const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
-            const column = deriveKanbanColumn(events, customAgents);
-            currentColumnBySession.set(sheet.sessionId, column);
-            if (column !== sourceColumn) { continue; }
-
-            const rawPlanFile = typeof sheet.planFile === 'string' ? sheet.planFile.trim() : '';
-            const resolvedPlanPath = rawPlanFile
-                ? (path.isAbsolute(rawPlanFile) ? rawPlanFile : path.resolve(workspaceRoot, rawPlanFile))
-                : '';
-            if (!resolvedPlanPath || !fs.existsSync(resolvedPlanPath)) {
-                console.warn(`[Autoban] Skipping session ${sheet.sessionId}: missing plan file (${rawPlanFile || 'none'})`);
-                continue;
-            }
-            let lastActivity = sheet.createdAt || '';
-            for (const e of events) {
-                if (e.timestamp && e.timestamp > lastActivity) {
-                    lastActivity = e.timestamp;
-                }
-            }
-            cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath });
-        }
-
-        try {
-            await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents, false);
-        } catch (e) {
-            console.warn('[Autoban] DB sync failed; continuing with file-based snapshot:', e);
-        }
-
-        // Release in-flight locks once a card leaves the column that originally dispatched it.
-        for (const [sessionId, dispatchedFromColumn] of this._activeDispatchSessions) {
-            if (currentColumnBySession.get(sessionId) !== dispatchedFromColumn) {
-                this._activeDispatchSessions.delete(sessionId);
-            }
-        }
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumn(workspaceRoot, sourceColumn);
+        this._releaseSettledDispatchLocks(currentColumnBySession);
 
         if (cardsInColumn.length === 0) { return; }
 
         // Sort oldest first, take up to batchSize, filtering out already-in-flight sessions
         cardsInColumn.sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''));
-        const batch = cardsInColumn
-            .filter(c => this._activeDispatchSessions.get(c.sessionId) !== sourceColumn)
-            .slice(0, batchSize);
-        if (batch.length === 0) { return; }
+        const eligibleCards = cardsInColumn
+            .filter(c => this._activeDispatchSessions.get(c.sessionId) !== sourceColumn);
 
-        // Dynamic Complexity Routing for PLAN REVIEWED → CODED
+        const dispatchWithAutobanTerminal = async (
+            targetRole: string,
+            requestedSessionIds: string[],
+            isFinalReviewerBatch: boolean = false
+        ): Promise<boolean> => {
+            const selection = await this._selectAutobanTerminal(targetRole, workspaceRoot);
+            if (!selection) {
+                console.warn(`[Autoban] No eligible terminal available for ${targetRole}; skipping ${requestedSessionIds.length} queued plan(s).`);
+                if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                    const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                        ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                        : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                    await this._stopAutobanForExhaustion(reason);
+                }
+                return false;
+            }
+
+            const dispatchCount = Math.min(requestedSessionIds.length, selection.remainingCapacity);
+            const sessionIds = requestedSessionIds.slice(0, dispatchCount);
+            if (sessionIds.length === 0) {
+                return false;
+            }
+
+            sessionIds.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
+            const ok = await this.handleKanbanBatchTrigger(
+                targetRole,
+                sessionIds,
+                instruction,
+                workspaceRoot,
+                isFinalReviewerBatch,
+                selection.terminalName
+            );
+            if (!ok) {
+                sessionIds.forEach(id => this._activeDispatchSessions.delete(id));
+                return false;
+            }
+
+            await this._recordAutobanDispatch(targetRole, selection.terminalName, sessionIds.length, selection.effectivePool);
+            await this._announceAutobanDispatch(sourceColumn, targetRole, sessionIds, workspaceRoot);
+
+            if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                    ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                    : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                await this._stopAutobanForExhaustion(reason);
+            }
+
+            return true;
+        };
+
+        // Complexity-aware routing for PLAN REVIEWED → Lead/Coder lanes
         if (sourceColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
-            const lowSessions: string[] = [];
-            const highSessions: string[] = [];
+            const complexityFilter = this._autobanState.complexityFilter;
+            const routingMode = this._autobanState.routingMode;
+            const selectedCards: Array<{ sessionId: string; complexity: 'Low' | 'High' }> = [];
 
-            for (const card of batch) {
+            for (const card of eligibleCards) {
+                let complexity: 'Low' | 'High' = 'High';
                 try {
                     const planFile = card.planFile;
                     if (planFile) {
-                        const complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, planFile);
-                        if (complexity === 'Low') {
-                            lowSessions.push(card.sessionId);
-                        } else {
-                            highSessions.push(card.sessionId);
-                        }
-                    } else {
-                        highSessions.push(card.sessionId);
+                        complexity = this._normalizeAutobanComplexity(
+                            await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, planFile)
+                        );
                     }
                 } catch {
-                    highSessions.push(card.sessionId);
+                    complexity = 'High';
+                }
+
+                if (!this._autobanMatchesComplexityFilter(complexity, complexityFilter)) {
+                    continue;
+                }
+
+                selectedCards.push({ sessionId: card.sessionId, complexity });
+                if (selectedCards.length >= batchSize) {
+                    break;
                 }
             }
 
-            console.log(`[Autoban] Complexity routing: ${lowSessions.length} → coder, ${highSessions.length} → lead`);
+            if (selectedCards.length === 0) { return; }
+
+            const routedSessions: Record<'coder' | 'lead', string[]> = {
+                coder: [],
+                lead: []
+            };
+            for (const card of selectedCards) {
+                const targetRole = this._autobanRoutePlanReviewedCard(card.complexity, routingMode);
+                routedSessions[targetRole].push(card.sessionId);
+            }
+
+            console.log(`[Autoban] PLAN REVIEWED routing (${complexityFilter}, ${routingMode}): ${routedSessions.coder.length} → coder, ${routedSessions.lead.length} → lead`);
 
             // Dispatch sequentially to avoid file and terminal lock contention
-            if (lowSessions.length > 0) {
-                lowSessions.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
-                const ok = await this.handleKanbanBatchTrigger('coder', lowSessions, instruction, workspaceRoot);
-                if (!ok) {
-                    lowSessions.forEach(id => this._activeDispatchSessions.delete(id));
-                } else {
-                    await this._announceAutobanDispatch(sourceColumn, 'coder', lowSessions, workspaceRoot);
-                }
+            if (routedSessions.coder.length > 0) {
+                await dispatchWithAutobanTerminal('coder', routedSessions.coder);
             }
-            if (highSessions.length > 0) {
-                highSessions.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
-                const ok = await this.handleKanbanBatchTrigger('lead', highSessions, instruction, workspaceRoot);
-                if (!ok) {
-                    highSessions.forEach(id => this._activeDispatchSessions.delete(id));
-                } else {
-                    await this._announceAutobanDispatch(sourceColumn, 'lead', highSessions, workspaceRoot);
-                }
+            if (routedSessions.lead.length > 0) {
+                await dispatchWithAutobanTerminal('lead', routedSessions.lead);
             }
             return;
         }
 
+        const selection = await this._selectAutobanTerminal(role, workspaceRoot);
+        if (!selection) {
+            console.warn(`[Autoban] ${sourceColumn}: all ${role} terminals are exhausted or unavailable.`);
+            if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                    ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                    : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                await this._stopAutobanForExhaustion(reason);
+            }
+            return;
+        }
+
+        const batch = eligibleCards.slice(0, Math.min(batchSize, selection.remainingCapacity));
+        if (batch.length === 0) { return; }
+
         // Default static routing for other columns
         const sessionIds = batch.map(c => c.sessionId);
-        batch.forEach(c => this._activeDispatchSessions.set(c.sessionId, sourceColumn));
+        const isFinalInBatch = role === 'reviewer' && eligibleCards.length === batch.length;
 
-        console.log(`[Autoban] ${sourceColumn}: dispatching ${sessionIds.length} card(s) to ${role}`);
-        const ok = await this.handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot);
+        console.log(`[Autoban] ${sourceColumn}: dispatching ${sessionIds.length} card(s) to ${role} via ${selection.terminalName}`);
+        await dispatchWithAutobanTerminal(role, sessionIds, isFinalInBatch);
+    }
+
+    public async handleBatchDispatchLow(workspaceRoot?: string): Promise<boolean> {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) { return false; }
+        if (!this._kanbanProvider) {
+            vscode.window.showErrorMessage('Kanban provider unavailable. Cannot evaluate plan complexity for batch dispatch.');
+            return false;
+        }
+
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const sourceColumn = 'PLAN REVIEWED';
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumn(resolvedWorkspaceRoot, sourceColumn);
+        this._releaseSettledDispatchLocks(currentColumnBySession);
+
+        const batchSize = Math.max(1, Number(this._autobanState.batchSize) || 1);
+        const orderedCandidates = [...cardsInColumn]
+            .sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''))
+            .filter(card => this._activeDispatchSessions.get(card.sessionId) !== sourceColumn);
+
+        const availableLowSessions: string[] = [];
+        for (const card of orderedCandidates) {
+            const complexity = await this._kanbanProvider.getComplexityFromPlan(resolvedWorkspaceRoot, card.planFile || '');
+            if (complexity === 'Low') {
+                availableLowSessions.push(card.sessionId);
+            }
+        }
+
+        if (availableLowSessions.length === 0) {
+            vscode.window.showInformationMessage('No LOW-complexity PLAN REVIEWED plans are currently eligible for batch dispatch.');
+            return false;
+        }
+
+        const sessionIds = availableLowSessions.slice(0, batchSize);
+        sessionIds.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
+        const ok = await this.handleKanbanBatchTrigger('coder', sessionIds, 'low-complexity', resolvedWorkspaceRoot);
         if (!ok) {
             sessionIds.forEach(id => this._activeDispatchSessions.delete(id));
-        } else {
-            await this._announceAutobanDispatch(sourceColumn, role, sessionIds, workspaceRoot);
+            return false;
         }
+
+        await this._kanbanProvider.refresh();
+
+        const summary = availableLowSessions.length > sessionIds.length
+            ? `Dispatched ${sessionIds.length} of ${availableLowSessions.length} eligible LOW-complexity plans to the coder (batch cap ${batchSize}).`
+            : `Dispatched ${sessionIds.length} LOW-complexity plan${sessionIds.length === 1 ? '' : 's'} to the coder.`;
+        vscode.window.showInformationMessage(summary);
+        return true;
     }
 
     public revealInitiatePlanModal() {
@@ -1791,11 +2571,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         // Sidebar Autoban configuration changed
                         if (data.state) {
                             const wasEnabled = this._autobanState.enabled;
-                            this._autobanState = { ...this._autobanState, ...data.state };
-                            // Persist to workspace state
-                            await this._context.workspaceState.update('autoban.state', this._autobanState);
+                            const { lastTickAt: _ignoredLastTickAt, ...incomingState } = data.state;
+                            this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, ...incomingState });
                             // Start/stop engine based on toggle
                             if (this._autobanState.enabled && !wasEnabled) {
+                                this._resetAutobanSessionCounters();
                                 this._startAutobanEngine();
                             } else if (!this._autobanState.enabled && wasEnabled) {
                                 this._stopAutobanEngine();
@@ -1803,8 +2583,38 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                                 // Rules changed while running — restart with new config
                                 this._startAutobanEngine();
                             }
+                            await this._persistAutobanState();
                             this._postAutobanState();
                         }
+                        break;
+                    }
+                    case 'updateAutobanMaxSends': {
+                        const requestedMax = Number(data.maxSendsPerTerminal);
+                        this._autobanState = normalizeAutobanConfigState({
+                            ...this._autobanState,
+                            maxSendsPerTerminal: Number.isFinite(requestedMax) ? requestedMax : this._autobanState.maxSendsPerTerminal
+                        });
+                        if (this._autobanState.enabled) {
+                            this._startAutobanEngine();
+                        }
+                        await this._persistAutobanState();
+                        this._postAutobanState();
+                        break;
+                    }
+                    case 'addAutobanTerminal': {
+                        if (typeof data.role === 'string') {
+                            await this._createAutobanTerminal(data.role, typeof data.name === 'string' ? data.name : undefined);
+                        }
+                        break;
+                    }
+                    case 'removeAutobanTerminal': {
+                        if (typeof data.role === 'string' && typeof data.terminalName === 'string') {
+                            await this._removeAutobanTerminal(data.role, data.terminalName);
+                        }
+                        break;
+                    }
+                    case 'resetAutobanPools': {
+                        await this._resetAutobanPools();
                         break;
                     }
                     case 'pipelineStart': {
@@ -3785,6 +4595,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         topic: string;
         planFileAbsolute: string;
         column: string;
+        isCompleted: boolean;
         complexity: 'Unknown' | 'Low' | 'High';
         dependencies: string[];
         planText: string;
@@ -3834,6 +4645,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             topic: String(sheet.topic || path.basename(planFileAbsolute)),
             planFileAbsolute,
             column,
+            isCompleted: sheet.completed === true,
             complexity,
             dependencies,
             planText,
@@ -4066,15 +4878,19 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     break;
                 }
                 case 'savePlanText': {
+                    const requestedTopic = String(request.topic || '').trim();
                     const content = typeof request.content === 'string' ? request.content : '';
+                    const nextContent = requestedTopic
+                        ? this._applyTopicToPlanContent(content, requestedTopic)
+                        : content;
                     const expectedMtimeMs = Number(request.expectedMtimeMs);
                     const currentStats = await fs.promises.stat(planFileAbsolute);
                     if (Number.isFinite(expectedMtimeMs) && Math.abs(currentStats.mtimeMs - expectedMtimeMs) > 1) {
                         return { ok: false, message: 'Plan file changed on disk since this ticket was opened. Reload the ticket and try again.' };
                     }
-                    await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
-                    const h1Match = content.match(/^#\s+(.+)$/m);
-                    const nextTopic = h1Match ? h1Match[1].trim() : String(sheet.topic || '').trim();
+                    await fs.promises.writeFile(planFileAbsolute, nextContent, 'utf8');
+                    const h1Match = nextContent.match(/^#\s+(.+)$/m);
+                    const nextTopic = requestedTopic || (h1Match ? h1Match[1].trim() : String(sheet.topic || '').trim());
                     let activePlanFileAbsolute = planFileAbsolute;
                     if (nextTopic) {
                         const renamed = await this._renameSessionPlanFile(workspaceRoot, sessionId, sheet, nextTopic);
@@ -4174,7 +4990,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
 
             const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
-            const effectiveColumn = column || deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgents);
+            const effectiveColumn = this._normalizeLegacyKanbanColumn(column || deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgents));
             const planUri = vscode.Uri.file(planPathAbsolute).toString();
             const markdownLink = `[${topic}](${planUri})`;
             let textToCopy = markdownLink;
@@ -4183,7 +4999,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 textToCopy = `Please improve the following plan. Execute the .agent/workflows/improve-plan.md workflow to perform a dependency check and adversarial review:\n\n${markdownLink}`;
             } else if (effectiveColumn === 'PLAN REVIEWED') {
                 textToCopy = `Please execute the following plan. Use the linked file as the single source of truth:\n\n${markdownLink}`;
-            } else if (effectiveColumn === 'CODED') {
+            } else if (this._isCompletedCodingColumn(effectiveColumn)) {
                 textToCopy = `The implementation for the following plan is complete. Please review the code against the plan requirements and identify any defects:\n\n${markdownLink}`;
             } else if (customAgent) {
                 textToCopy = `Please execute the following plan. Use the linked file as the single source of truth:\n\n${markdownLink}`;
@@ -4198,7 +5014,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 ? 'improve-plan'
                 : effectiveColumn === 'PLAN REVIEWED'
                     ? 'handoff'
-                    : effectiveColumn === 'CODED'
+                    : this._isCompletedCodingColumn(effectiveColumn)
                         ? 'reviewer-pass'
                         : undefined;
             if (workflowName) {
@@ -4714,9 +5530,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             // AP-3: Two distinct dialog texts — accurate language for each plan type
             const reviewSuffix = reviewFiles.length > 0 ? ` and ${reviewFiles.length} associated review file${reviewFiles.length > 1 ? 's' : ''}` : '';
-            const dialogText = brainSourcePath
+            const baseDialogText = brainSourcePath
                 ? `Delete this plan? This will permanently delete the brain file, plan mirror${reviewSuffix}. This cannot be undone.`
                 : `Delete this plan? The workspace plan file${reviewSuffix} will be removed.`;
+            const dialogText = this._activeDispatchSessions.has(sessionId)
+                ? `This plan is currently being processed. Delete anyway?\n\n${baseDialogText}`
+                : baseDialogText;
             const answer = await vscode.window.showWarningMessage(dialogText, { modal: true }, 'Delete');
             if (answer !== 'Delete') return false;
 
@@ -4761,6 +5580,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             await log.deleteRunSheet(sessionId);
             await log.deleteDispatchLog(sessionId);
+            this._activeDispatchSessions.delete(sessionId);
+
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (db) {
+                await db.deletePlan(sessionId);
+            }
 
             // Update plan registry status to deleted
             if (brainSourcePath) {
@@ -5213,6 +6038,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     public async handleTerminalClosed(terminal: vscode.Terminal) {
         try {
             const pid = await this._waitWithTimeout(terminal.processId, 1000, undefined);
+            let cleanedTerminalName: string | undefined;
             await this.updateState(async (state) => {
                 const terminals = state.terminals || {};
                 let terminalName: string | undefined;
@@ -5237,9 +6063,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
                 if (terminalName) {
                     delete state.terminals[terminalName];
+                    cleanedTerminalName = terminalName;
                     console.log(`[TaskViewerProvider] Auto-cleaned state for closed terminal: ${terminalName}`);
                 }
             });
+
+            await this._removeAutobanTerminalReferences(cleanedTerminalName || terminal.name);
 
             this._refreshTerminalStatuses();
         } catch (e) {
@@ -5518,11 +6347,51 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return true;
     }
 
-    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
-        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot);
+    private _buildReviewerBatchSummaryPayload(): string {
+        return 'BATCH COMPLETION NOTICE: The automated queue is now empty. Please provide a holistic summary of all changes made across the recent batch of plans. Ask the user to review these changes and explicitly offer to revert any regressions or unwanted modifications.';
     }
 
-    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
+    private async _dispatchReviewerBatchSummary(
+        workspaceRoot: string,
+        targetAgent: string,
+        context: { sessionId?: string; sessionIds?: string[] }
+    ): Promise<void> {
+        try {
+            await this._dispatchExecuteMessage(
+                workspaceRoot,
+                targetAgent,
+                this._buildReviewerBatchSummaryPayload(),
+                {
+                    phase_gate: {
+                        enforce_persona: 'reviewer',
+                        bypass_workflow_triggers: 'true'
+                    },
+                    batchCompletionSummary: true,
+                    ...context
+                },
+                'system'
+            );
+            await this._logEvent('dispatch', {
+                event: 'review_batch_summary_sent',
+                targetAgent,
+                ...context
+            }, undefined, workspaceRoot);
+        } catch (error) {
+            await this._logEvent('dispatch', {
+                event: 'review_batch_summary_failed',
+                targetAgent,
+                error: String(error),
+                ...context
+            }, undefined, workspaceRoot);
+            vscode.window.showWarningMessage('The final reviewer summary could not be queued. The review dispatch still succeeded.');
+        }
+    }
+
+    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
+        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot, isFinalInBatch);
+    }
+
+    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
         const dedupeKey = `${role}::${sessionId}::${instruction || ''}`;
         const acquireDispatchLock = () => {
             if (this._recentActionDispatches.has(dedupeKey)) return;
@@ -5680,8 +6549,14 @@ ${focusDirective}`),
                 }
 
                 // Dispatch succeeded — now update runsheet
-                await this._updateSessionRunSheet(sessionId, 'handoff', undefined, false, resolvedWorkspaceRoot);
-                await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole('team'));
+                const dispatchedRoles = dispatches.map(dispatch => dispatch.role);
+                const workflowName = dispatchedRoles.includes('lead') ? 'handoff-lead' : 'handoff';
+                await this._updateSessionRunSheet(sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
+                await this._updateKanbanColumnForSession(
+                    resolvedWorkspaceRoot,
+                    sessionId,
+                    this._codedColumnForDispatchRoles(dispatchedRoles)
+                );
 
                 const summary = dispatches.map(d => `${d.role} (${d.agent})`).join(', ');
                 vscode.window.showInformationMessage(`Team coding started: ${summary}`);
@@ -5739,11 +6614,13 @@ ${focusDirective}`),
         const strictReviewPrompts = teamStrictPrompts ?? vscode.workspace.getConfiguration('switchboard').get<boolean>('review.strictPrompts', false);
         const focusDirective = `FOCUS DIRECTIVE: Use the Plan File path above as the single source of truth. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
         const planAnchor = `Plan File: ${planFileAbsolute}`;
+        const { baseInstruction, includeInlineChallenge } = this._parsePromptInstruction(instruction);
         const inlineChallengeDirective = `Challenge step (inline, no workflow transitions):
 - Before implementation, perform a concise adversarial review of this plan.
 - List at least 2 concrete flaws/edge cases and how you'll address them.
 - Then execute using those corrections.
 - Do NOT start \`/challenge\` or any auxiliary workflow for this step.`;
+        const inlineChallengeBlock = includeInlineChallenge ? `\n\n${inlineChallengeDirective}` : '';
         const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
         const customAgent = findCustomAgentByRole(customAgents, role);
         const grumpyReviewPath = `.switchboard/reviews/grumpy_critique_${sessionId}.md`;
@@ -5752,7 +6629,7 @@ ${focusDirective}`),
         const reviewerSynthesisPath = `.switchboard/reviews/balanced_synthesis_${sessionId}.md`;
 
         if (role === 'planner') {
-            if (instruction === 'improve-plan' || instruction === 'enhance') {
+            if (baseInstruction === 'improve-plan' || baseInstruction === 'enhance') {
                 if (strictPlannerPrompts) {
                     messagePayload = `Please improve this plan. Break it down into distinct steps grouped by high complexity and low complexity. Add extra detail.
 Do not add net-new product requirements or scope.
@@ -5957,30 +6834,24 @@ ${focusDirective}`;
         } else if (role === 'lead') {
             messagePayload = `Please execute the plan.
 
-${planAnchor}
-
-${inlineChallengeDirective}
+${planAnchor}${inlineChallengeBlock}
 
 ${focusDirective}`;
             messageMetadata.phase_gate = { enforce_persona: 'lead' };
         } else if (role === 'coder') {
-            if (instruction === 'implement-all') {
+            if (baseInstruction === 'implement-all') {
                 messagePayload = this._withCoderAccuracyInstruction(`Please execute the ENTIRE plan. Do not stop for confirmation between steps.
 
-${planAnchor}
-
-${inlineChallengeDirective}
+${planAnchor}${inlineChallengeBlock}
 
 ${focusDirective}`);
-            } else if (instruction === 'low-complexity') {
+            } else if (baseInstruction === 'low-complexity') {
                 messagePayload = this._withCoderAccuracyInstruction(`Please execute the low complexity steps of the plan.
 
-${planAnchor}
-
-${inlineChallengeDirective}
+${planAnchor}${inlineChallengeBlock}
 
 ${focusDirective}`);
-            } else if (instruction === 'create-signal-file') {
+            } else if (baseInstruction === 'create-signal-file') {
                 messagePayload = this._withCoderAccuracyInstruction(`The first implementation phase has passed. As your next step, create a signal file to notify the Reviewer:
 
 Signal file path: .switchboard/inbox/Reviewer/${sessionId}.md
@@ -5990,9 +6861,7 @@ Create this file exactly as specified, then continue your work.`);
             } else {
                 messagePayload = this._withCoderAccuracyInstruction(`Please execute the plan.
 
-${planAnchor}
-
-${inlineChallengeDirective}
+${planAnchor}${inlineChallengeBlock}
 
 ${focusDirective}`);
             }
@@ -6007,8 +6876,12 @@ ${focusDirective}`);
         // 3a. Update Run Sheet (Treat tool call as workflow start)
         let workflowName: string | undefined;
 
-        if (role === 'planner' && instruction === 'enhance') {
-            workflowName = 'Enhanced plan';
+        const plannerWorkflowName = role === 'planner'
+            ? this._plannerWorkflowNameForInstruction(instruction)
+            : undefined;
+
+        if (plannerWorkflowName) {
+            workflowName = plannerWorkflowName;
         } else if (customAgent) {
             workflowName = `custom-agent:${role}`;
         } else {
@@ -6026,6 +6899,9 @@ ${focusDirective}`);
         // This prevents cards from advancing in the kanban when the terminal dispatch fails.
         try {
             await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, messagePayload, messageMetadata);
+            if (isFinalInBatch && role === 'reviewer') {
+                await this._dispatchReviewerBatchSummary(resolvedWorkspaceRoot, targetAgent, { sessionId });
+            }
 
             // Dispatch succeeded — now update runsheet
             if (workflowName) {
@@ -6330,12 +7206,12 @@ ${focusDirective}`);
 
             if (mode === 'review') {
                 this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                await this._handleTriggerAgentAction('planner', sessionId, 'enhance');
+                await this._handleTriggerAgentAction('planner', sessionId, 'improve-plan');
                 return;
             }
 
             if (mode === 'send') {
-                await this._handleTriggerAgentAction('planner', sessionId, 'enhance');
+                await this._handleTriggerAgentAction('planner', sessionId, 'improve-plan');
                 return;
             }
 

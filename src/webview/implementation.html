@@ -755,6 +755,19 @@
             color: var(--text-primary);
         }
 
+        .secondary-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            color: var(--vscode-disabledForeground, var(--text-secondary));
+            border-color: var(--border-color);
+            box-shadow: none;
+        }
+
+        .secondary-btn.dispatching {
+            opacity: 0.7;
+            cursor: wait;
+        }
+
         .secondary-btn.is-cyan {
             color: var(--accent-cyan);
             border-color: color-mix(in srgb, var(--accent-cyan) 40%, transparent);
@@ -1933,7 +1946,25 @@
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let lastCustomAgents = [];
         // Autoban engine state (received from backend)
-        let autobanState = { enabled: false, batchSize: 3, rules: {} };
+        let autobanState = {
+            enabled: false,
+            batchSize: 3,
+            complexityFilter: 'all',
+            routingMode: 'dynamic',
+            maxSendsPerTerminal: 10,
+            globalSessionCap: 200,
+            sessionSendCount: 0,
+            sendCounts: {},
+            terminalPools: {},
+            managedTerminalPools: {},
+            poolCursor: {},
+            rules: {
+                CREATED: { enabled: true, intervalMinutes: 10 },
+                'PLAN REVIEWED': { enabled: true, intervalMinutes: 20 },
+                'LEAD CODED': { enabled: true, intervalMinutes: 15 },
+                'CODER CODED': { enabled: true, intervalMinutes: 15 }
+            }
+        };
         let userInitiatedChange = false;
         let activeTab = 'agents';
         let recentActivityEvents = [];
@@ -1961,6 +1992,10 @@
 
         function isDispatchPending(role) {
             return pendingDispatches.has(getDispatchKey(role));
+        }
+
+        function getDispatchButtons(role) {
+            return Array.from(document.querySelectorAll(`[data-dispatch-role="${role}"]`));
         }
 
         function setActiveTab(tab, persist = true) {
@@ -2272,8 +2307,9 @@
                         renderAgentList();
                         break;
                     }
-                    const btn = document.querySelector(`.action-btn[data-role="${role}"]`);
-                    if (btn && document.body.contains(btn)) {
+                    const buttons = getDispatchButtons(role);
+                    buttons.forEach((btn) => {
+                        if (!document.body.contains(btn)) return;
                         btn.classList.remove('dispatching');
                         if (success) {
                             btn.classList.add('success');
@@ -2282,14 +2318,10 @@
                             btn.classList.add('error');
                             btn.innerText = 'FAILED';
                         }
-                        setTimeout(() => {
-                            if (document.body.contains(btn)) {
-                                // Recompute card state from source-of-truth (plan selection + readiness + pending state)
-                                // instead of blindly enabling the previous button instance.
-                                renderAgentList();
-                            }
-                        }, 2000);
-                    }
+                    });
+                    setTimeout(() => {
+                        renderAgentList();
+                    }, 2000);
                     break;
                 }
                 case 'autobanStateSync':
@@ -2528,6 +2560,7 @@
             btn.innerText = pendingDispatch ? 'DISPATCHING...' : actionLabel;
             btn.disabled = !isReady || pendingDispatch || !isPlanSelected();
             btn.dataset.role = roleId;
+            btn.dataset.dispatchRole = roleId;
             if (pendingDispatch) {
                 btn.classList.add('dispatching');
             }
@@ -2542,12 +2575,14 @@
                 const sessionId = runSheetSelect.value;
                 if (!sessionId) return;
                 markDispatchPending(roleId);
-                btn.disabled = true;
+                getDispatchButtons(roleId).forEach((dispatchBtn) => {
+                    dispatchBtn.disabled = true;
+                });
                 btn.classList.add('dispatching');
                 btn.innerText = 'DISPATCHING...';
 
                 if (roleId === 'planner') {
-                    vscode.postMessage({ type: 'triggerAgentAction', role: 'planner', sessionFile: sessionId, instruction: 'enhance' });
+                    vscode.postMessage({ type: 'triggerAgentAction', role: 'planner', sessionFile: sessionId, instruction: 'improve-plan' });
                 } else if (roleId === 'reviewer') {
                     vscode.postMessage({ type: 'triggerAgentAction', role: 'reviewer', sessionFile: sessionId });
                 } else if (roleId === 'coder') {
@@ -2584,6 +2619,27 @@
             }
 
             container.appendChild(btn);
+
+            if (roleId === 'lead' || roleId === 'coder') {
+                const challengeBtn = document.createElement('button');
+                challengeBtn.className = 'secondary-btn is-teal w-full';
+                challengeBtn.innerText = 'WITH CHALLENGE';
+                challengeBtn.dataset.dispatchRole = roleId;
+                challengeBtn.disabled = !isReady || pendingDispatch || !isPlanSelected();
+                challengeBtn.title = 'Send the same plan with an opt-in inline challenge step before implementation.';
+                challengeBtn.onclick = () => {
+                    const sessionId = runSheetSelect.value;
+                    if (!sessionId) return;
+                    markDispatchPending(roleId);
+                    getDispatchButtons(roleId).forEach((dispatchBtn) => {
+                        dispatchBtn.disabled = true;
+                    });
+                    challengeBtn.classList.add('dispatching');
+                    challengeBtn.innerText = 'DISPATCHING...';
+                    vscode.postMessage({ type: 'triggerAgentAction', role: roleId, sessionFile: sessionId, instruction: 'with-challenge' });
+                };
+                container.appendChild(challengeBtn);
+            }
 
             if (roleId === 'jules') {
                 container.appendChild(createJulesHistoryList());
@@ -2844,8 +2900,76 @@
         function createAutobanPanel() {
             const container = document.createElement('div');
             container.style.cssText = 'padding: 8px; display: flex; flex-direction: column; gap: 12px;';
+            const autobanSelectStyle = 'background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:10px; padding:2px 4px; border-radius:3px;';
+            const autobanNumberInputStyle = 'width:56px; background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:10px; padding:2px 4px; border-radius:3px; text-align:center;';
+            const chipStyle = 'display:inline-flex; align-items:center; gap:4px; border:1px solid var(--border-color); border-radius:999px; padding:1px 6px; font-size:9px; color:var(--text-secondary);';
+            const smallButtonStyle = 'background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:9px; padding:3px 6px; border-radius:4px; cursor:pointer;';
+            const autobanRoles = [
+                { role: 'planner', label: 'Planner' },
+                { role: 'coder', label: 'Coder' },
+                { role: 'lead', label: 'Lead Coder' },
+                { role: 'reviewer', label: 'Reviewer' }
+            ];
 
-            // Master Toggle
+            const getAutobanRuleIdSuffix = (column) => column.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            const columnTransitions = [
+                { column: 'CREATED', label: 'CREATED -> PLAN REVIEWED', defaultMin: 10, floorPerPlan: 3 },
+                { column: 'PLAN REVIEWED', label: 'PLAN REVIEWED -> LEAD/CODER', defaultMin: 20, floorPerPlan: 5 },
+                { column: 'LEAD CODED', label: 'LEAD CODED -> CODE REVIEWED', defaultMin: 15, floorPerPlan: 4 },
+                { column: 'CODER CODED', label: 'CODER CODED -> CODE REVIEWED', defaultMin: 15, floorPerPlan: 4 }
+            ];
+
+            const resolveTerminalLiveness = (terminalName) => {
+                const terminal = lastTerminals[terminalName];
+                if (!terminal) {
+                    return { terminal: null, alive: false };
+                }
+                const heartbeatThresholdMs = 60_000;
+                const lastSeenMs = Date.parse(terminal.lastSeen || '');
+                const heartbeatAlive = !isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < heartbeatThresholdMs;
+                const alive = terminal.alive !== undefined ? terminal.alive : (terminal._isLocal || heartbeatAlive);
+                return { terminal, alive: !!alive };
+            };
+
+            const getRolePoolEntries = (role) => {
+                const configuredPool = Array.isArray(autobanState.terminalPools?.[role]) ? autobanState.terminalPools[role].filter(Boolean) : [];
+                const managedPool = new Set(Array.isArray(autobanState.managedTerminalPools?.[role]) ? autobanState.managedTerminalPools[role] : []);
+                const liveRoleTerminals = Object.keys(lastTerminals)
+                    .filter(name => lastTerminals[name] && lastTerminals[name].role === role)
+                    .sort((a, b) => a.localeCompare(b));
+                const effectivePool = (configuredPool.length > 0 ? configuredPool : liveRoleTerminals).slice(0, 5);
+                return effectivePool.map(name => {
+                    const status = resolveTerminalLiveness(name);
+                    const count = Number(autobanState.sendCounts?.[name] || 0);
+                    return {
+                        name,
+                        count,
+                        max: Number(autobanState.maxSendsPerTerminal || 10),
+                        managed: managedPool.has(name),
+                        alive: status.alive,
+                        terminal: status.terminal,
+                        exhausted: count >= Number(autobanState.maxSendsPerTerminal || 10)
+                    };
+                });
+            };
+
+            function evaluateIntervalWarning(column, val, batchSz, floorPerPlan, inputEl, warnEl) {
+                const floor = batchSz * floorPerPlan;
+                const ratio = val / floor;
+                if (ratio < 0.5) {
+                    inputEl.style.borderColor = 'var(--accent-red, #e55)';
+                    warnEl.textContent = '\u26A0 ' + floor + 'm recommended for batch ' + batchSz + ' - plans may not finish in time';
+                    warnEl.style.color = 'var(--accent-red, #e55)';
+                } else if (ratio < 1.0) {
+                    inputEl.style.borderColor = 'var(--accent-orange, #e90)';
+                    warnEl.textContent = 'Low-complexity plans only - recommended ' + floor + 'm for batch ' + batchSz;
+                    warnEl.style.color = 'var(--accent-orange, #e90)';
+                } else {
+                    inputEl.style.borderColor = '';
+                    warnEl.textContent = '';
+                }
+            }
+
             const toggleRow = document.createElement('div');
             toggleRow.className = 'agent-row';
             toggleRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:8px;';
@@ -2869,7 +2993,6 @@
             toggleRow.appendChild(toggleSwitch);
             container.appendChild(toggleRow);
 
-            // Global Batch Size
             const batchRow = document.createElement('div');
             batchRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--font-mono); font-size:10px; color:var(--text-secondary);';
 
@@ -2877,7 +3000,7 @@
             batchLabel.textContent = 'MAX BATCH SIZE:';
 
             const batchSelect = document.createElement('select');
-            batchSelect.style.cssText = 'background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:10px; padding:2px 4px; border-radius:3px;';
+            batchSelect.style.cssText = autobanSelectStyle;
             [1, 3, 5].forEach(val => {
                 const opt = document.createElement('option');
                 opt.value = String(val);
@@ -2887,15 +3010,13 @@
             });
             batchSelect.addEventListener('change', () => {
                 autobanState.batchSize = parseInt(batchSelect.value, 10) || 3;
-                // Re-evaluate all interval warnings with new batch size
                 columnTransitions.forEach(({ column, floorPerPlan, defaultMin }) => {
                     const idSuffix = getAutobanRuleIdSuffix(column);
                     const input = document.getElementById('interval-input-' + idSuffix);
                     const label = document.getElementById('warn-label-' + idSuffix);
                     const currentValue = autobanState.rules[column]?.intervalMinutes ?? defaultMin;
                     if (input && label) {
-                        evaluateIntervalWarning(column, currentValue,
-                            autobanState.batchSize, floorPerPlan, input, label);
+                        evaluateIntervalWarning(column, currentValue, autobanState.batchSize, floorPerPlan, input, label);
                     }
                 });
                 emitAutobanState();
@@ -2905,41 +3026,100 @@
             batchRow.appendChild(batchSelect);
             container.appendChild(batchRow);
 
-            // Separator
+            const complexityRow = document.createElement('div');
+            complexityRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--font-mono); font-size:10px; color:var(--text-secondary);';
+
+            const complexityLabel = document.createElement('span');
+            complexityLabel.textContent = 'COMPLEXITY:';
+
+            const complexitySelect = document.createElement('select');
+            complexitySelect.style.cssText = autobanSelectStyle;
+            [
+                { value: 'all', label: 'All' },
+                { value: 'low_only', label: 'Low Only' },
+                { value: 'high_only', label: 'High Only' }
+            ].forEach(({ value, label }) => {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = label;
+                if (value === autobanState.complexityFilter) opt.selected = true;
+                complexitySelect.appendChild(opt);
+            });
+            complexitySelect.title = 'Unknown complexity is treated as High. Low Only skips unknown plans.';
+            complexitySelect.addEventListener('change', () => {
+                autobanState.complexityFilter = complexitySelect.value || 'all';
+                emitAutobanState();
+            });
+
+            complexityRow.appendChild(complexityLabel);
+            complexityRow.appendChild(complexitySelect);
+            container.appendChild(complexityRow);
+
+            const routingRow = document.createElement('div');
+            routingRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--font-mono); font-size:10px; color:var(--text-secondary);';
+
+            const routingLabel = document.createElement('span');
+            routingLabel.textContent = 'ROUTING:';
+
+            const routingSelect = document.createElement('select');
+            routingSelect.style.cssText = autobanSelectStyle;
+            [
+                { value: 'dynamic', label: 'Dynamic' },
+                { value: 'all_coder', label: 'All -> Coder' },
+                { value: 'all_lead', label: 'All -> Lead' }
+            ].forEach(({ value, label }) => {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = label;
+                if (value === autobanState.routingMode) opt.selected = true;
+                routingSelect.appendChild(opt);
+            });
+            routingSelect.addEventListener('change', () => {
+                autobanState.routingMode = routingSelect.value || 'dynamic';
+                emitAutobanState();
+            });
+
+            routingRow.appendChild(routingLabel);
+            routingRow.appendChild(routingSelect);
+            container.appendChild(routingRow);
+
+            const maxSendsRow = document.createElement('div');
+            maxSendsRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--font-mono); font-size:10px; color:var(--text-secondary);';
+
+            const maxSendsLabel = document.createElement('span');
+            maxSendsLabel.textContent = 'MAX SENDS / TERMINAL:';
+
+            const maxSendsInput = document.createElement('input');
+            maxSendsInput.type = 'number';
+            maxSendsInput.min = '1';
+            maxSendsInput.max = '100';
+            maxSendsInput.value = String(Number(autobanState.maxSendsPerTerminal || 10));
+            maxSendsInput.style.cssText = autobanNumberInputStyle;
+            maxSendsInput.addEventListener('change', () => {
+                const value = Math.max(1, Math.min(100, parseInt(maxSendsInput.value, 10) || 10));
+                autobanState.maxSendsPerTerminal = value;
+                maxSendsInput.value = String(value);
+                vscode.postMessage({ type: 'updateAutobanMaxSends', maxSendsPerTerminal: value });
+                renderAgentList();
+            });
+
+            const sessionCapBadge = document.createElement('span');
+            sessionCapBadge.style.cssText = chipStyle;
+            sessionCapBadge.textContent = 'SESSION ' + Number(autobanState.sessionSendCount || 0) + '/' + Number(autobanState.globalSessionCap || 200);
+
+            maxSendsRow.appendChild(maxSendsLabel);
+            maxSendsRow.appendChild(maxSendsInput);
+            maxSendsRow.appendChild(sessionCapBadge);
+            container.appendChild(maxSendsRow);
+
             const sep = document.createElement('div');
             sep.style.cssText = 'border-top:1px solid var(--border-color); margin:4px 0;';
             container.appendChild(sep);
 
-            // Column rules header
             const rulesHeader = document.createElement('div');
             rulesHeader.style.cssText = 'padding:0 8px; font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); letter-spacing:1.5px;';
             rulesHeader.textContent = 'COLUMN RULES';
             container.appendChild(rulesHeader);
-
-            // Column interval rules
-            const columnTransitions = [
-                { column: 'CREATED', label: 'CREATED → PLAN REVIEWED', defaultMin: 10, floorPerPlan: 3 },
-                { column: 'PLAN REVIEWED', label: 'PLAN REVIEWED → CODED', defaultMin: 20, floorPerPlan: 5 },
-                { column: 'CODED', label: 'CODED → CODE REVIEWED', defaultMin: 15, floorPerPlan: 4 }
-            ];
-            const getAutobanRuleIdSuffix = (column) => column.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-
-            function evaluateIntervalWarning(column, val, batchSz, floorPerPlan, inputEl, warnEl) {
-                const floor = batchSz * floorPerPlan;
-                const ratio = val / floor;
-                if (ratio < 0.5) {
-                    inputEl.style.borderColor = 'var(--accent-red, #e55)';
-                    warnEl.textContent = '\u26A0 ' + floor + 'm recommended for batch ' + batchSz + ' \u2014 plans may not finish in time';
-                    warnEl.style.color = 'var(--accent-red, #e55)';
-                } else if (ratio < 1.0) {
-                    inputEl.style.borderColor = 'var(--accent-orange, #e90)';
-                    warnEl.textContent = 'Low-complexity plans only \u2014 recommended ' + floor + 'm for batch ' + batchSz;
-                    warnEl.style.color = 'var(--accent-orange, #e90)';
-                } else {
-                    inputEl.style.borderColor = '';
-                    warnEl.textContent = '';
-                }
-            }
 
             columnTransitions.forEach(({ column, label, defaultMin, floorPerPlan }) => {
                 const idSuffix = getAutobanRuleIdSuffix(column);
@@ -3000,16 +3180,161 @@
                 ruleRow.appendChild(minLbl);
                 container.appendChild(ruleRow);
                 container.appendChild(warnLabel);
-
-                // Initial warning evaluation
                 evaluateIntervalWarning(column, rule.intervalMinutes, autobanState.batchSize, floorPerPlan, minInput, warnLabel);
             });
+
+            const poolSep = document.createElement('div');
+            poolSep.style.cssText = 'border-top:1px solid var(--border-color); margin:4px 0;';
+            container.appendChild(poolSep);
+
+            const poolsHeader = document.createElement('div');
+            poolsHeader.style.cssText = 'padding:0 8px; font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); letter-spacing:1.5px;';
+            poolsHeader.textContent = 'TERMINAL POOLS';
+            container.appendChild(poolsHeader);
+
+            const poolsHelp = document.createElement('div');
+            poolsHelp.style.cssText = 'padding:0 8px; font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); line-height:1.4;';
+            poolsHelp.textContent = 'Autoban rotates across the stored pool for each role. Backup terminals created here are kept until you remove or reset them.';
+            container.appendChild(poolsHelp);
+
+            autobanRoles.forEach(({ role, label }) => {
+                const poolEntries = getRolePoolEntries(role);
+                const roleBlock = document.createElement('div');
+                roleBlock.style.cssText = 'display:flex; flex-direction:column; gap:6px; padding:6px 8px; border:1px solid var(--border-color); border-radius:6px; background:var(--panel-bg2);';
+
+                const roleHeader = document.createElement('div');
+                roleHeader.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px;';
+
+                const roleTitleWrap = document.createElement('div');
+                roleTitleWrap.style.cssText = 'display:flex; align-items:center; gap:8px; min-width:0;';
+
+                const roleTitle = document.createElement('span');
+                roleTitle.style.cssText = 'font-family:var(--font-mono); font-size:10px; color:var(--text-primary);';
+                roleTitle.textContent = label;
+
+                const roleCapacity = document.createElement('span');
+                roleCapacity.style.cssText = chipStyle;
+                roleCapacity.textContent = 'POOL ' + poolEntries.length + '/5';
+
+                roleTitleWrap.appendChild(roleTitle);
+                roleTitleWrap.appendChild(roleCapacity);
+
+                const addButton = document.createElement('button');
+                addButton.className = 'action-btn';
+                addButton.style.cssText = 'padding:3px 8px; font-size:9px;';
+                addButton.textContent = 'ADD TERMINAL';
+                addButton.disabled = poolEntries.length >= 5;
+                addButton.addEventListener('click', () => {
+                    const requestedName = window.prompt('Name for new ' + label + ' terminal', label + ' Backup');
+                    if (requestedName === null) return;
+                    const cleaned = requestedName.trim();
+                    vscode.postMessage({ type: 'addAutobanTerminal', role, name: cleaned });
+                });
+
+                roleHeader.appendChild(roleTitleWrap);
+                roleHeader.appendChild(addButton);
+                roleBlock.appendChild(roleHeader);
+
+                if (poolEntries.length === 0) {
+                    const emptyState = document.createElement('div');
+                    emptyState.style.cssText = 'font-family:var(--font-mono); font-size:9px; color:var(--text-secondary);';
+                    emptyState.textContent = 'No live terminals available for this role yet.';
+                    roleBlock.appendChild(emptyState);
+                } else {
+                    poolEntries.forEach(entry => {
+                        const terminalRow = document.createElement('div');
+                        terminalRow.style.cssText = 'display:flex; align-items:center; gap:6px; justify-content:space-between; flex-wrap:wrap;';
+
+                        const left = document.createElement('div');
+                        left.style.cssText = 'display:flex; align-items:center; gap:6px; min-width:0; flex-wrap:wrap;';
+
+                        const nameSpan = document.createElement('span');
+                        nameSpan.style.cssText = 'font-family:var(--font-mono); font-size:10px; color:var(--text-primary);';
+                        nameSpan.textContent = entry.name;
+
+                        const usageBadge = document.createElement('span');
+                        usageBadge.style.cssText = chipStyle + (entry.exhausted ? ' border-color:var(--accent-red, #e55); color:var(--accent-red, #e55);' : '');
+                        usageBadge.textContent = entry.count + '/' + entry.max;
+
+                        const statusBadge = document.createElement('span');
+                        statusBadge.style.cssText = chipStyle + (entry.alive ? '' : ' border-color:var(--accent-red, #e55); color:var(--accent-red, #e55);');
+                        statusBadge.textContent = entry.alive ? (entry.exhausted ? 'EXHAUSTED' : 'READY') : 'OFFLINE';
+
+                        const kindBadge = document.createElement('span');
+                        kindBadge.style.cssText = chipStyle;
+                        kindBadge.textContent = entry.managed ? 'BACKUP' : 'PRIMARY';
+
+                        left.appendChild(nameSpan);
+                        left.appendChild(usageBadge);
+                        left.appendChild(statusBadge);
+                        left.appendChild(kindBadge);
+
+                        const right = document.createElement('div');
+                        right.style.cssText = 'display:flex; align-items:center; gap:6px;';
+
+                        if (entry.terminal) {
+                            const focusButton = document.createElement('button');
+                            focusButton.style.cssText = smallButtonStyle;
+                            focusButton.textContent = 'FOCUS';
+                            focusButton.addEventListener('click', () => {
+                                vscode.postMessage({ type: 'focusTerminal', terminalName: entry.name });
+                            });
+                            right.appendChild(focusButton);
+                        }
+
+                        if (entry.managed) {
+                            const removeButton = document.createElement('button');
+                            removeButton.style.cssText = smallButtonStyle + ' color:var(--accent-red, #e55);';
+                            removeButton.textContent = 'REMOVE';
+                            removeButton.addEventListener('click', () => {
+                                vscode.postMessage({ type: 'removeAutobanTerminal', role, terminalName: entry.name });
+                            });
+                            right.appendChild(removeButton);
+                        }
+
+                        terminalRow.appendChild(left);
+                        terminalRow.appendChild(right);
+                        roleBlock.appendChild(terminalRow);
+                    });
+                }
+
+                container.appendChild(roleBlock);
+            });
+
+            const resetRow = document.createElement('div');
+            resetRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 8px;';
+
+            const resetHint = document.createElement('span');
+            resetHint.style.cssText = 'font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); line-height:1.4;';
+            resetHint.textContent = 'Clear sends, restart timers, and remove autoban-created backup terminals.';
+
+            const resetButton = document.createElement('button');
+            resetButton.className = 'action-btn';
+            resetButton.style.cssText = 'padding:4px 8px; font-size:9px; color:var(--accent-red, #e55);';
+            resetButton.textContent = 'CLEAR & RESET';
+            resetButton.addEventListener('click', () => {
+                if (!window.confirm('Clear autoban send counters and remove autoban backup terminals?')) return;
+                vscode.postMessage({ type: 'resetAutobanPools' });
+            });
+
+            resetRow.appendChild(resetHint);
+            resetRow.appendChild(resetButton);
+            container.appendChild(resetRow);
 
             return container;
         }
 
         function emitAutobanState() {
-            vscode.postMessage({ type: 'updateAutobanState', state: autobanState });
+            vscode.postMessage({
+                type: 'updateAutobanState',
+                state: {
+                    enabled: autobanState.enabled,
+                    batchSize: autobanState.batchSize,
+                    complexityFilter: autobanState.complexityFilter,
+                    routingMode: autobanState.routingMode,
+                    rules: autobanState.rules
+                }
+            });
         }
 
         function createAnalystRow() {

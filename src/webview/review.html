@@ -65,11 +65,22 @@
             word-break: break-word;
         }
 
+        .title-input {
+            margin-top: 2px;
+            font-size: 18px;
+            font-weight: 600;
+            padding: 8px 10px;
+        }
+
         .subtitle {
             font-size: 12px;
             color: var(--muted);
             margin-top: 6px;
             word-break: break-all;
+        }
+
+        .hidden {
+            display: none !important;
         }
 
         .header-actions {
@@ -441,6 +452,7 @@
         <div class="header-copy">
             <div class="eyebrow">Ticket View</div>
             <h1 class="title" id="header-title">Plan Ticket</h1>
+            <input id="header-title-input" class="title-input hidden" type="text" />
             <div class="subtitle" id="header-path"></div>
         </div>
         <div class="header-actions">
@@ -529,6 +541,7 @@
         const vscode = acquireVsCodeApi();
 
         const headerTitleEl = document.getElementById('header-title');
+        const headerTitleInputEl = document.getElementById('header-title-input');
         const headerPathEl = document.getElementById('header-path');
         const columnSelectEl = document.getElementById('column-select');
         const complexitySelectEl = document.getElementById('complexity-select');
@@ -561,6 +574,7 @@
             planFileAbsolute: '',
             topic: '',
             column: '',
+            isCompleted: false,
             complexity: 'Unknown',
             dependencies: [],
             planText: '',
@@ -593,11 +607,15 @@
 
         function applyMode() {
             if (state.isPreview) {
+                headerTitleEl.classList.remove('hidden');
+                headerTitleInputEl.classList.add('hidden');
                 planEditorEl.classList.add('hidden');
                 markdownContentEl.classList.add('active');
                 togglePreviewBtn.textContent = 'Edit Plan';
                 editorTitleEl.textContent = 'Review plan - select text and submit comment to send to planner agent';
             } else {
+                headerTitleEl.classList.add('hidden');
+                headerTitleInputEl.classList.remove('hidden');
                 planEditorEl.classList.remove('hidden');
                 markdownContentEl.classList.remove('active');
                 togglePreviewBtn.textContent = 'Review Plan';
@@ -618,12 +636,14 @@
         function updateActionButtons() {
             const disabled = state.pendingCount > 0;
             const hasSession = !!state.sessionId;
+            const isCompleted = state.isCompleted === true;
             const isFinalColumn = state.column === 'CODE REVIEWED';
 
-            sendToAgentButtonEl.disabled = !hasSession || disabled || isFinalColumn;
-            sendToAgentButtonEl.textContent = isFinalColumn ? 'Already Reviewed' : 'Send to Agent';
-            completePlanButtonEl.disabled = !hasSession || disabled;
-            deletePlanButtonEl.disabled = !hasSession || disabled;
+            sendToAgentButtonEl.disabled = !hasSession || disabled || isCompleted || isFinalColumn;
+            sendToAgentButtonEl.textContent = isCompleted ? 'Completed' : (isFinalColumn ? 'Already Reviewed' : 'Send to Agent');
+            completePlanButtonEl.disabled = !hasSession || disabled || isCompleted;
+            completePlanButtonEl.textContent = isCompleted ? 'Completed' : 'Complete';
+            deletePlanButtonEl.disabled = !hasSession || disabled || isCompleted;
         }
 
         function setBusy(isBusy) {
@@ -632,6 +652,7 @@
             const editable = !disabled && state.canEditMetadata;
             savePlanButtonEl.disabled = disabled;
             reloadTicketButtonEl.disabled = disabled;
+            headerTitleInputEl.disabled = !editable;
             columnSelectEl.disabled = !editable;
             complexitySelectEl.disabled = !editable;
             openDepsModalButtonEl.disabled = !editable;
@@ -798,6 +819,7 @@
             state.planFileAbsolute = message.planFileAbsolute || '';
             state.topic = message.topic || '';
             state.column = message.column || '';
+            state.isCompleted = message.isCompleted === true;
             state.complexity = message.complexity || 'Unknown';
             state.dependencies = Array.isArray(message.dependencies) ? message.dependencies.slice() : [];
             state.planText = message.planText || '';
@@ -812,6 +834,7 @@
 
             headerTitleEl.textContent = state.topic || 'Ticket';
             headerPathEl.textContent = state.planFileAbsolute;
+            headerTitleInputEl.value = state.topic;
             renderColumns(Array.isArray(message.columns) ? message.columns : [], state.column);
             complexitySelectEl.value = state.complexity;
             updateDependenciesSummary();
@@ -838,11 +861,13 @@
         }
 
         function savePlanText() {
+            const nextTopic = headerTitleInputEl.value.trim();
             setBusy(true);
             setStatus('Saving plan text...');
             vscode.postMessage({
                 type: 'savePlanText',
                 sessionId: state.sessionId,
+                topic: nextTopic,
                 content: planEditorEl.value,
                 expectedMtimeMs: state.planMtimeMs
             });
@@ -892,6 +917,10 @@
         togglePreviewBtn.addEventListener('click', () => {
             state.isPreview = !state.isPreview;
             applyMode();
+        });
+
+        headerTitleInputEl.addEventListener('input', () => {
+            headerTitleEl.textContent = headerTitleInputEl.value.trim() || 'Ticket';
         });
 
         savePlanButtonEl.addEventListener('click', () => {

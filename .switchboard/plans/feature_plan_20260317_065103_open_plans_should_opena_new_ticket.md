@@ -123,3 +123,33 @@ Modes: `'send'` (planner dispatch), `'local'` (save only), `'review'` (airlock r
 
 ## Agent Recommendation
 Send it to the **Coder agent** — the button/mode changes are routine. The file rename is moderate but well-scoped to one save handler.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation correctly changed the non-airlock modal button to `OPEN TICKET`, routed that flow through the new `ticket` mode, opened the review panel with `initialMode: 'edit'`, and included a safe rename helper that updates the run sheet, plan registry, and Kanban database when the backing file name changes.
+- One material defect remained: the ticket view did not expose an editable title field, so the plan’s required workflow of changing the ticket title and saving to rename the file was only partially implemented. Rename-on-save worked if the markdown `#` heading changed manually in the body, but not through an explicit ticket-title edit in the UI.
+
+### Fixed Items
+- Added an editable `Title` field to the review ticket metadata area.
+- Updated the save flow to submit the edited ticket title with the `savePlanText` request.
+- Updated the backend save path to stamp the requested ticket title into the markdown heading before writing and before triggering rename-on-save, keeping file content and filename aligned.
+- Added a focused regression test covering the ticket-title edit/save wiring.
+
+### Files Changed During Reviewer Pass
+- `src/webview/review.html`
+- `src/services/TaskViewerProvider.ts`
+- `src/test/review-ticket-title-regression.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `node src\test\review-ticket-title-regression.test.js` ✅ Passed.
+- `npm run lint` was not rerun for this pass because repository linting remains blocked by the pre-existing ESLint 9 configuration issue (`eslint.config.*` missing).
+
+### Remaining Risks
+- The focused regression test validates the source wiring for title edits and save behavior, but there is still no browser-level end-to-end test covering: open new ticket → edit title → save → confirm renamed file in the live UI.
+- The ticket title and markdown H1 are now kept aligned on save, which is correct for this workflow, but it means users cannot intentionally keep a different visible ticket title from the document H1.
+
+### Final Reviewer Assessment
+- Ready. The open-ticket flow now satisfies the plan requirements, including editable new-ticket entry in edit mode and title-driven rename-on-save behavior.

@@ -14,7 +14,7 @@ export interface PipelineState {
 }
 
 type GetRunSheetsCallback = () => Promise<any[]>;
-type DispatchCallback = (role: string, sessionId: string, instruction?: string) => Promise<void>;
+type DispatchCallback = (role: string, sessionId: string, instruction?: string, isFinalInBatch?: boolean) => Promise<void>;
 
 function getNextStage(sheet: any): { role: string; instruction?: string; label: string } | 'done' {
     const events = Array.isArray(sheet.events) ? sheet.events : [];
@@ -24,8 +24,8 @@ function getNextStage(sheet: any): { role: string; instruction?: string; label: 
         : undefined;
 
     if (!lastWorkflow) {
-        return { role: 'planner', instruction: 'enhance', label: 'Planner' };
-    } else if (lastWorkflow === 'sidebar-review' || lastWorkflow === 'Enhanced plan') {
+        return { role: 'planner', instruction: 'improve-plan', label: 'Planner' };
+    } else if (lastWorkflow === 'sidebar-review' || lastWorkflow === 'Enhanced plan' || lastWorkflow === 'Improved plan') {
         return { role: 'lead', label: 'Lead Coder' };
     } else if (lastWorkflow === 'handoff-lead' || lastWorkflow === 'handoff') {
         return { role: 'reviewer', label: 'Reviewer' };
@@ -33,7 +33,7 @@ function getNextStage(sheet: any): { role: string; instruction?: string; label: 
         return 'done';
     } else {
         // Unknown last workflow — fall back to planner
-        return { role: 'planner', instruction: 'enhance', label: 'Planner' };
+        return { role: 'planner', instruction: 'improve-plan', label: 'Planner' };
     }
 }
 
@@ -210,7 +210,7 @@ export class PipelineOrchestrator {
             const planTitle: string = sheet.topic || sheet.planName || sheet.title || sessionId;
 
             if (this._dispatchCallback) {
-                await this._dispatchCallback(stage.role, sessionId, stage.instruction);
+                await this._dispatchCallback(stage.role, sessionId, stage.instruction, pending.length === 1);
             }
 
             this._lastAction = { planTitle, role: stage.label, timestamp: new Date().toISOString() };

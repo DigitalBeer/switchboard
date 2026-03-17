@@ -30,7 +30,8 @@ const BUILT_IN_AGENT_LABELS: Record<BuiltInAgentRole, string> = {
 const DEFAULT_KANBAN_COLUMNS: KanbanColumnDefinition[] = [
     { id: 'CREATED', label: 'New', order: 0, kind: 'created', autobanEnabled: true },
     { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', order: 100, kind: 'review', autobanEnabled: true },
-    { id: 'CODED', label: 'Coded', role: 'coder', order: 200, kind: 'coded', autobanEnabled: true },
+    { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', order: 190, kind: 'coded', autobanEnabled: true },
+    { id: 'CODER CODED', label: 'Coder', role: 'coder', order: 200, kind: 'coded', autobanEnabled: true },
     { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', order: 300, kind: 'reviewed', autobanEnabled: false },
 ];
 

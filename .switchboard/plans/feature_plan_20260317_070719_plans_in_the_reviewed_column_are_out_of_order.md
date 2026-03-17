@@ -93,3 +93,30 @@ The autoban engine sorts oldest-first for dispatch priority. The UI should match
 
 ## Agent Recommendation
 Send it to the **Coder agent** — this is a 1-2 line fix. Trivially routine.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation already added the planned client-side bucket sort in `src/webview/kanban.html` and the DB-level `ORDER BY updated_at ASC` in `src/services/KanbanDatabase.ts`.
+- One material defect remained: the Kanban webview's `buildBoardSignature()` function did not include `lastActivity`, even though render ordering depends on `lastActivity`. That meant timestamp-only changes could fail to trigger a rerender, leaving the visually displayed card order stale even after the underlying sort keys changed.
+
+### Fixed Items
+- Updated `buildBoardSignature()` in `src/webview/kanban.html` to include `lastActivity` so the board rerenders when timestamp changes affect sort order.
+- Added a focused regression test to cover both oldest-first ordering and the rerender-signature behavior for `lastActivity` changes.
+
+### Files Changed During Reviewer Pass
+- `src/webview/kanban.html`
+- `src/test/kanban-ordering-regression.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `node src\test\kanban-ordering-regression.test.js` ✅ Passed.
+- `npm run lint` was not rerun for this pass because repository linting remains blocked by the pre-existing ESLint 9 configuration issue (`eslint.config.*` missing).
+
+### Remaining Risks
+- The focused regression test covers the ordering logic and rerender trigger, but there is still no browser-level UI test that exercises the live Kanban webview drag/drop and refresh cycle end to end.
+- Repository linting remains unavailable until the ESLint configuration is migrated or restored for ESLint 9.
+
+### Final Reviewer Assessment
+- Ready. The reviewed-column ordering implementation now satisfies the plan requirements, and the stale-rerender defect tied to `lastActivity` ordering has been corrected and verified.

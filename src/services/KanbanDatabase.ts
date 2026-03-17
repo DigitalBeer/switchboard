@@ -229,6 +229,13 @@ export class KanbanDatabase {
         );
     }
 
+    public async deletePlan(sessionId: string): Promise<boolean> {
+        return this._persistedUpdate(
+            'DELETE FROM plans WHERE session_id = ?',
+            [sessionId]
+        );
+    }
+
     public async getBoard(workspaceId: string): Promise<KanbanPlanRecord[]> {
         if (!(await this.ensureReady()) || !this._db) return [];
         const stmt = this._db.prepare(

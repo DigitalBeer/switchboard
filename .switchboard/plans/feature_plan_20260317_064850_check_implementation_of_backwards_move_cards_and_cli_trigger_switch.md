@@ -136,3 +136,59 @@ The webview splits by column index — dragging to the first column (CREATED) is
 
 ## Agent Recommendation
 Send it to the **Coder agent** — two small bug fixes and one verification step. All routine.
+
+## Reviewer Pass Update
+
+### Review Outcome
+- Reviewer pass completed in-place against the implemented code.
+- The implementation already cleanly handles the originally suspected CLI-trigger integration issue: when CLI triggers are OFF, forward drag moves now use the silent `moveCardForward` path, and the backend `triggerAction` / `triggerBatchAction` handlers also defensively no-op when `_cliTriggersEnabled` is false. Backward moves already update both the runsheet and the Kanban database.
+- One material defect remained in the reset derivation layer: `handleKanbanBackwardMove()` emits `reset-to-*` workflow markers for any earlier target column, but `kanbanColumnDerivation.js` only understood resets to `CREATED`, `PLAN REVIEWED`, and `CODED`. That meant backward moves into `CODE REVIEWED` or into a custom Kanban column could snap back to the wrong derived column after a refresh.
+
+### Fixed Items
+- Generalized reset-event derivation so `reset-to-code-reviewed` correctly resolves to `CODE REVIEWED`.
+- Added support for `reset-to-custom_agent_*` so backward moves into custom Kanban columns survive a board refresh.
+- Added a focused regression test covering both the built-in `CODE REVIEWED` reset case and a custom-agent reset case.
+
+### Files Changed During Reviewer Pass
+- `src/services/kanbanColumnDerivation.js`
+- `src/test/kanban-backward-reset-regression.test.js`
+
+### Validation Results
+- `npm run compile` ✅ Passed.
+- `node src\test\kanban-backward-reset-regression.test.js` ✅ Passed.
+- Review inspection confirmed:
+  - CLI triggers OFF uses `moveCardForward` instead of dispatching an agent action.
+  - `KanbanProvider` still guards `triggerAction` / `triggerBatchAction` when CLI triggers are disabled.
+  - `TaskViewerProvider.handleKanbanBackwardMove()` already updates the Kanban DB column directly.
+- `npm run lint` was not rerun for this pass because repository linting remains blocked by the pre-existing ESLint 9 configuration issue (`eslint.config.*` missing).
+
+### Remaining Risks
+- There is still no browser-level end-to-end test that drags cards across multiple custom-column orderings and verifies the derived column remains stable after a full refresh.
+- Backward moves intentionally allow jumping across intermediate columns. That flexibility appears intentional, but if stricter workflow enforcement is desired later it should be addressed as a separate behavior change.
+
+### Final Reviewer Assessment
+- Ready. The CLI-trigger switch integration is clean, and the remaining backward-move reset derivation defect has been corrected and verified.
+
+## Reviewer Continuation Update
+
+### Continuation Outcome
+- A deeper follow-up inspection found one more integration cleanliness issue in the CLI-triggers-OFF path.
+- Silent forward moves were already avoiding live agent dispatch, but `handleKanbanForwardMove()` still recorded synthetic history using real workflow names such as `improve-plan`, `handoff`, or `reviewer-pass`. That made no-dispatch moves look like actual agent executions in the runsheet/action log, which was misleading.
+
+### Additional Fixes Applied
+- Changed silent forward moves to record `move-to-*` workflow markers instead of agent workflow names.
+- Extended column derivation so both `reset-to-*` and `move-to-*` markers resolve correctly for built-in columns and custom Kanban columns.
+- Expanded the existing regression test to cover forward manual moves into `CODE REVIEWED` and a custom column.
+
+### Additional Files Changed
+- `src/services/TaskViewerProvider.ts`
+- `src/services/kanbanColumnDerivation.js`
+- `src/test/kanban-backward-reset-regression.test.js`
+
+### Additional Validation Results
+- `npm run compile` ✅ Passed.
+- `node src\test\kanban-backward-reset-regression.test.js` ✅ Passed after extending the assertions for `move-to-*` workflows.
+
+### Additional Remaining Risks
+- Historical sessions that already contain manual-forward events encoded as real workflow names will retain that older representation until they are moved again or otherwise updated.
+- There is still no browser-level end-to-end test that verifies the ticket action log content after silent forward moves with CLI triggers disabled.

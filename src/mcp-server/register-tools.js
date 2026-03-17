@@ -353,7 +353,8 @@ async function readKanbanStateFromDb(workspaceRoot, workspaceId) {
         const columns = {
             'CREATED': [],
             'PLAN REVIEWED': [],
-            'CODED': [],
+            'LEAD CODED': [],
+            'CODER CODED': [],
             'CODE REVIEWED': []
         };
         const stmt = db.prepare(
@@ -365,7 +366,8 @@ async function readKanbanStateFromDb(workspaceRoot, workspaceId) {
         );
         while (stmt.step()) {
             const row = stmt.getAsObject();
-            const col = String(row.kanban_column || 'CREATED');
+            const rawColumn = String(row.kanban_column || 'CREATED');
+            const col = rawColumn === 'CODED' ? 'LEAD CODED' : rawColumn;
             if (!columns[col]) columns[col] = [];
             columns[col].push({
                 topic: row.topic || 'Untitled',
@@ -633,23 +635,56 @@ function coercePositiveInt(value, fallback) {
     return Math.floor(parsed);
 }
 
-// TODO: Regex logic duplicated from KanbanProvider.ts `getComplexityFromPlan`.
-// Canonical source is KanbanProvider.ts.
+// Keep this logic aligned with KanbanProvider.ts `getComplexityFromPlan`.
+function normalizeBandBLine(line) {
+    return String(line || '')
+        .replace(/^[\s>*\-+\u2013\u2014:]+/, '')
+        .replace(/[*_`~]/g, '')
+        .trim()
+        .replace(/^\((.*)\)$/, '$1')
+        .replace(/[\s:\u2013\u2014-]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+function isBandBLabel(line) {
+    return /^(complex(?:\s*(?:\/|and)\s*|\s+)risky|complex|risky|high complexity)\.?$/.test(line);
+}
+
+function isEmptyBandBLine(line) {
+    if (!line) return true;
+    if (/^(?:\u2014|-)+$/.test(line)) return true;
+    return /^(none|n\/?a)\.?$/.test(line);
+}
+
 function getComplexityFromContent(content) {
     if (!content) return 'unknown';
     const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
-    if (!auditMatch) return 'unknown';
+    if (!auditMatch) {
+        const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
+        const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
+        if (leadCoderRec.test(content)) return 'high';
+        if (coderAgentRec.test(content)) return 'low';
+        return 'unknown';
+    }
     const afterAudit = content.slice(auditMatch.index + auditMatch[0].length);
     const bandBMatch = afterAudit.match(/\bBand\s+B\b/i);
     if (!bandBMatch) return 'low';
     const bandBStart = bandBMatch.index + bandBMatch[0].length;
     const afterBandB = afterAudit.slice(bandBStart);
-    const nextSection = afterBandB.match(/^#{1,4}\s|\bBand\s+[C-Z]\b/im);
+    const nextSection = afterBandB.match(/^\s*(?:#{1,4}\s+|Band\s+[C-Z]\b|\*\*Recommendation\*\*\s*:|Recommendation\s*:|---+\s*$)/im);
     const bandBContent = nextSection
         ? afterBandB.slice(0, nextSection.index).trim()
         : afterBandB.trim();
-    const isEmptyRegex = /^[\*\-\`\s]*(none|n\/?a|\u2014|-)($|[\s\.,;:!?]+)/i;
-    return (bandBContent === '' || isEmptyRegex.test(bandBContent)) ? 'low' : 'high';
+    const meaningful = bandBContent
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(line => line.length > 0)
+        .map(normalizeBandBLine)
+        .filter(line => line.length > 0)
+        .filter(line => !isEmptyBandBLine(line) && !isBandBLabel(line) && !/^recommendation\b/.test(line));
+    return meaningful.length === 0 ? 'low' : 'high';
 }
 
 function sanitizeIsoTimestamp(value) {
@@ -2053,7 +2088,8 @@ function registerTools(server) {
             const columns = {
                 'CREATED': [],
                 'PLAN REVIEWED': [],
-                'CODED': [],
+                'LEAD CODED': [],
+                'CODER CODED': [],
                 'CODE REVIEWED': []
             };
 
@@ -2092,7 +2128,8 @@ function registerTools(server) {
                         }
                     } catch (e) { /* non-fatal */ }
 
-                    const col = deriveKanbanColumn(sheet.events || []);
+                    const rawColumn = deriveKanbanColumn(sheet.events || []);
+                    const col = rawColumn === 'CODED' ? 'LEAD CODED' : rawColumn;
                     if (!columns[col]) columns[col] = [];
                     columns[col].push({
                         topic: sheet.topic || sheet.planFile || 'Untitled',
@@ -2104,6 +2141,43 @@ function registerTools(server) {
             }
 
             return { content: [{ type: "text", text: JSON.stringify(columns, null, 2) }] };
+        }
+    );
+
+    // Tool: move_kanban_card
+    server.tool(
+        "move_kanban_card",
+        {
+            sessionId: z.string().describe("The session ID of the plan to route (for example 'sess_12345')."),
+            target: z.string().describe("Conversational destination. Can be a kanban column label (for example 'PLAN REVIEWED', 'LEAD CODED', or 'CODER CODED') or an explicit role/custom kanban agent name.")
+        },
+        async ({ sessionId, target }) => {
+            const trimmedSessionId = String(sessionId || '').trim();
+            const trimmedTarget = String(target || '').trim();
+
+            if (!trimmedSessionId) {
+                return { isError: true, content: [{ type: "text", text: "❌ sessionId is required." }] };
+            }
+            if (!trimmedTarget) {
+                return { isError: true, content: [{ type: "text", text: "❌ target is required." }] };
+            }
+            if (!process.send) {
+                return { isError: true, content: [{ type: "text", text: "❌ IPC not available. Cannot communicate with the Switchboard host." }] };
+            }
+
+            process.send({
+                type: 'triggerKanbanMove',
+                sessionId: trimmedSessionId,
+                target: trimmedTarget,
+                workspaceRoot: getWorkspaceRoot()
+            });
+
+            return {
+                content: [{
+                    type: "text",
+                    text: `✅ Plan '${trimmedSessionId}' queued for routing to '${trimmedTarget}'. Switchboard will resolve the conversational target and advance the board if the route is valid.`
+                }]
+            };
         }
     );
 
@@ -3025,11 +3099,11 @@ function registerTools(server) {
 module.exports = {
     registerTools,
     enforceWorkflowForAction,
+    getComplexityFromContent,
     isBrainLeakage,
     validateRecipient,
     handleInternalRegistration,
     WORKFLOWS,
     PhaseGateSchema
 };
-
 
