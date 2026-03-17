@@ -6,6 +6,8 @@ export type AutobanRuleState = {
 export type AutobanComplexityFilter = 'all' | 'low_only' | 'high_only';
 export type AutobanRoutingMode = 'dynamic' | 'all_coder' | 'all_lead';
 
+export const AUTOBAN_SHARED_REVIEWER_COLUMNS = ['LEAD CODED', 'CODER CODED'] as const;
+
 export const DEFAULT_AUTOBAN_MAX_SENDS_PER_TERMINAL = 10;
 export const DEFAULT_AUTOBAN_GLOBAL_SESSION_CAP = 200;
 export const MAX_AUTOBAN_TERMINALS_PER_ROLE = 5;
@@ -73,6 +75,68 @@ function normalizeStringArrayRecord(record?: Record<string, string[]> | null): R
             })
             .filter(([role]) => role.length > 0)
     );
+}
+
+export function isSharedReviewerAutobanColumn(column: string): column is typeof AUTOBAN_SHARED_REVIEWER_COLUMNS[number] {
+    return AUTOBAN_SHARED_REVIEWER_COLUMNS.includes(column as typeof AUTOBAN_SHARED_REVIEWER_COLUMNS[number]);
+}
+
+export function getEnabledSharedReviewerAutobanColumns(
+    rules?: Record<string, AutobanRuleState> | null
+): string[] {
+    return AUTOBAN_SHARED_REVIEWER_COLUMNS.filter(column => rules?.[column]?.enabled !== false);
+}
+
+export function shouldSkipSharedReviewerAutobanDispatch(
+    lastDispatchAt: number | undefined,
+    lastTickAt: Map<string, number> | Record<string, number> | undefined,
+    sourceColumns: readonly string[]
+): boolean {
+    if (!lastDispatchAt || sourceColumns.length === 0) {
+        return false;
+    }
+
+    let latestTickAt = 0;
+    for (const sourceColumn of sourceColumns) {
+        const value = lastTickAt instanceof Map
+            ? lastTickAt.get(sourceColumn)
+            : lastTickAt?.[sourceColumn];
+        if (typeof value === 'number' && Number.isFinite(value)) {
+            latestTickAt = Math.max(latestTickAt, value);
+        }
+    }
+
+    return latestTickAt > 0 && lastDispatchAt >= latestTickAt;
+}
+
+export function getNextAutobanTerminalName(
+    roleLabel: string,
+    usedNames: Iterable<string>,
+    requestedName?: string
+): string {
+    const normalizedUsedNames = new Set(
+        Array.from(usedNames)
+            .map(name => String(name || '').trim())
+            .filter(Boolean)
+    );
+    const trimmedRequestedName = typeof requestedName === 'string' ? requestedName.trim() : '';
+
+    if (trimmedRequestedName) {
+        let uniqueName = trimmedRequestedName;
+        let counter = 2;
+        while (normalizedUsedNames.has(uniqueName)) {
+            uniqueName = `${trimmedRequestedName} ${counter++}`;
+        }
+        return uniqueName;
+    }
+
+    let counter = 2;
+    let uniqueName = `${roleLabel} ${counter}`;
+    while (normalizedUsedNames.has(uniqueName)) {
+        counter += 1;
+        uniqueName = `${roleLabel} ${counter}`;
+    }
+    return uniqueName;
 }
 
 export function normalizeAutobanConfigState(state?: Partial<AutobanConfigState> | null): AutobanConfigState {

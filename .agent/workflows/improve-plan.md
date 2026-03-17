@@ -20,9 +20,31 @@ Use this workflow to strengthen an existing feature plan in a single fluid pass.
 
 2. **Improve the plan**
    - Fill in underspecified sections.
-   - Break work into clear execution steps.
-   - Separate routine work from complex or risky work.
+   - Break work into clear execution steps with file paths and line numbers.
+   - Add a **Complexity Audit** section using the criteria below.
+   - Add a **Dependencies** section checking for conflicts with other plans.
    - Do not add net-new product scope unless it is strictly implied by the existing plan.
+
+   **Complexity Criteria:**
+   
+   **Band A (Routine):**
+   - Single-file, localized changes (text updates, button renames, CSS tweaks)
+   - Reuses existing patterns (calling an already-implemented handler, adding a field to an existing struct)
+   - Low risk (no architectural changes, no multi-system coordination)
+   - Small scope (typically <20 lines of code per change)
+   
+   **Band B (Complex/Risky):**
+   - Multi-file coordination (changes span 3+ files with tight coupling)
+   - New architectural patterns (introducing new state management, new message types, new DB schema)
+   - Data consistency risks (race conditions, state synchronization across systems)
+   - Breaking changes (modifying core data structures, changing column definitions)
+   
+   **"Routine + Moderate" (Mixed Complexity):**
+   - Use this label when a plan has BOTH routine and moderate components
+   - Majority is routine (70%+ of changes are straightforward)
+   - One or two moderate pieces that add risk but are well-scoped
+   - No architectural rewrites — the moderate parts extend existing patterns
+   - Example: A plan with simple UI changes (routine) plus a file rename-on-save with multi-reference updates (moderate)
 
 3. **Run the internal adversarial review**
    - First, produce a sharp Grumpy-style critique focused on assumptions, risks, race conditions, missing error handling, and validation gaps.

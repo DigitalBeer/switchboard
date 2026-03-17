@@ -422,3 +422,70 @@
 - `task.md:360-430` — Failure mode: checklist drift could make an accuracy phase look complete when verification or review has not actually happened. Mitigation: this section now records the complexity-fix task in the exact order it was executed, from context gathering through final diff review.
 - `task.md:396-404` — Failure mode: verification evidence can become stale after additional edits. Mitigation: the command sequence that passed is captured explicitly, including `compile-tests`, `compile`, and the standalone regression.
 - `task.md:406-430` — Failure mode: line references in the hostile review will age as files continue to move. Mitigation: these findings are snapshot-scoped to this execution and should be refreshed on any later edit pass.
+
+## Autoban prompt parity execution (feature_plan_20260317_160207_autoban_prompts_are_terrible)
+
+- [x] Read `accuracy.md`, `.agent/rules/WORKFLOW_INTEGRITY.md`, `.agent/rules/switchboard_modes.md`, the source plan file, and current `task.md`.
+- [x] Read impacted implementation surfaces and dependencies (`src/services/TaskViewerProvider.ts`, `src/test/kanban-batch-prompt-regression.test.js`, `src/test/challenge-prompt-regression.test.js`, reviewer prompt regression coverage).
+- [x] Run baseline verification (`npm run compile-tests`, `npm run compile`, `npm run lint`) and capture status.
+- [x] Refactor reviewer autoban/batch prompt wording so it matches manual reviewer intent for single-plan and multi-plan sends.
+- [x] Audit planner/coder/lead autoban prompt branches for manual-parity regressions and adjust only if needed.
+- [x] Add focused regression coverage for reviewer autoban prompt semantics and any shared prompt helper introduced.
+- [x] Verify implementation gate (`npm run compile`, targeted prompt tests) and read back changed code.
+- [x] Perform red-team self-review with concrete failure modes + line references.
+- [x] Run final verification and diff review.
+
+### Detailed Plan
+
+1. Inspect the existing autoban batch prompt builder and the manual single-plan reviewer payload to identify the smallest shared prompt-intent seam.
+2. Refactor `src/services/TaskViewerProvider.ts` so reviewer batch/autoban prompts clearly describe code review against implementation and the plan requirements, while preserving existing planner/coder/lead semantics and inline challenge behavior.
+3. Handle the single-plan autoban + `targetTerminalOverride` case by making the batch prompt builder emit reviewer-executor semantics equivalent to the manual path without changing routing side effects.
+4. Add prompt-focused regression tests that assert reviewer batch prompts mention code review / implementation review, reference plan requirements as criteria, and avoid ambiguous “review the plan” framing.
+5. Re-run compile plus focused prompt regressions, then read back modified ranges and review the diff before red-team review.
+
+### Dependency Map
+
+- Step 2 depends on Step 1 confirming the exact wording and structure used by the manual reviewer path.
+- Step 3 depends on Step 2 because the single-plan override case should reuse the same reviewer intent rather than add a third prompt variant.
+- Step 4 depends on Steps 2-3 settling the new prompt contract.
+- Step 5 depends on Steps 2-4 being complete so verification reflects the real shipped behavior.
+
+### Risks
+
+- Reviewer autoban wording could drift again if manual and batch prompts continue to duplicate role intent in multiple places.
+- Tightening reviewer language must not accidentally change planner/coder/lead batch prompt behavior or break lead inline challenge / coder accuracy instructions.
+- Prompt-focused regressions that rely on brittle raw strings can create false failures unless they assert semantic anchors rather than byte-for-byte text.
+
+### Verification Plan
+
+- `npm run compile-tests`
+- `npm run compile`
+- `npm run lint` (expected pre-existing ESLint v9 config failure unless repo config changes)
+- `node src\test\kanban-batch-prompt-regression.test.js`
+- focused autoban prompt regression test(s)
+- read back modified `TaskViewerProvider.ts` and test files
+
+### Verification Record
+
+- Baseline `npm run compile-tests`: PASS.
+- Baseline `npm run compile`: PASS.
+- Baseline `npm run lint`: FAIL (pre-existing ESLint v9 config migration issue: missing `eslint.config.*`).
+- Implementation verification: `npm run compile-tests`, `npm run compile`, `node src\test\autoban-reviewer-prompt-regression.test.js`, and `node src\test\challenge-prompt-regression.test.js`: PASS.
+- Final verification: `npm run compile-tests`, `npm run compile`, `node src\test\autoban-reviewer-prompt-regression.test.js`, `node src\test\challenge-prompt-regression.test.js`, and `node src\test\kanban-batch-prompt-regression.test.js`: PASS.
+- Readback review completed for `src/services/TaskViewerProvider.ts` shared reviewer helpers, reviewer autoban batch branch, manual reviewer prompt branch, and `src/test/autoban-reviewer-prompt-regression.test.js`.
+- Final scoped diff review: `git --no-pager diff --stat -- src\services\TaskViewerProvider.ts src\test\autoban-reviewer-prompt-regression.test.js task.md` plus scoped diff output confirmed only intended reviewer prompt parity / task tracking changes in this execution block.
+
+### Red Team Findings
+
+- `src/services/TaskViewerProvider.ts:989-1002` — Failure mode: manual and autoban reviewer semantics could drift again if one path stops using the shared intro/mode helpers; mitigation: both single-plan reviewer prompts and the reviewer batch branch now call `_buildReviewerExecutionIntro(...)` / `_buildReviewerExecutionModeLine(...)`.
+- `src/services/TaskViewerProvider.ts:2016-2035` — Failure mode: reviewer autoban could regress back into plan-review wording and send the wrong task framing to pooled reviewer terminals; mitigation: the reviewer batch branch now explicitly says implementation/code review, anchors against plan requirements, and calls out per-plan validation results.
+- `src/services/TaskViewerProvider.ts:2017-2019` — Failure mode: singular pooled sends could sound plural or ambiguous in the single-plan override case; mitigation: `planTarget` and `_buildReviewerExecutionIntro(plans.length)` switch wording between `this plan` and `each listed plan`.
+- `src/services/TaskViewerProvider.ts:6833-6869` — Failure mode: tightening autoban reviewer prompts could accidentally weaken the manual reviewer flow; mitigation: the manual light/strict reviewer prompts retain their existing downstream requirements while reusing the shared reviewer-executor intro/mode contract.
+
+- `src/test/autoban-reviewer-prompt-regression.test.js:11-46` — Failure mode: a future refactor could reintroduce ambiguous reviewer batch wording without changing runtime types or compile output; mitigation: the regression asserts shared helper presence plus implementation-review / plan-requirements anchors.
+- `src/test/autoban-reviewer-prompt-regression.test.js:31-37` — Failure mode: the old `Please review the following ... plans` phrasing could quietly return and pass weaker tests; mitigation: the regression explicitly forbids both prior ambiguous reviewer strings.
+- `src/test/autoban-reviewer-prompt-regression.test.js:43-45` — Failure mode: exact newline/indent assertions can false-fail on harmless formatting churn; mitigation: the per-plan guidance assertion now uses a newline-tolerant regex instead of a brittle raw string.
+
+- `task.md:428-436` — Failure mode: checklist state can drift from actual implementation/verification progress if this block is not updated immediately after each gate; mitigation: all execution items for this plan are now closed out in the same run that completed verification.
+- `task.md:468-477` — Failure mode: verification evidence can become misleading if only implementation-pass results are recorded; mitigation: this block now distinguishes baseline, implementation verification, and final verification command sets.
+- `task.md:479-489` — Failure mode: red-team notes can lose value if they omit the new regression file or shared-helper seam; mitigation: this section records concrete failure modes for `TaskViewerProvider.ts`, the reviewer prompt regression test, and this task artifact itself.

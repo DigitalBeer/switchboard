@@ -18,8 +18,12 @@ import {
     AutobanConfigState,
     buildAutobanBroadcastState,
     DEFAULT_AUTOBAN_GLOBAL_SESSION_CAP,
+    getEnabledSharedReviewerAutobanColumns,
+    getNextAutobanTerminalName,
+    isSharedReviewerAutobanColumn,
     MAX_AUTOBAN_TERMINALS_PER_ROLE,
-    normalizeAutobanConfigState
+    normalizeAutobanConfigState,
+    shouldSkipSharedReviewerAutobanDispatch
 } from './autobanState';
 const { syncMirrorToBrain } = require('./mirrorSync') as {
     syncMirrorToBrain: (options: {
@@ -43,6 +47,7 @@ type KanbanDispatchCard = {
     sessionId: string;
     lastActivity: string;
     planFile?: string;
+    sourceColumn: string;
 };
 
 type AutobanTerminalSelection = {
@@ -122,6 +127,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Autoban continuous background polling engine
     private _autobanTimers = new Map<string, NodeJS.Timeout>();
     private _autobanLastTickAt = new Map<string, number>();
+    private _autobanLaneLastDispatchAt = new Map<string, number>();
     // Serialization queue: ensures only one column tick runs at a time to prevent terminal dispatch contention.
     private _autobanTickQueue: Promise<void> = Promise.resolve();
     private _autobanState: AutobanConfigState = normalizeAutobanConfigState();
@@ -175,8 +181,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._needsSetup = needsSetup;
         this._pipeline = new PipelineOrchestrator(
             () => this._postPipelineState(),
-            async (role, sessionId, instruction, isFinalInBatch) => {
-                const dispatched = await this._handleTriggerAgentActionInternal(role, sessionId, instruction, undefined, isFinalInBatch);
+            async (role, sessionId, instruction) => {
+                const dispatched = await this._handleTriggerAgentActionInternal(role, sessionId, instruction);
                 if (!dispatched) {
                     throw new Error(`Pipeline dispatch failed for role '${role}' in session '${sessionId}'.`);
                 }
@@ -908,8 +914,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     /** Called by the Kanban board to trigger an agent action on a plan session. */
-    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
-        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot, isFinalInBatch);
+    public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
+        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot);
     }
 
     /** Called by the Kanban board to silently reset a card to an earlier stage. */
@@ -980,6 +986,22 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return parsedInstruction;
     }
 
+    private _buildReviewerExecutionIntro(planCount: number): string {
+        if (planCount <= 1) {
+            return 'The implementation for this plan is complete. Execute a direct reviewer pass in-place.';
+        }
+
+        return `The implementation for each of the following ${planCount} plans is complete. Execute a direct reviewer pass in-place for each plan.`;
+    }
+
+    private _buildReviewerExecutionModeLine(expectation: string): string {
+        return `Mode:
+- You are the reviewer-executor for this task.
+- Do not start any auxiliary workflow; execute this task directly.
+- Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
+- ${expectation}`;
+    }
+
     public async handleKanbanForwardMove(sessionIds: string[], targetColumn: string, workspaceRoot?: string) {
         const resolvedWorkspaceRoot = workspaceRoot
             ? this._resolveWorkspaceRoot(workspaceRoot)
@@ -1006,7 +1028,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         sessionIds: string[],
         instruction?: string,
         workspaceRoot?: string,
-        isFinalInBatch: boolean = false,
         targetTerminalOverride?: string
     ): Promise<boolean> {
         if (sessionIds.length === 0) { return false; }
@@ -1019,7 +1040,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         // If only one plan, fall through to single dispatch for simplicity unless autoban
         // needs an explicit terminal override for pooled round-robin routing.
         if (sessionIds.length === 1 && !targetTerminalOverride) {
-            return this._handleTriggerAgentAction(role, sessionIds[0], instruction, resolvedWorkspaceRoot, isFinalInBatch);
+            return this._handleTriggerAgentAction(role, sessionIds[0], instruction, resolvedWorkspaceRoot);
         }
 
         const targetAgent = String(targetTerminalOverride || '').trim() || await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
@@ -1079,11 +1100,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 batch: true,
                 sessionIds: validPlans.map(p => p.sessionId)
             });
-            if (isFinalInBatch && role === 'reviewer') {
-                await this._dispatchReviewerBatchSummary(resolvedWorkspaceRoot, targetAgent, {
-                    sessionIds: validPlans.map(p => p.sessionId)
-                });
-            }
 
             for (const plan of validPlans) {
                 if (workflowName) {
@@ -1676,26 +1692,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        let resolvedRequestedName = typeof requestedName === 'string' ? requestedName.trim() : '';
-        if (!resolvedRequestedName) {
-            const roleLabel = this._getAutobanRoleLabel(normalizedRole);
-            const promptedName = await vscode.window.showInputBox({
-                prompt: `Name for new ${roleLabel} terminal`,
-                placeHolder: `${roleLabel} Backup`,
-                value: `${roleLabel} Backup`,
-                ignoreFocusOut: true
-            });
-            if (promptedName === undefined) {
-                return;
-            }
-            resolvedRequestedName = promptedName.trim();
-        }
+        const resolvedRequestedName = typeof requestedName === 'string' ? requestedName.trim() : '';
+        const roleLabel = this._getAutobanRoleLabel(normalizedRole);
 
         const configuredPool = this._getConfiguredAutobanPool(normalizedRole);
         const liveRoleTerminals = await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot);
         const poolSize = configuredPool.length > 0 ? configuredPool.length : liveRoleTerminals.length;
         if (poolSize >= MAX_AUTOBAN_TERMINALS_PER_ROLE) {
-            vscode.window.showWarningMessage(`${this._getAutobanRoleLabel(normalizedRole)} already has ${MAX_AUTOBAN_TERMINALS_PER_ROLE} autoban terminals.`);
+            vscode.window.showWarningMessage(`${roleLabel} already has ${MAX_AUTOBAN_TERMINALS_PER_ROLE} autoban terminals.`);
             return;
         }
 
@@ -1705,12 +1709,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             ...vscode.window.terminals.map(terminal => terminal.name),
             ...Array.from(this._registeredTerminals?.keys() || [])
         ]);
-        const baseName = resolvedRequestedName || `${this._getAutobanRoleLabel(normalizedRole)} Backup`;
-        let uniqueName = baseName;
-        let counter = 2;
-        while (usedNames.has(uniqueName)) {
-            uniqueName = `${baseName} ${counter++}`;
-        }
+        const uniqueName = getNextAutobanTerminalName(roleLabel, usedNames, resolvedRequestedName || undefined);
 
         const terminal = vscode.window.createTerminal({
             name: uniqueName,
@@ -1916,13 +1915,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return undefined;
     }
 
-    private async _collectKanbanCardsInColumn(
+    private async _collectKanbanCardsInColumns(
         workspaceRoot: string,
-        sourceColumn: string
+        sourceColumns: string[]
     ): Promise<{ cardsInColumn: KanbanDispatchCard[]; currentColumnBySession: Map<string, string> }> {
         const log = this._getSessionLog(workspaceRoot);
         const sheets = await log.getRunSheets();
         const customAgents = await this.getCustomAgents(workspaceRoot);
+        const sourceColumnSet = new Set(sourceColumns);
         const currentColumnBySession = new Map<string, string>();
         const cardsInColumn: KanbanDispatchCard[] = [];
 
@@ -1931,7 +1931,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
             const column = deriveKanbanColumn(events, customAgents);
             currentColumnBySession.set(sheet.sessionId, column);
-            if (column !== sourceColumn) { continue; }
+            if (!sourceColumnSet.has(column)) { continue; }
 
             const rawPlanFile = typeof sheet.planFile === 'string' ? sheet.planFile.trim() : '';
             const resolvedPlanPath = rawPlanFile
@@ -1947,7 +1947,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     lastActivity = e.timestamp;
                 }
             }
-            cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath });
+            cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath, sourceColumn: column });
         }
 
         try {
@@ -1957,6 +1957,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
 
         return { cardsInColumn, currentColumnBySession };
+    }
+
+    private async _collectKanbanCardsInColumn(
+        workspaceRoot: string,
+        sourceColumn: string
+    ): Promise<{ cardsInColumn: KanbanDispatchCard[]; currentColumnBySession: Map<string, string> }> {
+        return this._collectKanbanCardsInColumns(workspaceRoot, [sourceColumn]);
     }
 
     private _releaseSettledDispatchLocks(currentColumnBySession: Map<string, string>): void {
@@ -2007,11 +2014,20 @@ ${planList}`;
         }
 
         if (role === 'reviewer') {
-            return `Please review the following ${plans.length} plans.
+            const planTarget = plans.length <= 1 ? 'this plan' : 'each listed plan';
+            const reviewerExecutionIntro = this._buildReviewerExecutionIntro(plans.length);
+            const reviewerExecutionMode = this._buildReviewerExecutionModeLine(`For ${planTarget}, assess the actual code changes against the plan requirements, fix valid material issues in code when needed, then verify.`);
+            return `${reviewerExecutionIntro}
 
 ${batchExecutionRules}
 
-Review each plan independently and report concrete findings per plan.
+${reviewerExecutionMode}
+
+For each plan:
+1. Use the plan file as the source of truth for the review criteria.
+2. Review the implementation/code against the plan requirements, not the plan text itself.
+3. Apply fixes for valid material issues before moving on when safe.
+4. Report concrete findings and validation results for that plan.
 
 ${focusDirective}
 
@@ -2052,6 +2068,18 @@ ${focusDirective}
 
 PLANS TO PROCESS:
 ${planList}`;
+    }
+
+    private _describeAutobanDispatchSourceColumns(cards: Array<Pick<KanbanDispatchCard, 'sourceColumn'>>): string {
+        const uniqueColumns = Array.from(new Set(
+            cards
+                .map(card => card.sourceColumn)
+                .filter(column => typeof column === 'string' && column.trim().length > 0)
+        ));
+        if (uniqueColumns.length <= 1) {
+            return uniqueColumns[0] || 'Unknown';
+        }
+        return uniqueColumns.sort((a, b) => a.localeCompare(b)).join(' + ');
     }
 
     /**
@@ -2102,6 +2130,7 @@ ${planList}`;
         }
         this._autobanTimers.clear();
         this._autobanLastTickAt.clear();
+        this._autobanLaneLastDispatchAt.clear();
         this._activeDispatchSessions.clear();
         this._autobanTickQueue = Promise.resolve();
     }
@@ -2119,24 +2148,37 @@ ${planList}`;
         const role = this._autobanColumnToRole(sourceColumn);
         if (!role) { return; }
         const instruction = this._autobanColumnToInstruction(sourceColumn);
-        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumn(workspaceRoot, sourceColumn);
+        const reviewerLaneColumns = isSharedReviewerAutobanColumn(sourceColumn)
+            ? getEnabledSharedReviewerAutobanColumns(this._autobanState.rules)
+            : [sourceColumn];
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumns(workspaceRoot, reviewerLaneColumns);
         this._releaseSettledDispatchLocks(currentColumnBySession);
+
+        if (
+            isSharedReviewerAutobanColumn(sourceColumn) &&
+            shouldSkipSharedReviewerAutobanDispatch(
+                this._autobanLaneLastDispatchAt.get('coded-reviewer'),
+                this._autobanLastTickAt,
+                reviewerLaneColumns
+            )
+        ) {
+            return;
+        }
 
         if (cardsInColumn.length === 0) { return; }
 
         // Sort oldest first, take up to batchSize, filtering out already-in-flight sessions
         cardsInColumn.sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''));
         const eligibleCards = cardsInColumn
-            .filter(c => this._activeDispatchSessions.get(c.sessionId) !== sourceColumn);
+            .filter(c => this._activeDispatchSessions.get(c.sessionId) !== c.sourceColumn);
 
         const dispatchWithAutobanTerminal = async (
             targetRole: string,
-            requestedSessionIds: string[],
-            isFinalReviewerBatch: boolean = false
+            requestedCards: Array<Pick<KanbanDispatchCard, 'sessionId' | 'sourceColumn'>>
         ): Promise<boolean> => {
             const selection = await this._selectAutobanTerminal(targetRole, workspaceRoot);
             if (!selection) {
-                console.warn(`[Autoban] No eligible terminal available for ${targetRole}; skipping ${requestedSessionIds.length} queued plan(s).`);
+                console.warn(`[Autoban] No eligible terminal available for ${targetRole}; skipping ${requestedCards.length} queued plan(s).`);
                 if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
                     const reason = this._getAutobanRemainingSessionCapacity() <= 0
                         ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
@@ -2146,18 +2188,18 @@ ${planList}`;
                 return false;
             }
 
-            const sessionIds = requestedSessionIds.slice();
-            if (sessionIds.length === 0) {
+            const cards = requestedCards.slice();
+            if (cards.length === 0) {
                 return false;
             }
+            const sessionIds = cards.map(card => card.sessionId);
 
-            sessionIds.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
+            cards.forEach(card => this._activeDispatchSessions.set(card.sessionId, card.sourceColumn));
             const ok = await this.handleKanbanBatchTrigger(
                 targetRole,
                 sessionIds,
                 instruction,
                 workspaceRoot,
-                isFinalReviewerBatch,
                 selection.terminalName
             );
             if (!ok) {
@@ -2166,7 +2208,10 @@ ${planList}`;
             }
 
             await this._recordAutobanDispatch(targetRole, selection.terminalName, 1, selection.effectivePool);
-            await this._announceAutobanDispatch(sourceColumn, targetRole, sessionIds, workspaceRoot);
+            if (targetRole === 'reviewer' && isSharedReviewerAutobanColumn(sourceColumn)) {
+                this._autobanLaneLastDispatchAt.set('coded-reviewer', Date.now());
+            }
+            await this._announceAutobanDispatch(this._describeAutobanDispatchSourceColumns(cards), targetRole, sessionIds, workspaceRoot);
 
             if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
                 const reason = this._getAutobanRemainingSessionCapacity() <= 0
@@ -2182,7 +2227,7 @@ ${planList}`;
         if (sourceColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
             const complexityFilter = this._autobanState.complexityFilter;
             const routingMode = this._autobanState.routingMode;
-            const selectedCards: Array<{ sessionId: string; complexity: 'Low' | 'High' }> = [];
+            const selectedCards: Array<{ sessionId: string; complexity: 'Low' | 'High'; sourceColumn: string }> = [];
 
             for (const card of eligibleCards) {
                 let complexity: 'Low' | 'High' = 'High';
@@ -2201,7 +2246,7 @@ ${planList}`;
                     continue;
                 }
 
-                selectedCards.push({ sessionId: card.sessionId, complexity });
+                selectedCards.push({ sessionId: card.sessionId, complexity, sourceColumn: card.sourceColumn });
                 if (selectedCards.length >= batchSize) {
                     break;
                 }
@@ -2209,13 +2254,13 @@ ${planList}`;
 
             if (selectedCards.length === 0) { return; }
 
-            const routedSessions: Record<'coder' | 'lead', string[]> = {
+            const routedSessions: Record<'coder' | 'lead', Array<{ sessionId: string; sourceColumn: string }>> = {
                 coder: [],
                 lead: []
             };
             for (const card of selectedCards) {
                 const targetRole = this._autobanRoutePlanReviewedCard(card.complexity, routingMode);
-                routedSessions[targetRole].push(card.sessionId);
+                routedSessions[targetRole].push({ sessionId: card.sessionId, sourceColumn: card.sourceColumn });
             }
 
             console.log(`[Autoban] PLAN REVIEWED routing (${complexityFilter}, ${routingMode}): ${routedSessions.coder.length} → coder, ${routedSessions.lead.length} → lead`);
@@ -2246,11 +2291,8 @@ ${planList}`;
         if (batch.length === 0) { return; }
 
         // Default static routing for other columns
-        const sessionIds = batch.map(c => c.sessionId);
-        const isFinalInBatch = role === 'reviewer' && eligibleCards.length === batch.length;
-
-        console.log(`[Autoban] ${sourceColumn}: dispatching ${sessionIds.length} card(s) to ${role} via ${selection.terminalName}`);
-        await dispatchWithAutobanTerminal(role, sessionIds, isFinalInBatch);
+        console.log(`[Autoban] ${this._describeAutobanDispatchSourceColumns(batch)}: dispatching ${batch.length} card(s) to ${role} via ${selection.terminalName}`);
+        await dispatchWithAutobanTerminal(role, batch);
     }
 
     public async handleBatchDispatchLow(workspaceRoot?: string): Promise<boolean> {
@@ -6387,51 +6429,11 @@ ${planList}`;
         return true;
     }
 
-    private _buildReviewerBatchSummaryPayload(): string {
-        return 'BATCH COMPLETION NOTICE: The automated queue is now empty. Please provide a holistic summary of all changes made across the recent batch of plans. Ask the user to review these changes and explicitly offer to revert any regressions or unwanted modifications.';
+    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
+        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot);
     }
 
-    private async _dispatchReviewerBatchSummary(
-        workspaceRoot: string,
-        targetAgent: string,
-        context: { sessionId?: string; sessionIds?: string[] }
-    ): Promise<void> {
-        try {
-            await this._dispatchExecuteMessage(
-                workspaceRoot,
-                targetAgent,
-                this._buildReviewerBatchSummaryPayload(),
-                {
-                    phase_gate: {
-                        enforce_persona: 'reviewer',
-                        bypass_workflow_triggers: 'true'
-                    },
-                    batchCompletionSummary: true,
-                    ...context
-                },
-                'system'
-            );
-            await this._logEvent('dispatch', {
-                event: 'review_batch_summary_sent',
-                targetAgent,
-                ...context
-            }, undefined, workspaceRoot);
-        } catch (error) {
-            await this._logEvent('dispatch', {
-                event: 'review_batch_summary_failed',
-                targetAgent,
-                error: String(error),
-                ...context
-            }, undefined, workspaceRoot);
-            vscode.window.showWarningMessage('The final reviewer summary could not be queued. The review dispatch still succeeded.');
-        }
-    }
-
-    private async _handleTriggerAgentAction(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
-        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot, isFinalInBatch);
-    }
-
-    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string, workspaceRoot?: string, isFinalInBatch: boolean = false): Promise<boolean> {
+    private async _handleTriggerAgentActionInternal(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
         const dedupeKey = `${role}::${sessionId}::${instruction || ''}`;
         const acquireDispatchLock = () => {
             if (this._recentActionDispatches.has(dedupeKey)) return;
@@ -6783,21 +6785,19 @@ ${focusDirective}`;
                 }
             }
         } else if (role === 'reviewer') {
+            const reviewerExecutionIntro = this._buildReviewerExecutionIntro(1);
             messageMetadata.phase_gate = {
                 enforce_persona: 'reviewer',
                 review_mode: strictReviewPrompts ? 'direct_execute_strict' : 'direct_execute_light',
                 bypass_workflow_triggers: 'true'
             };
             if (strictReviewPrompts) {
-                messagePayload = `The implementation for this plan is complete. Execute a direct reviewer pass in-place.
+                const reviewerExecutionMode = this._buildReviewerExecutionModeLine('Assess actual code changes against the plan requirements, then fix valid issues in code, then verify.');
+                messagePayload = `${reviewerExecutionIntro}
 
 ${planAnchor}
 
-Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
-- Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
-- Assess actual code changes against the plan requirements, then fix valid issues in code, then verify.
+${reviewerExecutionMode}
 
 Use explicit two-stage analysis:
 - Stage 1 (Grumpy): adversarial findings, severity-tagged (CRITICAL/MAJOR/NIT), minimum 5 findings, delivered in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
@@ -6831,15 +6831,12 @@ Strict format for balanced review:
 
 ${focusDirective}`;
             } else {
-                messagePayload = `The implementation for this plan is complete. Execute a direct reviewer pass in-place.
+                const reviewerExecutionMode = this._buildReviewerExecutionModeLine('Assess actual code changes against the plan requirements, fix valid material issues, then verify.');
+                messagePayload = `${reviewerExecutionIntro}
 
 ${planAnchor}
 
-Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
-- Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
-- Assess actual code changes against the plan requirements, fix valid material issues, then verify.
+${reviewerExecutionMode}
 
 Use explicit two-stage analysis:
 - Stage 1 (Grumpy): adversarial findings, severity-tagged (CRITICAL/MAJOR/NIT), posted in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
@@ -6939,9 +6936,6 @@ ${focusDirective}`);
         // This prevents cards from advancing in the kanban when the terminal dispatch fails.
         try {
             await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, messagePayload, messageMetadata);
-            if (isFinalInBatch && role === 'reviewer') {
-                await this._dispatchReviewerBatchSummary(resolvedWorkspaceRoot, targetAgent, { sessionId });
-            }
 
             // Dispatch succeeded — now update runsheet
             if (workflowName) {

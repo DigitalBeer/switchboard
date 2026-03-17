@@ -701,8 +701,10 @@ After completing all plans, summarize what was changed and any verification step
     }
 
     /**
-     * Read a plan file and determine complexity from its Complexity Audit / Band B section.
-     * Returns 'Unknown' if no audit section, 'Low' if Band B is empty/None, 'High' otherwise.
+     * Read a plan file and determine complexity for routing purposes.
+     * Priority: (1) Agent Recommendation — "Send to Coder" → Low, "Send to Lead Coder" → High.
+     * Fallback: (2) Band B parsing — empty/None → Low, non-empty → High.
+     * Returns 'Unknown' if neither signal is present.
      */
     public async getComplexityFromPlan(workspaceRoot: string, planPath: string): Promise<'Unknown' | 'Low' | 'High'> {
         try {
@@ -711,18 +713,20 @@ After completing all plans, summarize what was changed and any verification step
             if (!fs.existsSync(resolvedPlanPath)) return 'Unknown';
             const content = await fs.promises.readFile(resolvedPlanPath, 'utf8');
 
-            // Find the Complexity Audit section
+            // Primary signal: Agent Recommendation section.
+            // The improve-plan workflow always adds an explicit recommendation
+            // like "Send it to the Lead Coder" or "Send it to the Coder agent".
+            // This is the authoritative routing signal — it accounts for plans
+            // with moderate Band B items that should still route to the Coder.
+            const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
+            const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
+            if (leadCoderRec.test(content)) return 'High';
+            if (coderAgentRec.test(content)) return 'Low';
+
+            // Fallback: parse the Complexity Audit / Band B section
+            // for plans that lack an explicit agent recommendation.
             const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
             if (!auditMatch) {
-                // Fallback: the improve-plan workflow often appends a recommendation
-                // like "Send it to the Lead Coder" or "Send it to the Coder agent"
-                // without creating a formal Complexity Audit section.
-                // Match the recommendation line directly — it's more reliable than
-                // matching complexity adjectives (high/moderate/advanced all mean Lead Coder).
-                const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
-                const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
-                if (leadCoderRec.test(content)) return 'High';
-                if (coderAgentRec.test(content)) return 'Low';
                 return 'Unknown';
             }
 

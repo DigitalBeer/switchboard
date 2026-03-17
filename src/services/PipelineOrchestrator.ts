@@ -14,7 +14,7 @@ export interface PipelineState {
 }
 
 type GetRunSheetsCallback = () => Promise<any[]>;
-type DispatchCallback = (role: string, sessionId: string, instruction?: string, isFinalInBatch?: boolean) => Promise<void>;
+type DispatchCallback = (role: string, sessionId: string, instruction?: string) => Promise<void>;
 
 function getNextStage(sheet: any): { role: string; instruction?: string; label: string } | 'done' {
     const events = Array.isArray(sheet.events) ? sheet.events : [];
@@ -210,7 +210,7 @@ export class PipelineOrchestrator {
             const planTitle: string = sheet.topic || sheet.planName || sheet.title || sessionId;
 
             if (this._dispatchCallback) {
-                await this._dispatchCallback(stage.role, sessionId, stage.instruction, pending.length === 1);
+                await this._dispatchCallback(stage.role, sessionId, stage.instruction);
             }
 
             this._lastAction = { planTitle, role: stage.label, timestamp: new Date().toISOString() };

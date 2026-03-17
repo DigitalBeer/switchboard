@@ -4,8 +4,11 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const {
+    getEnabledSharedReviewerAutobanColumns,
+    getNextAutobanTerminalName,
     buildAutobanBroadcastState,
-    normalizeAutobanConfigState
+    normalizeAutobanConfigState,
+    shouldSkipSharedReviewerAutobanDispatch
 } = require(path.join(process.cwd(), 'out', 'services', 'autobanState.js'));
 
 async function run() {
@@ -126,6 +129,51 @@ async function run() {
     );
     assert.deepStrictEqual(normalizedNewConfig.poolCursor, { reviewer: 2 }, 'pool cursors should normalize to integer counters');
 
+    assert.deepStrictEqual(
+        getEnabledSharedReviewerAutobanColumns({
+            'LEAD CODED': { enabled: true, intervalMinutes: 15 },
+            'CODER CODED': { enabled: false, intervalMinutes: 15 }
+        }),
+        ['LEAD CODED'],
+        'shared reviewer lane helpers should only include enabled coded columns'
+    );
+    assert.strictEqual(
+        shouldSkipSharedReviewerAutobanDispatch(
+            2_000,
+            new Map([
+                ['LEAD CODED', 2_000],
+                ['CODER CODED', 1_500]
+            ]),
+            ['LEAD CODED', 'CODER CODED']
+        ),
+        true,
+        'shared reviewer ticks should skip when the lane already dispatched in the current window'
+    );
+    assert.strictEqual(
+        shouldSkipSharedReviewerAutobanDispatch(
+            1_000,
+            { 'LEAD CODED': 1_500, 'CODER CODED': 1_200 },
+            ['LEAD CODED', 'CODER CODED']
+        ),
+        false,
+        'shared reviewer ticks should retry when the last success predates the latest coded tick'
+    );
+    assert.strictEqual(
+        getNextAutobanTerminalName('Reviewer', ['Reviewer', 'Reviewer 2', 'Reviewer 4']),
+        'Reviewer 3',
+        'autoban backup terminals should use role-based sequential numbering and skip occupied names'
+    );
+    assert.strictEqual(
+        getNextAutobanTerminalName('Coder', ['Coder', 'Coder 2']),
+        'Coder 3',
+        'autoban numbering should be role-specific instead of sharing a global suffix sequence'
+    );
+    assert.strictEqual(
+        getNextAutobanTerminalName('Lead Coder', ['Reviewer Backup', 'Reviewer Backup 2'], 'Reviewer Backup'),
+        'Reviewer Backup 3',
+        'explicitly requested backup terminal names should still be deduped safely'
+    );
+
     const providerSource = fs.readFileSync(path.join(process.cwd(), 'src', 'services', 'TaskViewerProvider.ts'), 'utf8');
     const implementationSource = fs.readFileSync(path.join(process.cwd(), 'src', 'webview', 'implementation.html'), 'utf8');
 
@@ -148,9 +196,16 @@ async function run() {
         'autoban send/session caps should count dispatches, not individual plans inside a batch'
     );
     assert.ok(
-        providerSource.includes('await vscode.window.showInputBox({') &&
+        providerSource.includes('getNextAutobanTerminalName(roleLabel, usedNames, resolvedRequestedName || undefined)') &&
+        !providerSource.includes('await vscode.window.showInputBox({') &&
         !implementationSource.includes('window.prompt('),
-        'autoban add-terminal flow should request names through VS Code instead of relying on window.prompt in the webview'
+        'autoban add-terminal flow should auto-name backups in the extension instead of prompting in the webview or VS Code'
+    );
+    assert.ok(
+        providerSource.includes("const reviewerLaneColumns = isSharedReviewerAutobanColumn(sourceColumn)") &&
+        providerSource.includes("this._collectKanbanCardsInColumns(workspaceRoot, reviewerLaneColumns)") &&
+        providerSource.includes("this._autobanLaneLastDispatchAt.set('coded-reviewer', Date.now());"),
+        'TaskViewerProvider should coordinate LEAD CODED and CODER CODED as one shared reviewer autoban lane'
     );
     assert.ok(
         implementationSource.includes('MAX SENDS / TERMINAL') &&

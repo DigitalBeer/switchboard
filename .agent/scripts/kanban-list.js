@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { deriveKanbanColumn } = require(path.join(__dirname, '..', '..', 'src', 'services', 'kanbanColumnDerivation.js'));
 
 const workspaceRoot = process.cwd();
 const sbDir = path.join(workspaceRoot, '.switchboard');
@@ -18,12 +19,12 @@ const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
 const workspaceId = identity.workspaceId;
 
 function deriveColumn(events) {
-    for (let i = events.length - 1; i >= 0; i--) {
-        const e = events[i];
-        const wf = (e.workflow || '').toLowerCase();
-        if (wf.includes('reviewer') || wf === 'review') return 'CODE REVIEWED';
-        if (wf === 'lead' || wf === 'coder' || wf === 'handoff' || wf === 'team' || wf === 'handoff-lead') return 'CODED';
-        if (wf === 'planner' || wf === 'enhance' || wf === 'accuracy' || wf === 'sidebar-review' || wf === 'enhanced plan') return 'PLAN REVIEWED';
+    const derivedColumn = deriveKanbanColumn(events || []);
+    if (derivedColumn === 'LEAD CODED' || derivedColumn === 'CODER CODED') {
+        return 'CODED';
+    }
+    if (derivedColumn === 'PLAN REVIEWED' || derivedColumn === 'CODE REVIEWED') {
+        return derivedColumn;
     }
     return 'CREATED';
 }

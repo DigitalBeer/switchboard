@@ -74,16 +74,16 @@ function run() {
     test('provider pipeline callback throws when sidebar dispatch fails', () => {
         expectRegex(
             providerSource,
-            /this\._pipeline\s*=\s*new\s+PipelineOrchestrator\([\s\S]*const\s+dispatched\s*=\s*await\s+this\._handleTriggerAgentActionInternal\(role,\s*sessionId,\s*instruction,\s*undefined,\s*isFinalInBatch\);[\s\S]*if\s*\(\s*!dispatched\s*\)\s*\{[\s\S]*throw\s+new\s+Error\(`Pipeline dispatch failed for role '\$\{role\}' in session '\$\{sessionId\}'\.`\);[\s\S]*\}/s,
+            /this\._pipeline\s*=\s*new\s+PipelineOrchestrator\([\s\S]*const\s+dispatched\s*=\s*await\s+this\._handleTriggerAgentActionInternal\(role,\s*sessionId,\s*instruction\);[\s\S]*if\s*\(\s*!dispatched\s*\)\s*\{[\s\S]*throw\s+new\s+Error\(`Pipeline dispatch failed for role '\$\{role\}' in session '\$\{sessionId\}'\.`\);[\s\S]*\}/s,
             'Expected pipeline dispatch callback to propagate failure.'
         );
     });
 
-    test('orchestrator marks the final pending plan when dispatching', () => {
+    test('orchestrator dispatch callback keeps role/session/instruction signature', () => {
         expectRegex(
             orchestratorSource,
-            /await\s+this\._dispatchCallback\(stage\.role,\s*sessionId,\s*stage\.instruction,\s*pending\.length\s*===\s*1\);/,
-            'Expected pipeline dispatch callback to receive final-batch signal for the last pending plan.'
+            /await\s+this\._dispatchCallback\(stage\.role,\s*sessionId,\s*stage\.instruction\);/,
+            'Expected pipeline dispatch callback to preserve the original role/session/instruction signature.'
         );
     });
 
@@ -97,19 +97,6 @@ function run() {
             orchestratorSource,
             /lastWorkflow\s*===\s*'sidebar-review'\s*\|\|\s*lastWorkflow\s*===\s*'Enhanced plan'\s*\|\|\s*lastWorkflow\s*===\s*'Improved plan'/,
             'Expected pipeline stage detection to advance after both legacy and new planner completion events.'
-        );
-    });
-
-    test('reviewer final-batch dispatch queues a standalone summary message', () => {
-        expectRegex(
-            providerSource,
-            /if\s*\(\s*isFinalInBatch\s*&&\s*role\s*===\s*'reviewer'\s*\)\s*\{[\s\S]*await\s+this\._dispatchReviewerBatchSummary\(resolvedWorkspaceRoot,\s*targetAgent,\s*\{\s*sessionId\s*\}\);[\s\S]*\}/s,
-            'Expected final reviewer dispatches to queue a standalone batch summary.'
-        );
-        expectRegex(
-            providerSource,
-            /batchCompletionSummary:\s*true/,
-            'Expected summary dispatch metadata to mark standalone batch completion notices.'
         );
     });
 
