@@ -47,7 +47,7 @@ type KanbanDispatchCard = {
 
 type AutobanTerminalSelection = {
     terminalName: string;
-    remainingCapacity: number;
+    remainingDispatches: number;
     effectivePool: string[];
 };
 
@@ -961,6 +961,25 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return { baseInstruction: instruction, includeInlineChallenge: false };
     }
 
+    private _getPromptInstructionOptions(role: string, instruction?: string): { baseInstruction?: string; includeInlineChallenge: boolean } {
+        const parsedInstruction = this._parsePromptInstruction(instruction);
+        if (role !== 'lead') {
+            return {
+                baseInstruction: parsedInstruction.baseInstruction,
+                includeInlineChallenge: false
+            };
+        }
+
+        if (parsedInstruction.includeInlineChallenge || this._isLeadInlineChallengeEnabled()) {
+            return {
+                baseInstruction: parsedInstruction.baseInstruction,
+                includeInlineChallenge: true
+            };
+        }
+
+        return parsedInstruction;
+    }
+
     public async handleKanbanForwardMove(sessionIds: string[], targetColumn: string, workspaceRoot?: string) {
         const resolvedWorkspaceRoot = workspaceRoot
             ? this._resolveWorkspaceRoot(workspaceRoot)
@@ -1513,20 +1532,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         return {
             terminalName: selectedEntry.name,
-            remainingCapacity: Math.min(selectedEntry.remaining, this._getAutobanRemainingSessionCapacity()),
+            remainingDispatches: Math.min(selectedEntry.remaining, this._getAutobanRemainingSessionCapacity()),
             effectivePool
         };
     }
 
-    private async _recordAutobanDispatch(role: string, terminalName: string, dispatchedCount: number, effectivePool: string[]): Promise<void> {
-        if (dispatchedCount <= 0) {
+    private async _recordAutobanDispatch(role: string, terminalName: string, dispatchCount: number, effectivePool: string[]): Promise<void> {
+        if (dispatchCount <= 0) {
             return;
         }
 
         const normalizedRole = this._normalizeAutobanPoolRole(role);
         const nextSendCounts = {
             ...this._autobanState.sendCounts,
-            [terminalName]: (this._autobanState.sendCounts[terminalName] || 0) + dispatchedCount
+            [terminalName]: (this._autobanState.sendCounts[terminalName] || 0) + dispatchCount
         };
         const nextCursor = { ...this._autobanState.poolCursor };
         const terminalIndex = effectivePool.indexOf(terminalName);
@@ -1535,7 +1554,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._autobanState = normalizeAutobanConfigState({
             ...this._autobanState,
             sendCounts: nextSendCounts,
-            sessionSendCount: (this._autobanState.sessionSendCount || 0) + dispatchedCount,
+            sessionSendCount: (this._autobanState.sessionSendCount || 0) + dispatchCount,
             poolCursor: nextCursor
         });
         await this._persistAutobanState();
@@ -1657,6 +1676,21 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        let resolvedRequestedName = typeof requestedName === 'string' ? requestedName.trim() : '';
+        if (!resolvedRequestedName) {
+            const roleLabel = this._getAutobanRoleLabel(normalizedRole);
+            const promptedName = await vscode.window.showInputBox({
+                prompt: `Name for new ${roleLabel} terminal`,
+                placeHolder: `${roleLabel} Backup`,
+                value: `${roleLabel} Backup`,
+                ignoreFocusOut: true
+            });
+            if (promptedName === undefined) {
+                return;
+            }
+            resolvedRequestedName = promptedName.trim();
+        }
+
         const configuredPool = this._getConfiguredAutobanPool(normalizedRole);
         const liveRoleTerminals = await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot);
         const poolSize = configuredPool.length > 0 ? configuredPool.length : liveRoleTerminals.length;
@@ -1671,7 +1705,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             ...vscode.window.terminals.map(terminal => terminal.name),
             ...Array.from(this._registeredTerminals?.keys() || [])
         ]);
-        const baseName = String(requestedName || '').trim() || `${this._getAutobanRoleLabel(normalizedRole)} Backup`;
+        const baseName = resolvedRequestedName || `${this._getAutobanRoleLabel(normalizedRole)} Backup`;
         let uniqueName = baseName;
         let counter = 2;
         while (usedNames.has(uniqueName)) {
@@ -1938,7 +1972,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         plans: Array<{ topic: string; absolutePath: string }>,
         instruction?: string
     ): string {
-        const { baseInstruction, includeInlineChallenge } = this._parsePromptInstruction(instruction);
+        const { baseInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
         const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
         const batchExecutionRules = `If your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.
 
@@ -2112,8 +2146,7 @@ ${planList}`;
                 return false;
             }
 
-            const dispatchCount = Math.min(requestedSessionIds.length, selection.remainingCapacity);
-            const sessionIds = requestedSessionIds.slice(0, dispatchCount);
+            const sessionIds = requestedSessionIds.slice();
             if (sessionIds.length === 0) {
                 return false;
             }
@@ -2132,7 +2165,7 @@ ${planList}`;
                 return false;
             }
 
-            await this._recordAutobanDispatch(targetRole, selection.terminalName, sessionIds.length, selection.effectivePool);
+            await this._recordAutobanDispatch(targetRole, selection.terminalName, 1, selection.effectivePool);
             await this._announceAutobanDispatch(sourceColumn, targetRole, sessionIds, workspaceRoot);
 
             if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
@@ -2209,7 +2242,7 @@ ${planList}`;
             return;
         }
 
-        const batch = eligibleCards.slice(0, Math.min(batchSize, selection.remainingCapacity));
+        const batch = eligibleCards.slice(0, batchSize);
         if (batch.length === 0) { return; }
 
         // Default static routing for other columns
@@ -2266,13 +2299,6 @@ ${planList}`;
             : `Dispatched ${sessionIds.length} LOW-complexity plan${sessionIds.length === 1 ? '' : 's'} to the coder.`;
         vscode.window.showInformationMessage(summary);
         return true;
-    }
-
-    public revealInitiatePlanModal() {
-        if (this._view) {
-            this._view.show?.(true);
-            this._view.webview.postMessage({ type: 'openInitiatePlanModal' });
-        }
     }
 
     public async resolveWebviewView(
@@ -2493,10 +2519,8 @@ ${planList}`;
                             await this._handleClaimPlan(data.brainSourcePath);
                         }
                         break;
-                    case 'initiatePlan':
-                        if (data.title && data.idea && data.mode) {
-                            await this._handleInitiatePlan(data.title, data.idea, data.mode, !!data.isAirlock);
-                        }
+                    case 'createDraftPlanTicket':
+                        await this.createDraftPlanTicket();
                         break;
                     case 'mergeAllPlans':
                         await this._handleMergeAllPlans();
@@ -2537,6 +2561,13 @@ ${planList}`;
                                 vscode.ConfigurationTarget.Workspace
                             );
                         }
+                        if (typeof data.leadChallengeEnabled === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update(
+                                'leadCoder.inlineChallenge',
+                                data.leadChallengeEnabled,
+                                vscode.ConfigurationTarget.Workspace
+                            );
+                        }
                         if (data.onboardingComplete === true) {
                             this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
                         }
@@ -2554,6 +2585,11 @@ ${planList}`;
                     case 'getAccurateCodingSetting': {
                         const enabled = this._isAccurateCodingEnabled();
                         this._view?.webview.postMessage({ type: 'accurateCodingSetting', enabled });
+                        break;
+                    }
+                    case 'getLeadChallengeSetting': {
+                        const enabled = this._isLeadInlineChallengeEnabled();
+                        this._view?.webview.postMessage({ type: 'leadChallengeSetting', enabled });
                         break;
                     }
                     case 'setActiveTab': {
@@ -6199,6 +6235,10 @@ ${planList}`;
         return vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
     }
 
+    private _isLeadInlineChallengeEnabled(): boolean {
+        return vscode.workspace.getConfiguration('switchboard').get<boolean>('leadCoder.inlineChallenge', false);
+    }
+
     private _withCoderAccuracyInstruction(basePayload: string): string {
         if (!this._isAccurateCodingEnabled()) {
             return basePayload;
@@ -6614,7 +6654,7 @@ ${focusDirective}`),
         const strictReviewPrompts = teamStrictPrompts ?? vscode.workspace.getConfiguration('switchboard').get<boolean>('review.strictPrompts', false);
         const focusDirective = `FOCUS DIRECTIVE: Use the Plan File path above as the single source of truth. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
         const planAnchor = `Plan File: ${planFileAbsolute}`;
-        const { baseInstruction, includeInlineChallenge } = this._parsePromptInstruction(instruction);
+        const { baseInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
         const inlineChallengeDirective = `Challenge step (inline, no workflow transitions):
 - Before implementation, perform a concise adversarial review of this plan.
 - List at least 2 concrete flaws/edge cases and how you'll address them.
@@ -7084,9 +7124,47 @@ ${focusDirective}`);
         return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
     }
 
-    private _buildInitiatedPlanPrompt(planPath: string): string {
-        const focusDirective = `FOCUS DIRECTIVE: You are working on the file at ${planPath}. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing. Treat the provided path as the single source of truth.`;
-        return `@[/improve-plan] Please review and expand the initial plan.\n\n${focusDirective}`;
+    private _buildDraftPlanContent(title: string): string {
+        return [
+            `# ${title}`,
+            '',
+            '## Goal',
+            '- TODO',
+            '',
+            '## Proposed Changes',
+            '- TODO',
+            '',
+            '## Verification Plan',
+            '- TODO',
+            '',
+            '## Open Questions',
+            '- TODO',
+            ''
+        ].join('\n');
+    }
+
+    private async _openPlanInReviewPanel(sessionId: string, planFileAbsolute: string, topic: string): Promise<void> {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        await vscode.commands.executeCommand('switchboard.reviewPlan', {
+            sessionId,
+            planFileAbsolute,
+            topic,
+            workspaceRoot: workspaceRoot || undefined,
+            initialMode: 'edit'
+        });
+    }
+
+    public async createDraftPlanTicket(): Promise<void> {
+        const title = 'Untitled Plan';
+        const idea = this._buildDraftPlanContent(title);
+
+        try {
+            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(title, idea, false);
+            await this._openPlanInReviewPanel(sessionId, planFileAbsolute, title);
+        } catch (err: any) {
+            const msg = err?.message || String(err);
+            vscode.window.showErrorMessage(`Plan creation failed: ${msg}`);
+        }
     }
 
     private async _createInitiatedPlan(title: string, idea: string, isAirlock: boolean): Promise<{ sessionId: string; planFileAbsolute: string; }> {
@@ -7185,58 +7263,6 @@ ${focusDirective}`);
 
         await fs.promises.copyFile(planFileAbsolute, destPath);
         console.log(`[TaskViewerProvider] Auto-promoted plan to brain: ${fileName}`);
-    }
-
-    private async _handleInitiatePlan(title: string, idea: string, mode: 'send' | 'copy' | 'local' | 'review' | 'ticket', isAirlock: boolean) {
-        const trimmedTitle = title.trim();
-        const trimmedIdea = idea.trim();
-
-        if (!trimmedTitle || !trimmedIdea) {
-            vscode.window.showWarningMessage('Plan title and feature idea/bug are required.');
-            return;
-        }
-
-        try {
-            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(trimmedTitle, trimmedIdea, isAirlock);
-
-            if (mode === 'local') {
-                this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                return;
-            }
-
-            if (mode === 'review') {
-                this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                await this._handleTriggerAgentAction('planner', sessionId, 'improve-plan');
-                return;
-            }
-
-            if (mode === 'send') {
-                await this._handleTriggerAgentAction('planner', sessionId, 'improve-plan');
-                return;
-            }
-
-            if (mode === 'ticket') {
-                const workspaceRoot = this._resolveWorkspaceRoot();
-                await vscode.commands.executeCommand('switchboard.reviewPlan', {
-                    sessionId,
-                    planFileAbsolute,
-                    topic: trimmedTitle,
-                    workspaceRoot: workspaceRoot || undefined,
-                    initialMode: 'edit'
-                });
-                return;
-            }
-
-            const prompt = this._buildInitiatedPlanPrompt(planFileAbsolute);
-            await vscode.env.clipboard.writeText(prompt);
-            vscode.window.showInformationMessage('Plan created and prompt copied to clipboard.');
-        } catch (err: any) {
-            const msg = err?.message || String(err);
-            if (mode === 'local' || mode === 'review') {
-                this._view?.webview.postMessage({ type: 'airlock_planError', message: msg });
-            }
-            vscode.window.showErrorMessage(`Plan creation failed: ${msg}`);
-        }
     }
 
     // --- Persona Injection System ---

@@ -9,9 +9,11 @@ const path = require('path');
 
 const providerPath = path.join(__dirname, '..', 'services', 'TaskViewerProvider.ts');
 const webviewPath = path.join(__dirname, '..', 'webview', 'implementation.html');
+const packagePath = path.join(__dirname, '..', '..', 'package.json');
 
 const providerSource = fs.readFileSync(providerPath, 'utf8');
 const webviewSource = fs.readFileSync(webviewPath, 'utf8');
+const packageSource = fs.readFileSync(packagePath, 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -47,39 +49,60 @@ function run() {
         );
     });
 
-    test('lead and coder prompts only append challenge block conditionally', () => {
+    test('lead challenge option is resolved through lead-only prompt settings', () => {
         expectRegex(
             providerSource,
-            /const\s+inlineChallengeBlock\s*=\s*includeInlineChallenge\s*\?\s*`\\n\\n\$\{inlineChallengeDirective\}`\s*:\s*'';/,
-            'Expected single-plan prompt construction to build an optional inline challenge block.'
+            /private\s+_getPromptInstructionOptions\(role:\s*string,\s*instruction\?:\s*string\):\s*\{\s*baseInstruction\?:\s*string;\s*includeInlineChallenge:\s*boolean\s*\}/,
+            'Expected TaskViewerProvider to expose a role-aware helper for challenge prompt options.'
         );
         expectRegex(
             providerSource,
-            /\$\{planAnchor\}\$\{inlineChallengeBlock\}/,
-            'Expected lead/coder single-plan prompts to append the challenge block only when enabled.'
+            /if\s*\(\s*role\s*!==\s*'lead'\s*\)\s*\{\s*return\s*\{\s*baseInstruction:\s*parsedInstruction\.baseInstruction,\s*includeInlineChallenge:\s*false\s*\};/s,
+            'Expected inline challenge to be disabled for non-lead roles, including coder.'
         );
         expectRegex(
             providerSource,
-            /const\s+challengeBlock\s*=\s*includeInlineChallenge\s*\?\s*`\\n\\n\$\{inlineChallengeDirective\}`\s*:\s*'';/,
-            'Expected batch prompt construction to use an optional challenge block.'
+            /this\._isLeadInlineChallengeEnabled\(\)/,
+            'Expected the role-aware prompt helper to honor the persisted Lead Coder setting.'
+        );
+        expectRegex(
+            providerSource,
+            /get<boolean>\('leadCoder\.inlineChallenge',\s*false\)/,
+            'Expected the Lead Coder challenge setting to be read from workspace configuration.'
         );
     });
 
-    test('implementation view exposes opt-in challenge actions for lead and coder', () => {
+    test('setup stores a lead-only challenge option instead of dedicated dispatch buttons', () => {
         expectRegex(
             webviewSource,
-            /challengeBtn\.innerText\s*=\s*'WITH CHALLENGE';/,
-            'Expected the implementation webview to show a dedicated opt-in challenge action.'
+            /id="lead-challenge-toggle"/,
+            'Expected the setup UI to expose a Lead Coder challenge toggle.'
         );
         expectRegex(
             webviewSource,
-            /vscode\.postMessage\(\{\s*type:\s*'triggerAgentAction',\s*role:\s*roleId,\s*sessionFile:\s*sessionId,\s*instruction:\s*'with-challenge'\s*\}\);/s,
-            'Expected the challenge action to dispatch the with-challenge instruction.'
+            /type:\s*'getLeadChallengeSetting'/,
+            'Expected the setup panel to request the saved Lead Coder challenge setting.'
         );
         expectRegex(
             webviewSource,
-            /instruction:\s*'improve-plan'/,
-            'Expected the planner action to use improve-plan rather than the legacy enhance instruction.'
+            /leadChallengeEnabled/,
+            'Expected the setup save payload to include the Lead Coder challenge setting.'
+        );
+        assert.ok(
+            !/challengeBtn\.innerText\s*=\s*'WITH CHALLENGE';/.test(webviewSource),
+            'Implementation view should not render a dedicated WITH CHALLENGE action button.'
+        );
+        assert.ok(
+            !/instruction:\s*'with-challenge'/.test(webviewSource),
+            'Implementation view should not dispatch with-challenge directly from the action buttons.'
+        );
+    });
+
+    test('package configuration declares the lead-only challenge option', () => {
+        expectRegex(
+            packageSource,
+            /"switchboard\.leadCoder\.inlineChallenge"\s*:\s*\{/,
+            'Expected package.json to contribute a lead-only inline challenge setting.'
         );
     });
 

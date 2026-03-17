@@ -807,8 +807,8 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(setupDisposable);
 
-    const initiatePlanDisposable = vscode.commands.registerCommand('switchboard.initiatePlan', () => {
-        taskViewerProvider?.revealInitiatePlanModal();
+    const initiatePlanDisposable = vscode.commands.registerCommand('switchboard.initiatePlan', async () => {
+        await taskViewerProvider?.createDraftPlanTicket();
     });
     context.subscriptions.push(initiatePlanDisposable);
 

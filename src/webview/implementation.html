@@ -1371,6 +1371,10 @@
                     <input id="accurate-coding-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Accurate coding mode for Coder prompts</span>
                 </label>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <input id="lead-challenge-toggle" type="checkbox" style="width:auto; margin:0;">
+                    <span>Inline challenge step for Lead Coder prompts</span>
+                </label>
                 <div style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">CUSTOM AGENTS</div>
                 <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
                 <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
@@ -1392,22 +1396,6 @@
             <div class="status-indicator" id="mcp-status-footer">
                 <div class="tiny-dot" id="mcp-dot"></div>
                 <span id="mcp-text">MCP: CHECKING</span>
-            </div>
-        </div>
-    </div>
-
-    <div id="initiate-plan-modal" class="modal-overlay hidden">
-        <div class="modal-card">
-            <div class="modal-title">Create Plan</div>
-            <label class="modal-label" for="init-plan-title">Plan title</label>
-            <input id="init-plan-title" class="modal-input" type="text"
-                placeholder="e.g. Improve onboarding conversion">
-            <label class="modal-label" for="init-plan-idea">Feature idea or bug</label>
-            <textarea id="init-plan-idea" class="modal-textarea"
-                placeholder="Describe what should be fixed or built..."></textarea>
-            <div class="flex gap-2">
-                <button id="btn-send-planner" class="action-btn w-full">SEND TO PLANNER</button>
-                <button id="btn-save-plan" class="secondary-btn w-full">SAVE PLAN</button>
             </div>
         </div>
     </div>
@@ -1473,9 +1461,6 @@
         const copyPlanLinkBtn = document.getElementById('btn-copy-plan-link');
         const mergeAllPlansBtn = document.getElementById('btn-merge-all-plans');
 
-        const initiatePlanModal = document.getElementById('initiate-plan-modal');
-        const initiatePlanTitleInput = document.getElementById('init-plan-title');
-        const initiatePlanIdeaInput = document.getElementById('init-plan-idea');
         const recoverPlansModal = document.getElementById('recover-plans-modal');
         const recoverPlanList = document.getElementById('recover-plan-list');
         const recoverEmptyMsg = document.getElementById('recover-empty-msg');
@@ -1524,28 +1509,6 @@
                 copyPlanLinkBtn.classList.remove('success', 'error');
                 copyPlanLinkTimer = null;
             }, 1500);
-        }
-
-        function openInitiatePlanModal(initialIdea) {
-            _planModalFromAirlock = !!initialIdea;
-            if (initialIdea) {
-                initiatePlanIdeaInput.value = initialIdea;
-            }
-            const sendBtn = document.getElementById('btn-send-planner');
-            if (_planModalFromAirlock) {
-                sendBtn.innerText = 'REVIEW PLAN';
-            } else {
-                sendBtn.innerText = 'OPEN TICKET';
-            }
-            initiatePlanModal.classList.remove('hidden');
-            setTimeout(() => initiatePlanTitleInput.focus(), 0);
-        }
-
-        function closeInitiatePlanModal() {
-            initiatePlanModal.classList.add('hidden');
-            _planModalFromAirlock = false;
-            const sendBtn = document.getElementById('btn-send-planner');
-            sendBtn.innerText = 'OPEN TICKET';
         }
 
         function sanitizeCustomAgentId(value) {
@@ -1683,40 +1646,8 @@
             });
         }
 
-        function submitInitiatePlan(action) {
-            const title = initiatePlanTitleInput.value.trim();
-            const idea = initiatePlanIdeaInput.value.trim();
-            if (!title || !idea) {
-                return;
-            }
-
-            let mode = action;
-            if (_planModalFromAirlock) {
-                mode = action === 'send' ? 'review' : 'local';
-            } else if (action === 'send') {
-                mode = 'ticket';
-            }
-
-            vscode.postMessage({
-                type: 'initiatePlan',
-                title,
-                idea,
-                mode,
-                isAirlock: _planModalFromAirlock
-            });
-            closeInitiatePlanModal();
-            initiatePlanTitleInput.value = '';
-            initiatePlanIdeaInput.value = '';
-        }
-
-        document.getElementById('btn-send-planner').addEventListener('click', () => submitInitiatePlan('send'));
-        document.getElementById('btn-save-plan').addEventListener('click', () => submitInitiatePlan('local'));
-        document.getElementById('btn-create-plan').addEventListener('click', () => openInitiatePlanModal());
-
-        initiatePlanModal.addEventListener('click', (event) => {
-            if (event.target === initiatePlanModal) {
-                closeInitiatePlanModal();
-            }
+        document.getElementById('btn-create-plan').addEventListener('click', () => {
+            vscode.postMessage({ type: 'createDraftPlanTicket' });
         });
 
         // Recovery Modal
@@ -1785,7 +1716,7 @@
             if (event.target === customAgentModal) closeCustomAgentModal();
         });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') { closeInitiatePlanModal(); closeRecoverPlansModal(); closeCustomAgentModal(); }
+            if (e.key === 'Escape') { closeRecoverPlansModal(); closeCustomAgentModal(); }
         });
         recoverSearchInput.addEventListener('input', () => {
             renderRecoverablePlans(recoverablePlansCache, recoverSearchInput.value);
@@ -1865,6 +1796,7 @@
                     if (isOpen) {
                         vscode.postMessage({ type: 'getStartupCommands' });
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
+                        vscode.postMessage({ type: 'getLeadChallengeSetting' });
                         vscode.postMessage({ type: 'getVisibleAgents' });
                         vscode.postMessage({ type: 'getCustomAgents' });
                     }
@@ -1886,7 +1818,8 @@
                     if (role) visibleAgents[role] = cb.checked;
                 });
                 const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
-                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, customAgents: lastCustomAgents });
+                const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, customAgents: lastCustomAgents });
                 lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
                 renderCustomAgentConfigList();
                 renderAgentList();
@@ -2187,9 +2120,6 @@
                         vscode.postMessage({ type: 'orchestratorSessionChange', sessionId: runSheetSelect.value || null });
                     }
                     break;
-                case 'openInitiatePlanModal':
-                    openInitiatePlanModal();
-                    break;
                 case 'copyPlanLinkResult':
                     showCopyPlanLinkFeedback(message.success === true);
                     break;
@@ -2252,6 +2182,13 @@
                     const toggle = document.getElementById('accurate-coding-toggle');
                     if (toggle) {
                         toggle.checked = message.enabled !== false;
+                    }
+                    break;
+                }
+                case 'leadChallengeSetting': {
+                    const toggle = document.getElementById('lead-challenge-toggle');
+                    if (toggle) {
+                        toggle.checked = message.enabled === true;
                     }
                     break;
                 }
@@ -2356,16 +2293,6 @@
                     const wStatus2 = document.getElementById('jules-sync-status');
                     if (sBtn2) { sBtn2.disabled = false; sBtn2.innerText = 'SYNC REPO'; sBtn2.classList.remove('dispatching'); }
                     if (wStatus2) wStatus2.innerText = '⚠ ' + (message.message || 'Sync failed');
-                    break;
-                }
-                case 'airlock_planSaved': {
-                    const pStatus = document.getElementById('webai-status');
-                    if (pStatus) pStatus.innerText = '✓ Plan saved — ' + new Date().toLocaleTimeString();
-                    break;
-                }
-                case 'airlock_planError': {
-                    const pStatus2 = document.getElementById('webai-status');
-                    if (pStatus2) pStatus2.innerText = '⚠ ' + (message.message || 'Plan save failed');
                     break;
                 }
                 case 'airlock_coderSent': {
@@ -2620,27 +2547,6 @@
 
             container.appendChild(btn);
 
-            if (roleId === 'lead' || roleId === 'coder') {
-                const challengeBtn = document.createElement('button');
-                challengeBtn.className = 'secondary-btn is-teal w-full';
-                challengeBtn.innerText = 'WITH CHALLENGE';
-                challengeBtn.dataset.dispatchRole = roleId;
-                challengeBtn.disabled = !isReady || pendingDispatch || !isPlanSelected();
-                challengeBtn.title = 'Send the same plan with an opt-in inline challenge step before implementation.';
-                challengeBtn.onclick = () => {
-                    const sessionId = runSheetSelect.value;
-                    if (!sessionId) return;
-                    markDispatchPending(roleId);
-                    getDispatchButtons(roleId).forEach((dispatchBtn) => {
-                        dispatchBtn.disabled = true;
-                    });
-                    challengeBtn.classList.add('dispatching');
-                    challengeBtn.innerText = 'DISPATCHING...';
-                    vscode.postMessage({ type: 'triggerAgentAction', role: roleId, sessionFile: sessionId, instruction: 'with-challenge' });
-                };
-                container.appendChild(challengeBtn);
-            }
-
             if (roleId === 'jules') {
                 container.appendChild(createJulesHistoryList());
             }
@@ -2758,8 +2664,6 @@
             switchAgentTab(currentAgentTab);
         }
 
-        let _planModalFromAirlock = false;
-
         function createWebAiAirlockPanel() {
             const container = document.createElement('div');
             container.className = 'agent-row';
@@ -2859,7 +2763,7 @@
 
             const s3Desc = document.createElement('div');
             s3Desc.style.cssText = 'padding:0 8px 6px; font-size:10px; color:var(--text-secondary);';
-            s3Desc.innerText = 'Have Notebook make a Feature plan using the How to plan guide. When the plan is ready, use Create Plan to save the result and add to your Kanban. If the plan needs improvement, use Autoban or manually send to the Planner agent.';
+            s3Desc.innerText = 'Have Notebook make a Feature plan using the How to plan guide. When the plan is ready, use CREATE to open a new ticket in edit mode, paste the result, and save it to your Kanban. If the plan needs improvement, use Autoban or manually send to the Planner agent.';
             container.appendChild(s3Desc);
 
             return container;
@@ -3225,10 +3129,7 @@
                 addButton.textContent = 'ADD TERMINAL';
                 addButton.disabled = poolEntries.length >= 5;
                 addButton.addEventListener('click', () => {
-                    const requestedName = window.prompt('Name for new ' + label + ' terminal', label + ' Backup');
-                    if (requestedName === null) return;
-                    const cleaned = requestedName.trim();
-                    vscode.postMessage({ type: 'addAutobanTerminal', role, name: cleaned });
+                    vscode.postMessage({ type: 'addAutobanTerminal', role });
                 });
 
                 roleHeader.appendChild(roleTitleWrap);

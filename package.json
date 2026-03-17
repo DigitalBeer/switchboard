@@ -142,6 +142,11 @@
           "default": true,
           "description": "When enabled, coder prompts from sidebar actions include instructions to follow the accuracy.md workflow."
         },
+        "switchboard.leadCoder.inlineChallenge": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, Lead Coder execution prompts include an inline challenge step before implementation."
+        },
         "switchboard.team.strictPrompts": {
           "type": "boolean",
           "default": false,

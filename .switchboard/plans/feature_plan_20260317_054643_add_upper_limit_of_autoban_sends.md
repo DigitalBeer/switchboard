@@ -117,3 +117,26 @@ Three features bundled into one plan:
 
 ## Agent Recommendation
 Send it to the **Lead Coder** — the round-robin dispatch logic and terminal pool management are architecturally significant. Consider splitting Phase 1 (send limit) as a Coder task first.
+
+## Reviewer Pass Update
+
+### Fixed Items
+- Fixed autoban send accounting so the per-terminal cap and global session cap now count **dispatches/API sends**, not the number of plans packed into a batch. This matches the plan language around "10 sends" and "50 API calls" and prevents a batch of 5 plans from incorrectly consuming 5 send slots in one dispatch.
+
+### Files Changed During Reviewer Pass
+- `src/services/TaskViewerProvider.ts`
+- `src/test/autoban-state-regression.test.js`
+
+### Validation Results
+- `npm run compile-tests` ✅
+- `npm run compile` ✅
+- `node src/test/autoban-state-regression.test.js` ✅
+- `node src/test/direct-create-ticket-regression.test.js` ⚠️ Fails in the current worktree due to an unrelated direct-plan-ticket regression (`airlock flow should still retain the initiate plan modal helper`). This reviewer pass did not modify that flow because it is outside this autoban plan's scope.
+
+### Remaining Risks
+- Exhaustion checks currently treat a role with no eligible live terminals the same as a fully exhausted pool and may auto-stop autoban. That is defensible for safety, but if the desired behavior is "pause and resume when terminals come back" instead of "stop", that behavior should be clarified.
+- The sidebar pool UI surfaces terminal-level usage and readiness, but the optional Kanban per-column usage badges mentioned in the plan are not called out or verified here.
+
+### Reviewer Verdict
+- The send-limit / round-robin implementation is materially aligned with the plan after the dispatch-accounting fix above.
+- No remaining CRITICAL or MAJOR defects were found in the autoban implementation itself during this pass.

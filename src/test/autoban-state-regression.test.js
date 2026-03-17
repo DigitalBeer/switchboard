@@ -142,6 +142,17 @@ async function run() {
         'TaskViewerProvider should preserve the terminal-override dispatch seam for autoban pools'
     );
     assert.ok(
+        providerSource.includes('remainingDispatches: Math.min(selectedEntry.remaining, this._getAutobanRemainingSessionCapacity())') &&
+        providerSource.includes('await this._recordAutobanDispatch(targetRole, selection.terminalName, 1, selection.effectivePool);') &&
+        providerSource.includes('const batch = eligibleCards.slice(0, batchSize);'),
+        'autoban send/session caps should count dispatches, not individual plans inside a batch'
+    );
+    assert.ok(
+        providerSource.includes('await vscode.window.showInputBox({') &&
+        !implementationSource.includes('window.prompt('),
+        'autoban add-terminal flow should request names through VS Code instead of relying on window.prompt in the webview'
+    );
+    assert.ok(
         implementationSource.includes('MAX SENDS / TERMINAL') &&
         implementationSource.includes('TERMINAL POOLS') &&
         implementationSource.includes('CLEAR & RESET') &&
