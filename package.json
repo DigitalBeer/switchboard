@@ -57,6 +57,10 @@
         "title": "Switchboard: Connect MCP"
       },
       {
+        "command": "switchboard.recheckMcp",
+        "title": "Switchboard: Recheck MCP Connection"
+      },
+      {
         "command": "switchboard.createAgentGrid",
         "title": "Switchboard: Open Agent Terminals"
       },

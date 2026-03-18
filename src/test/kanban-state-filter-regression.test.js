@@ -35,12 +35,12 @@ function run() {
                 custom_agent_ops: [{ topic: 'Ops item' }]
             },
             [
-                { id: 'CREATED', label: 'Plan Created', order: 0 },
+                { id: 'CREATED', label: 'New', order: 0 },
                 { id: 'custom_agent_ops', label: 'Ops', order: 150 }
             ]
         );
 
-        assert.strictEqual(formatted.CREATED.label, 'Plan Created');
+        assert.strictEqual(formatted.CREATED.label, 'New');
         assert.deepStrictEqual(formatted.CREATED.items, [{ topic: 'Created item' }]);
         assert.strictEqual(formatted.custom_agent_ops.label, 'Ops');
         assert.deepStrictEqual(formatted.custom_agent_ops.items, [{ topic: 'Ops item' }]);

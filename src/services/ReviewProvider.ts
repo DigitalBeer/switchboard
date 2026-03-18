@@ -285,11 +285,13 @@ export class ReviewProvider implements vscode.Disposable {
                         this._currentPlan.sessionId,
                         this._currentPlan.workspaceRoot
                     );
-                    if (!ok) {
-                        throw new Error('Plan deletion was cancelled or failed.');
+                    if (ok) {
+                        vscode.window.showInformationMessage('Plan deleted.');
+                        this._panel.dispose();
+                    } else {
+                        // User cancelled the confirmation dialog — just reset the UI
+                        this._panel.webview.postMessage({ type: 'ticketActionResult', ok: true, message: '' });
                     }
-                    vscode.window.showInformationMessage('Plan deleted.');
-                    this._panel.dispose();
                 } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     this._panel.webview.postMessage({ type: 'ticketActionResult', ok: false, message });

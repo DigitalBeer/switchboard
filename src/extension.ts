@@ -17,6 +17,7 @@ let setupStatusBarItem: vscode.StatusBarItem;
 // Global references for bundled MCP server lifecycle
 let mcpServerProcess: ChildProcess | null = null;
 let mcpOutputChannel: vscode.OutputChannel | null = null;
+let mcpHealthCheckInterval: ReturnType<typeof setInterval> | null = null;
 const DISPATCH_SIGNING_KEY_SECRET = 'switchboard.dispatchSigningKey.v1';
 
 function getWorkspaceMcpDirectory(workspaceRoot: string): string {
@@ -940,9 +941,16 @@ export async function activate(context: vscode.ExtensionContext) {
             mcpOutputChannel?.appendLine(`[Extension] Failed to spawn bundled MCP server: ${e}`);
         });
 
-        // 7. Initial Health Check: Run once after extension is fully loaded
+        // 7. Initial Health Check: Run once after extension is fully loaded,
+        // then every 5 minutes to detect IPC connectivity changes without polling spam.
         setTimeout(async () => {
             await refreshMcpStatus();
+
+            // Start 5-minute recurring health check (throttled — not per-second polling)
+            const MCP_HEALTH_CHECK_INTERVAL_MS = 300_000; // 5 minutes
+            mcpHealthCheckInterval = setInterval(() => {
+                refreshMcpStatus().catch(() => { });
+            }, MCP_HEALTH_CHECK_INTERVAL_MS);
         }, 3000);
 
         context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
@@ -1110,6 +1118,19 @@ export async function activate(context: vscode.ExtensionContext) {
         await refreshMcpStatus();
     });
     context.subscriptions.push(refreshDisposable);
+
+    // Manual MCP connection recheck (triggered from sidebar recheck icon)
+    const recheckMcpDisposable = vscode.commands.registerCommand('switchboard.recheckMcp', async () => {
+        // Send "checking" intermediate state so the UI shows CHECKING immediately
+        taskViewerProvider.sendMcpConnectionStatus({
+            serverRunning: true,
+            ideConfigured: true,
+            toolReachable: false,
+            diagnostic: 'MCP: Checking...'
+        });
+        await refreshMcpStatus();
+    });
+    context.subscriptions.push(recheckMcpDisposable);
 
     const housekeepingDisposable = vscode.commands.registerCommand('switchboard.housekeepNow', async () => {
         if (!workspaceRoot || !inboxWatcher) {
@@ -2821,8 +2842,11 @@ interface McpStatus {
 }
 
 /**
- * Check MCP connection status using static setup signals only.
- * No IPC probing or polling: we only verify config presence + server file presence.
+ * Check MCP connection status using static setup signals + IPC health probe.
+ * Static checks (server file presence, IDE config) run first as a fast pre-flight.
+ * If static checks pass and the MCP server process is alive, an IPC health probe
+ * verifies actual connectivity. This replaces the old always-true static-only approach
+ * while avoiding the per-second polling that was previously removed.
  */
 async function checkMcpConnection(context: vscode.ExtensionContext, workspaceRoot: string): Promise<McpStatus> {
     const status: McpStatus = {
@@ -2839,15 +2863,13 @@ async function checkMcpConnection(context: vscode.ExtensionContext, workspaceRoo
         });
     };
 
-    // Primary check: packaged extension dist runtime.
-    // Fallback: source layout used in some dev/preview extension runs.
+    // Static pre-flight: verify server file exists on disk.
     const serverFileDetected = [
         path.join(context.extensionPath, 'dist', 'mcp-server', 'mcp-server.js'),
         path.join(context.extensionPath, 'src', 'mcp-server', 'mcp-server.js')
     ].some(candidatePath => fs.existsSync(candidatePath));
     if (serverFileDetected) {
         status.serverRunning = true;
-        status.toolReachable = true;
     }
 
     // Check VS Code workspace settings
@@ -2863,20 +2885,64 @@ async function checkMcpConnection(context: vscode.ExtensionContext, workspaceRoo
         mcpOutputChannel?.appendLine(`[MCP] Failed to read mcpServers config: ${details}`);
     }
 
+    // IPC health probe: if static checks pass and process is alive, verify actual connectivity.
+    if (status.serverRunning && mcpServerProcess && mcpServerProcess.connected) {
+        try {
+            const probeId = `probe_${Date.now()}`;
+            const probeOk = await new Promise<boolean>((resolve) => {
+                const timeout = setTimeout(() => {
+                    mcpServerProcess?.removeListener('message', handler);
+                    resolve(false);
+                }, 10_000);
+
+                const handler = (msg: any) => {
+                    if (msg?.type === 'healthProbeResponse' && msg?.id === probeId) {
+                        clearTimeout(timeout);
+                        mcpServerProcess?.removeListener('message', handler);
+                        resolve(msg.ok === true);
+                    }
+                };
+
+                mcpServerProcess!.on('message', handler);
+                mcpServerProcess!.send({ type: 'healthProbe', id: probeId });
+            });
+
+            status.toolReachable = probeOk;
+        } catch (err) {
+            status.toolReachable = false;
+            mcpOutputChannel?.appendLine(`[MCP] IPC health probe error: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    } else if (status.serverRunning && mcpServerProcess && !mcpServerProcess.connected) {
+        // Process exists but IPC channel is broken
+        status.toolReachable = false;
+        mcpOutputChannel?.appendLine('[MCP] IPC channel disconnected — marking toolReachable = false');
+    } else if (status.serverRunning) {
+        // Server file exists but no process reference — may be externally managed
+        status.toolReachable = true;
+    }
+
     if (configReadFailed) {
         status.diagnostic = 'Unable to read IDE MCP config';
     } else if (!status.ideConfigured) {
         status.diagnostic = 'IDE MCP config not found or disabled';
     } else if (!status.serverRunning) {
         status.diagnostic = 'MCP server file not found';
+    } else if (!status.toolReachable) {
+        status.diagnostic = 'IPC health probe failed';
     } else {
-        status.diagnostic = 'MCP server file detected';
+        status.diagnostic = 'MCP server connected (IPC verified)';
     }
 
     return status;
 }
 
 export function deactivate() {
+    // Clear MCP health check interval
+    if (mcpHealthCheckInterval) {
+        clearInterval(mcpHealthCheckInterval);
+        mcpHealthCheckInterval = null;
+    }
+
     // Dispose ALL Switchboard-managed terminals so they don't persist as orphans
     for (const [name, terminal] of registeredTerminals) {
         try {

@@ -72,12 +72,6 @@
             padding: 8px 10px;
         }
 
-        .subtitle {
-            font-size: 12px;
-            color: var(--muted);
-            margin-top: 6px;
-            word-break: break-all;
-        }
 
         .hidden {
             display: none !important;
@@ -406,6 +400,21 @@
             color: var(--muted);
         }
 
+        .deps-orphaned-header {
+            margin-top: 12px;
+            padding: 6px 8px;
+            font-size: 12px;
+            color: var(--vscode-editorWarning-foreground, #cca700);
+            border-top: 1px solid var(--border);
+        }
+
+        .deps-orphaned-item {
+            padding: 4px 8px 4px 24px;
+            font-size: 12px;
+            color: var(--muted);
+            font-style: italic;
+        }
+
         .log-head {
             display: flex;
             justify-content: space-between;
@@ -453,7 +462,6 @@
             <div class="eyebrow">Ticket View</div>
             <h1 class="title" id="header-title">Plan Ticket</h1>
             <input id="header-title-input" class="title-input hidden" type="text" />
-            <div class="subtitle" id="header-path"></div>
         </div>
         <div class="header-actions">
             <button id="copy-plan-link">Copy Link</button>
@@ -542,7 +550,6 @@
 
         const headerTitleEl = document.getElementById('header-title');
         const headerTitleInputEl = document.getElementById('header-title-input');
-        const headerPathEl = document.getElementById('header-path');
         const columnSelectEl = document.getElementById('column-select');
         const complexitySelectEl = document.getElementById('complexity-select');
         const dependenciesSummaryEl = document.getElementById('dependencies-summary');
@@ -718,10 +725,9 @@
                 item.className = 'log-item';
                 item.innerHTML = `
                     <div class="log-head">
-                        <span class="log-workflow">${escapeHtml(entry.workflow || 'unknown')}</span>
+                        <span class="log-workflow">${escapeHtml(entry.details || 'unknown')}</span>
                         <span class="log-timestamp">${escapeHtml(formatTimestamp(entry.timestamp || ''))}</span>
                     </div>
-                    <div class="log-details">${escapeHtml(entry.details || 'No additional details')}</div>
                 `;
                 actionLogEl.appendChild(item);
             });
@@ -739,6 +745,9 @@
                 return;
             }
 
+            const normalizedDeps = state.dependencies.map(d => d.trim().toLowerCase());
+            const matchedDeps = new Set();
+
             state.openPlans.forEach((plan) => {
                 const dependencyValue = String(plan.topic || plan.sessionId || '').trim();
                 const wrapper = document.createElement('label');
@@ -747,7 +756,20 @@
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.value = dependencyValue;
-                checkbox.checked = state.dependencies.includes(dependencyValue);
+
+                const normalizedValue = dependencyValue.toLowerCase();
+                const normalizedSessionId = String(plan.sessionId || '').trim().toLowerCase();
+                const isChecked = normalizedDeps.includes(normalizedValue)
+                    || (normalizedSessionId && normalizedDeps.includes(normalizedSessionId));
+                checkbox.checked = isChecked;
+                if (isChecked) {
+                    // Track which stored dependencies matched
+                    normalizedDeps.forEach(nd => {
+                        if (nd === normalizedValue || nd === normalizedSessionId) {
+                            matchedDeps.add(nd);
+                        }
+                    });
+                }
 
                 const copy = document.createElement('div');
                 copy.innerHTML = `
@@ -759,6 +781,21 @@
                 wrapper.appendChild(copy);
                 depsListEl.appendChild(wrapper);
             });
+
+            // Show orphaned dependencies that didn't match any open plan
+            const orphaned = state.dependencies.filter(d => !matchedDeps.has(d.trim().toLowerCase()));
+            if (orphaned.length > 0) {
+                const divider = document.createElement('div');
+                divider.className = 'deps-orphaned-header';
+                divider.innerHTML = '⚠️ Unmatched dependencies (plan may have been renamed or deleted):';
+                depsListEl.appendChild(divider);
+                orphaned.forEach(dep => {
+                    const item = document.createElement('div');
+                    item.className = 'deps-orphaned-item';
+                    item.textContent = dep;
+                    depsListEl.appendChild(item);
+                });
+            }
         }
 
         function openDepsModal() {
@@ -833,7 +870,6 @@
             }
 
             headerTitleEl.textContent = state.topic || 'Ticket';
-            headerPathEl.textContent = state.planFileAbsolute;
             headerTitleInputEl.value = state.topic;
             renderColumns(Array.isArray(message.columns) ? message.columns : [], state.column);
             complexitySelectEl.value = state.complexity;
@@ -950,9 +986,6 @@
         });
 
         deletePlanButtonEl.addEventListener('click', () => {
-            if (!confirm('Permanently delete this plan? This cannot be undone.')) {
-                return;
-            }
             setBusy(true);
             setStatus('Deleting plan...');
             vscode.postMessage({ type: 'deletePlan', sessionId: state.sessionId });
@@ -968,7 +1001,9 @@
                 .map(input => input.value)
                 .filter(Boolean);
             closeDepsModal();
-            if (JSON.stringify(nextDependencies) === JSON.stringify(state.dependencies)) {
+            // Normalized comparison: treat as unchanged if the same topics match ignoring case/whitespace
+            const normalize = arr => arr.map(d => d.trim().toLowerCase()).sort().join('\n');
+            if (normalize(nextDependencies) === normalize(state.dependencies)) {
                 return;
             }
             postUpdate({

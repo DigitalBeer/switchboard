@@ -897,3 +897,93 @@
 - `task.md:829-879` — Failure mode: task tracking could overstate completion without preserving the actual command evidence. Mitigation: baseline, implementation-gate, and final command outcomes are recorded separately, including the unchanged lint blocker.
 - `task.md:874-879` — Failure mode: readers could misread the raw diff stat as belonging only to this fix in a dirty worktree. Mitigation: the record explicitly notes that file-level diff stats were inflated and that readback was used for the reset-specific hunks.
 - `task.md:871-879` — Failure mode: the missing manual extension-host verification could get lost once the task is handed off. Mitigation: the verification record keeps that gap explicit so the remaining manual check is visible.
+
+## Kanban CREATED label revert execution (feature_plan_20260318_053929_change_colum_name_back)
+
+- [x] Read `accuracy.md`, `.agent/rules/WORKFLOW_INTEGRITY.md`, `.agent/rules/switchboard_modes.md`, the source plan file, current `task.md`, and session `plan.md`.
+- [x] Run baseline verification (`npm run compile-tests`, `npm run compile`, `npm run lint`, focused kanban label regressions) and capture current status.
+- [x] Update the shared built-in Kanban column labels and alias handling so `CREATED` displays as `New` while still accepting legacy `Plan Created`.
+- [x] Update the Kanban webview seed definition and focused regressions to match the restored `New` label.
+- [x] Verify the implementation group, read back modified code, and confirm only intended hunks changed.
+- [x] Perform red-team self-review with concrete failure modes + line references.
+- [x] Run final verification and diff review.
+
+### Detailed Plan
+
+1. Capture a baseline with `compile-tests`, `compile`, `lint`, and the existing focused kanban label regressions so unchanged failures are attributable before editing.
+2. Update the shared label sources in `src/services/agentConfig.ts` and `src/mcp-server/register-tools.js` so the canonical built-in `CREATED` label is `New`, while keeping internal routing/storage on the stable `CREATED` identifier and preserving `Plan Created` as a lookup alias.
+3. Update `src/webview/kanban.html` so its bootstrapped column label matches the shared runtime/MCP label.
+4. Update `src/test/kanban-state-filter-regression.test.js` and `src/test/kanban-mcp-state.test.js` to assert the restored `New` label while locking compatibility for the old `Plan Created` alias.
+5. Re-run verification, read back changed ranges, and review the scoped diff before final red-team review.
+
+### Dependency Map
+
+- Baseline verification must complete before implementation so failures remain attributable.
+- Shared definitions must change before UI/test updates so all dependent surfaces converge on one label contract.
+- Regression updates depend on the final alias/label shape.
+- Final verification depends on code and tests landing together.
+
+### Risks
+
+- Any remaining `Plan Created` label in a canonical definition would leave UI/MCP drift.
+- Removing the legacy alias could break existing prompts, scripts, or tests that still pass `Plan Created`.
+- Because the worktree is already dirty in overlapping areas, diff review alone is not enough; readback must confirm the exact edited lines.
+
+### Verification Plan
+
+- `npm run compile-tests`
+- `npm run compile`
+- `npm run lint` (expected existing ESLint v9 config failure unless repo config changes)
+- `node src\test\kanban-state-filter-regression.test.js`
+- `node src\test\kanban-mcp-state.test.js`
+- Read back modified files and review scoped diff
+
+### Verification Record
+
+- Baseline `npm run compile-tests`: PASS.
+- Baseline `npm run compile`: PASS.
+- Baseline `npm run lint`: FAIL (pre-existing ESLint v9 config migration issue: missing `eslint.config.*`).
+- Baseline `node src\test\kanban-state-filter-regression.test.js`: PASS.
+- Baseline `node src\test\kanban-mcp-state.test.js`: PASS.
+- Implementation gate `npm run compile-tests`: PASS.
+- Implementation gate `npm run compile`: PASS.
+- Implementation gate `node src\test\kanban-state-filter-regression.test.js`: PASS.
+- Implementation gate `node src\test\kanban-mcp-state.test.js`: PASS.
+- Implementation gate `npm run lint`: FAIL (same pre-existing ESLint v9 config migration issue, unchanged).
+- Readback completed for `src/services/agentConfig.ts`, `src/webview/kanban.html`, `src/mcp-server/register-tools.js`, `src/test/kanban-state-filter-regression.test.js`, and `src/test/kanban-mcp-state.test.js`.
+- Scoped diff review confirmed the intended label change in `src/services/agentConfig.ts`, `src/webview/kanban.html`, `src/mcp-server/register-tools.js`, `src/test/kanban-state-filter-regression.test.js`, and `src/test/kanban-mcp-state.test.js`. Note: `src/mcp-server/register-tools.js` also has pre-existing unrelated worktree edits outside this label-revert hunk.
+
+### Red Team Findings
+
+- `src/services/agentConfig.ts:30-35` — Failure mode: if the canonical built-in column definition kept `Plan Created`, any consumer using shared Kanban definitions would still render the wrong header. Mitigation: the `CREATED` definition now restores the label to `New` at the shared source.
+- `src/services/agentConfig.ts:30-35` — Failure mode: renaming the internal column ID instead of the label would break persisted runsheets, routing, and MCP filters that rely on `CREATED`. Mitigation: only the display label changed; the stable ID remains `CREATED`.
+- `src/services/agentConfig.ts:30-35` — Failure mode: changing sort order or autoban metadata while touching the label could silently reorder the board or alter automation. Mitigation: order, kind, and `autobanEnabled` were left unchanged.
+
+- `src/webview/kanban.html:536-541` — Failure mode: the board can briefly render its bootstrapped local column labels before backend sync, so a stale `Plan Created` seed would still show the wrong header on load. Mitigation: the seeded `CREATED` label now matches the restored `New` contract.
+- `src/webview/kanban.html:536-541` — Failure mode: a partial UI-only fix could drift from MCP/runtime definitions and cause visible label flicker after sync. Mitigation: the webview label was updated in tandem with the shared definition and MCP definition.
+- `src/webview/kanban.html:536-541` — Failure mode: editing the wrong object in the seed array could break the role mapping or disable autoban on another column. Mitigation: only the `CREATED` label string changed; role/order behavior stayed intact.
+
+- `src/mcp-server/register-tools.js:292-305` — Failure mode: `get_kanban_state` could continue emitting `Plan Created` even if the UI changed, leaving CLI and extension surfaces inconsistent. Mitigation: the built-in MCP column definition now labels `CREATED` as `New`.
+- `src/mcp-server/register-tools.js:302-305` — Failure mode: removing the `PLAN CREATED` alias would break existing prompts, scripts, or tests that still address the old label text. Mitigation: both `NEW` and legacy `PLAN CREATED` still resolve to `CREATED`.
+- `src/mcp-server/register-tools.js:2196-2200` — Failure mode: the schema description could advertise the wrong UI label and mislead users of the MCP tool even after behavior changed. Mitigation: the tool description now names `New` as the UI label.
+
+- `src/test/kanban-state-filter-regression.test.js:31-57` — Failure mode: future edits could restore `Plan Created` in formatter output without breaking compile. Mitigation: the regression now asserts the formatted built-in label is exactly `New`.
+- `src/test/kanban-state-filter-regression.test.js:49-57` — Failure mode: restoring the label could accidentally drop alias compatibility for older callers. Mitigation: the regression explicitly keeps both `New` and `Plan Created` resolving to `CREATED`.
+- `src/test/kanban-state-filter-regression.test.js:31-57` — Failure mode: a narrower assertion could miss custom-column formatting regressions while focusing on the renamed built-in column. Mitigation: the existing custom-column expectations remain intact alongside the updated `CREATED` label check.
+
+- `src/test/kanban-mcp-state.test.js:92-149` — Failure mode: MCP output could regress to the old label while filtered-column behavior still passes. Mitigation: the test now asserts `payload.CREATED.label === 'New'` on full-board output and filtered responses.
+- `src/test/kanban-mcp-state.test.js:111-139` — Failure mode: switching only to the new label could hide a backward-compatibility break for callers that still send `Plan Created`. Mitigation: the test now covers both `column: 'New'` and `column: 'Plan Created'`.
+- `src/test/kanban-mcp-state.test.js:141-148` — Failure mode: error messages for unknown columns could still advertise the stale display name and misdirect users. Mitigation: the regression now requires `CREATED (New)` in the available-columns error text.
+
+- `task.md:900-940` — Failure mode: the accuracy checklist could overstate completion if baseline and verification gates were not recorded immediately after they ran. Mitigation: this section now marks the completed gates in execution order and leaves final verification pending until it is rerun.
+- `task.md:942-953` — Failure mode: verification evidence could become ambiguous if baseline and post-change results were mixed together. Mitigation: the record separates baseline and implementation-gate outcomes and calls out the unchanged ESLint blocker explicitly.
+- `task.md:955-972` — Failure mode: red-team notes could miss the dirty-worktree nuance and over-trust a raw diff in overlapping files. Mitigation: the findings explicitly record that `register-tools.js` carries pre-existing unrelated edits outside the reverted label hunk.
+
+### Final Verification Addendum
+
+- Final `npm run compile-tests`: PASS.
+- Final `npm run compile`: PASS.
+- Final `node src\test\kanban-state-filter-regression.test.js`: PASS.
+- Final `node src\test\kanban-mcp-state.test.js`: PASS.
+- Final `npm run lint`: FAIL (same pre-existing ESLint v9 config migration issue, unchanged).
+- Final scoped diff stat reviewed for `src/services/agentConfig.ts`, `src/webview/kanban.html`, `src/mcp-server/register-tools.js`, `src/test/kanban-state-filter-regression.test.js`, `src/test/kanban-mcp-state.test.js`, and `task.md`.

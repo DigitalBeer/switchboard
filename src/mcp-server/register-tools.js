@@ -290,7 +290,7 @@ function getWorkspaceRoot() {
 let sqlJsInitPromise = null;
 
 const BUILTIN_KANBAN_COLUMN_DEFINITIONS = [
-    { id: 'CREATED', label: 'Plan Created', order: 0 },
+    { id: 'CREATED', label: 'New', order: 0 },
     { id: 'PLAN REVIEWED', label: 'Planned', order: 100 },
     { id: 'LEAD CODED', label: 'Lead Coder', order: 190 },
     { id: 'CODER CODED', label: 'Coder', order: 200 },
@@ -824,11 +824,18 @@ function isBandBLabel(line) {
 function isEmptyBandBLine(line) {
     if (!line) return true;
     if (/^(?:\u2014|-)+$/.test(line)) return true;
-    return /^(none|n\/?a)\.?$/.test(line);
+    return /^(none|n\/?a|unknown)\.?$/.test(line);
 }
 
 function getComplexityFromContent(content) {
     if (!content) return 'unknown';
+
+    // Highest priority: explicit manual complexity override (user-set via dropdown).
+    const overrideMatch = content.match(/\*\*Manual Complexity Override:\*\*\s*(Low|High|Unknown)/i);
+    if (overrideMatch) {
+        return overrideMatch[1].toLowerCase();
+    }
+
     const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
     if (!auditMatch) {
         const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
@@ -2190,7 +2197,7 @@ function registerTools(server) {
     server.tool(
         "get_kanban_state",
         {
-            column: z.string().optional().describe("Optional kanban column to return. Supports internal IDs like 'CREATED' and UI labels like 'Plan Created'.")
+            column: z.string().optional().describe("Optional kanban column to return. Supports internal IDs like 'CREATED' and UI labels like 'New'.")
         },
         async ({ column } = {}) => {
             const workspaceRoot = getWorkspaceRoot();

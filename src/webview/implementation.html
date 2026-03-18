@@ -1415,6 +1415,7 @@
             <div class="status-indicator" id="mcp-status-footer">
                 <div class="tiny-dot" id="mcp-dot"></div>
                 <span id="mcp-text">MCP: CHECKING</span>
+                <span id="mcp-recheck" title="Recheck MCP connection" style="cursor:pointer; margin-left:4px; opacity:0.6; font-size:11px;" onclick="vscode.postMessage({ type: 'recheckMcpConnection' })">&#x21bb;</span>
             </div>
         </div>
     </div>
@@ -1989,7 +1990,15 @@
                 const count = Number(payload.batchSize || (Array.isArray(payload.sessionIds) ? payload.sessionIds.length : 0) || 0);
                 const sourceColumn = (payload.sourceColumn || 'Unknown').toString();
                 const targetRole = roleLabel((payload.targetRole || '').toString());
-                return `⚡ Autoban: moved ${count} plan(s) from ${sourceColumn} -> ${targetRole}`;
+                let topicsStr = '';
+                if (Array.isArray(payload.sessionIds) && payload.sessionIds.length > 0) {
+                    const topics = payload.sessionIds.map(function(id) {
+                        const sheet = currentRunSheets.find(function(s) { return s.sessionId === id; });
+                        return sheet && sheet.topic ? sheet.topic : id;
+                    });
+                    topicsStr = ' (' + topics.join(', ') + ')';
+                }
+                return `⚡ Autoban: moved ${count} plan(s)${topicsStr} from ${sourceColumn} -> ${targetRole}`;
             }
             if (payload.message && payload.message.toString().trim().length > 0) {
                 return payload.message.toString();
@@ -2390,6 +2399,7 @@
         }
 
         let currentAgentTab = 'agents';
+        let isAutobanPanelInteracting = false;
         function switchAgentTab(tab) {
             currentAgentTab = tab;
             const tabs = { agents: agentListStandard, autoban: agentListAutoban, webai: agentListWebai };
@@ -2577,6 +2587,9 @@
         }
 
         function renderAgentList() {
+            // Skip re-render when user is interacting with autoban dropdowns
+            if (isAutobanPanelInteracting && currentAgentTab === 'autoban') return;
+
             // Preserve stateful analyst input across re-renders
             const existingInput = document.getElementById('analyst-input');
             const analystSnapshot = {
@@ -2725,7 +2738,7 @@
 
             const s1Desc = document.createElement('div');
             s1Desc.style.cssText = 'padding:0 8px 6px; font-size:10px; color:var(--text-secondary);';
-            s1Desc.innerText = 'Package code into docx files for NotebookLM compatibility. Configure the workspace files you want to bundle.';
+            s1Desc.innerText = 'Package code into docx files for NotebookLM compatibility.';
             container.appendChild(s1Desc);
 
             const exportBtn = document.createElement('button');
@@ -2830,6 +2843,10 @@
             const autobanNumberInputStyle = 'width:56px; background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:10px; padding:2px 4px; border-radius:3px; text-align:center;';
             const chipStyle = 'display:inline-flex; align-items:center; gap:4px; border:1px solid var(--border-color); border-radius:999px; padding:1px 6px; font-size:9px; color:var(--text-secondary);';
             const smallButtonStyle = 'background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:9px; padding:3px 6px; border-radius:4px; cursor:pointer;';
+            const guardInteraction = (el) => {
+                el.addEventListener('focus', () => { isAutobanPanelInteracting = true; });
+                el.addEventListener('blur', () => { isAutobanPanelInteracting = false; });
+            };
             const autobanRoles = [
                 { role: 'planner', label: 'Planner' },
                 { role: 'coder', label: 'Coder' },
@@ -2886,46 +2903,6 @@
                 });
             };
 
-            function evaluateIntervalWarning(column, val, batchSz, floorPerPlan, inputEl, warnEl) {
-                const floor = batchSz * floorPerPlan;
-                const ratio = val / floor;
-                if (ratio < 0.5) {
-                    inputEl.style.borderColor = 'var(--accent-red, #e55)';
-                    warnEl.textContent = '\u26A0 ' + floor + 'm recommended for batch ' + batchSz + ' - plans may not finish in time';
-                    warnEl.style.color = 'var(--accent-red, #e55)';
-                } else if (ratio < 1.0) {
-                    inputEl.style.borderColor = 'var(--accent-orange, #e90)';
-                    warnEl.textContent = 'Low-complexity plans only - recommended ' + floor + 'm for batch ' + batchSz;
-                    warnEl.style.color = 'var(--accent-orange, #e90)';
-                } else {
-                    inputEl.style.borderColor = '';
-                    warnEl.textContent = '';
-                }
-            }
-
-            const toggleRow = document.createElement('div');
-            toggleRow.className = 'agent-row';
-            toggleRow.style.cssText = 'display:flex; align-items:center; justify-content:space-between; padding:8px;';
-
-            const toggleLabel = document.createElement('span');
-            toggleLabel.style.cssText = 'font-family:var(--font-mono); font-size:11px; color:var(--text-primary); letter-spacing:0.5px;';
-            toggleLabel.textContent = 'AUTOBAN ENGINE';
-
-            const toggleSwitch = document.createElement('button');
-            toggleSwitch.className = 'action-btn';
-            toggleSwitch.style.cssText = autobanState.enabled
-                ? 'color:var(--accent-green);border-color:color-mix(in srgb, var(--accent-green) 40%, transparent);width:60px;'
-                : 'color:var(--text-secondary);border-color:var(--border-color);width:60px;';
-            toggleSwitch.textContent = autobanState.enabled ? 'ON' : 'OFF';
-            toggleSwitch.addEventListener('click', () => {
-                autobanState.enabled = !autobanState.enabled;
-                emitAutobanState();
-            });
-
-            toggleRow.appendChild(toggleLabel);
-            toggleRow.appendChild(toggleSwitch);
-            container.appendChild(toggleRow);
-
             const batchRow = document.createElement('div');
             batchRow.style.cssText = 'display:flex; align-items:center; gap:8px; padding:0 8px; font-family:var(--font-mono); font-size:10px; color:var(--text-secondary);';
 
@@ -2934,6 +2911,7 @@
 
             const batchSelect = document.createElement('select');
             batchSelect.style.cssText = autobanSelectStyle;
+            guardInteraction(batchSelect);
             const AUTOBAN_BATCH_SIZE_OPTIONS = [1, 2, 3, 4, 5];
             AUTOBAN_BATCH_SIZE_OPTIONS.forEach(val => {
                 const opt = document.createElement('option');
@@ -2944,15 +2922,6 @@
             });
             batchSelect.addEventListener('change', () => {
                 autobanState.batchSize = parseInt(batchSelect.value, 10) || 3;
-                columnTransitions.forEach(({ column, floorPerPlan, defaultMin }) => {
-                    const idSuffix = getAutobanRuleIdSuffix(column);
-                    const input = document.getElementById('interval-input-' + idSuffix);
-                    const label = document.getElementById('warn-label-' + idSuffix);
-                    const currentValue = autobanState.rules[column]?.intervalMinutes ?? defaultMin;
-                    if (input && label) {
-                        evaluateIntervalWarning(column, currentValue, autobanState.batchSize, floorPerPlan, input, label);
-                    }
-                });
                 emitAutobanState();
             });
 
@@ -2968,6 +2937,7 @@
 
             const complexitySelect = document.createElement('select');
             complexitySelect.style.cssText = autobanSelectStyle;
+            guardInteraction(complexitySelect);
             [
                 { value: 'all', label: 'All' },
                 { value: 'low_only', label: 'Low Only' },
@@ -2997,6 +2967,7 @@
 
             const routingSelect = document.createElement('select');
             routingSelect.style.cssText = autobanSelectStyle;
+            guardInteraction(routingSelect);
             [
                 { value: 'dynamic', label: 'Dynamic' },
                 { value: 'all_coder', label: 'All -> Coder' },
@@ -3029,6 +3000,7 @@
             maxSendsInput.max = '100';
             maxSendsInput.value = String(Number(autobanState.maxSendsPerTerminal || 10));
             maxSendsInput.style.cssText = autobanNumberInputStyle;
+            guardInteraction(maxSendsInput);
             maxSendsInput.addEventListener('change', () => {
                 const value = Math.max(1, Math.min(100, parseInt(maxSendsInput.value, 10) || 10));
                 autobanState.maxSendsPerTerminal = value;
@@ -3054,6 +3026,11 @@
             rulesHeader.style.cssText = 'padding:0 8px; font-family:var(--font-mono); font-size:9px; color:var(--text-secondary); letter-spacing:1.5px;';
             rulesHeader.textContent = 'COLUMN RULES';
             container.appendChild(rulesHeader);
+
+            const timingExplanation = document.createElement('div');
+            timingExplanation.style.cssText = 'padding:8px 12px; font-size:11px; color:var(--text-secondary); margin-bottom:8px; line-height:1.4;';
+            timingExplanation.textContent = 'Specify the time delay between advancing each plan to the next stage. Lower intervals require more backup terminals to avoid overwhelming each agent.';
+            container.appendChild(timingExplanation);
 
             columnTransitions.forEach(({ column, label, defaultMin, floorPerPlan }) => {
                 const idSuffix = getAutobanRuleIdSuffix(column);
@@ -3088,6 +3065,7 @@
                 minInput.id = 'interval-input-' + idSuffix;
                 minInput.value = String(rule.intervalMinutes);
                 minInput.style.cssText = 'width:40px; background:var(--panel-bg2); border:1px solid var(--border-color); color:var(--text-primary); font-family:var(--font-mono); font-size:10px; padding:2px 4px; border-radius:3px; text-align:center;';
+                guardInteraction(minInput);
                 minInput.addEventListener('change', () => {
                     if (!autobanState.rules[column]) {
                         autobanState.rules[column] = { enabled: true, intervalMinutes: defaultMin };
@@ -3095,7 +3073,6 @@
                     const val = Math.max(1, parseInt(minInput.value, 10) || defaultMin);
                     autobanState.rules[column].intervalMinutes = val;
                     minInput.value = String(val);
-                    evaluateIntervalWarning(column, val, autobanState.batchSize, floorPerPlan, minInput, warnLabel);
                     emitAutobanState();
                 });
 
@@ -3103,18 +3080,12 @@
                 minLbl.style.cssText = 'color:var(--text-secondary);';
                 minLbl.textContent = 'min';
 
-                const warnLabel = document.createElement('div');
-                warnLabel.id = 'warn-label-' + idSuffix;
-                warnLabel.style.cssText = 'font-size:9px; padding:1px 8px 4px; font-family:var(--font-mono); min-height:12px;';
-
                 ruleRow.appendChild(checkbox);
                 ruleRow.appendChild(ruleLbl);
                 ruleRow.appendChild(everyLbl);
                 ruleRow.appendChild(minInput);
                 ruleRow.appendChild(minLbl);
                 container.appendChild(ruleRow);
-                container.appendChild(warnLabel);
-                evaluateIntervalWarning(column, rule.intervalMinutes, autobanState.batchSize, floorPerPlan, minInput, warnLabel);
             });
 
             const poolSep = document.createElement('div');
@@ -3392,6 +3363,14 @@
         }
 
         function updateMcpStatus(msg) {
+            const recheckBtn = document.getElementById('mcp-recheck');
+            if (msg.diagnostic === 'MCP: Checking...') {
+                mcpDot.className = 'tiny-dot orange';
+                mcpText.innerText = 'MCP: CHECKING';
+                if (recheckBtn) recheckBtn.style.opacity = '0.3';
+                return;
+            }
+            if (recheckBtn) recheckBtn.style.opacity = '0.6';
             if (msg.connected) {
                 mcpDot.className = 'tiny-dot green';
                 mcpText.innerText = 'MCP: ONLINE';

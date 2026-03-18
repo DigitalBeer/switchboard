@@ -139,6 +139,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     // Tracks session IDs currently dispatched, keyed by the source column that dispatched them.
     // Prevents duplicate dispatch within the same column while still allowing downstream column ticks.
     private _activeDispatchSessions = new Map<string, string>();
+    // Safety-net sweep: checks every 60s whether source columns are empty and stops autoban if so.
+    private _autobanEmptyColumnSweepTimer?: NodeJS.Timeout;
     // Dedupe key set: tracks recently processed mirror events (sessionId+stablePath) to prevent watcher churn re-processing
     private _recentMirrorProcessed = new Map<string, NodeJS.Timeout>();
     // Persisted workspace blacklist: stable-path keys of brain plans present during setup.
@@ -1825,6 +1827,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             enabled: false
         });
         this._stopAutobanEngine();
+        console.log(`[Autoban] Stopped: ${this._autobanState.sessionSendCount ?? 0} plans dispatched this session.`);
+        this._resetAutobanSessionCounters();
         await this._persistAutobanState();
         this._postAutobanState();
         if (level === 'info') {
@@ -1940,7 +1944,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (!this._autobanState.enabled) {
             return false;
         }
-        if (await this._autobanHasEligibleCardsInEnabledColumns(workspaceRoot)) {
+        const hasEligible = await this._autobanHasEligibleCardsInEnabledColumns(workspaceRoot);
+        console.log(`[Autoban] Empty-column check: eligible=${hasEligible}`);
+        if (hasEligible) {
             return false;
         }
         await this._stopAutobanForNoValidTickets();
@@ -2446,6 +2452,16 @@ ${planList}`;
 
             this._autobanTimers.set(column, timer);
         }
+        // Safety-net: periodically check if all source columns are empty and auto-stop
+        this._autobanEmptyColumnSweepTimer = setInterval(async () => {
+            if (this._autobanState.enabled) {
+                const workspaceRoot = this._resolveWorkspaceRoot();
+                if (workspaceRoot) {
+                    await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+                }
+            }
+        }, 60_000);
+
         this._postAutobanState();
         console.log('[Autoban] Engine started with rules:', Object.entries(rules).filter(([, r]) => r.enabled).map(([c, r]) => `${c}: ${r.intervalMinutes}m`).join(', '));
     }
@@ -2456,6 +2472,10 @@ ${planList}`;
             clearInterval(timer);
         }
         this._autobanTimers.clear();
+        if (this._autobanEmptyColumnSweepTimer) {
+            clearInterval(this._autobanEmptyColumnSweepTimer);
+            this._autobanEmptyColumnSweepTimer = undefined;
+        }
         this._autobanLastTickAt.clear();
         this._autobanLaneLastDispatchAt.clear();
         this._activeDispatchSessions.clear();
@@ -2767,6 +2787,9 @@ ${planList}`;
                         break;
                     case 'connectMcp':
                         vscode.commands.executeCommand('switchboard.connectMcp');
+                        break;
+                    case 'recheckMcpConnection':
+                        vscode.commands.executeCommand('switchboard.recheckMcp');
                         break;
                     case 'setTerminalRole':
                         if (data.terminalName && data.role) {
@@ -5148,7 +5171,8 @@ ${planList}`;
         const auditMatch = auditRegex.exec(normalizedContent);
 
         if (!auditMatch || auditMatch.index === undefined) {
-            return `${normalizedContent.replace(/\s*$/, '')}\n\n## Complexity Audit${bandBBody}`;
+            const overrideLine = `\n**Manual Complexity Override:** ${complexity}\n`;
+            return `${normalizedContent.replace(/\s*$/, '')}\n\n## Complexity Audit${overrideLine}${bandBBody}`;
         }
 
         const auditStart = auditMatch.index;
@@ -5176,6 +5200,20 @@ ${planList}`;
             updatedAuditSection = `${auditSection.slice(0, bandBStart)}### Band B — Complex / Risky\n${bandBBody.replace(/^\n### Band B — Complex \/ Risky\n/, '')}${auditSection.slice(bandBEnd).replace(/^\n*/, '\n')}`;
         }
 
+        // Insert or update the manual complexity override marker
+        const overrideRegex = /\*\*Manual Complexity Override:\*\*\s*(Low|High|Unknown)/i;
+        const overrideLine = `**Manual Complexity Override:** ${complexity}`;
+        if (overrideRegex.test(updatedAuditSection)) {
+            updatedAuditSection = updatedAuditSection.replace(overrideRegex, overrideLine);
+        } else {
+            // Insert after the Complexity Audit heading line
+            const localAuditHeading = updatedAuditSection.match(/^#{1,4}\s+Complexity\s+Audit\b[^\n]*/im);
+            if (localAuditHeading && localAuditHeading.index !== undefined) {
+                const insertPos = localAuditHeading.index + localAuditHeading[0].length;
+                updatedAuditSection = updatedAuditSection.slice(0, insertPos) + `\n\n${overrideLine}\n` + updatedAuditSection.slice(insertPos);
+            }
+        }
+
         return `${normalizedContent.slice(0, auditStart)}${updatedAuditSection}${normalizedContent.slice(auditEnd)}`;
     }
 
@@ -5194,22 +5232,44 @@ ${planList}`;
     }
 
     private _getReviewLogEntries(events: any[]): { timestamp: string; workflow: string; details: string }[] {
-        return [...events]
-            .reverse()
-            .map((event) => {
-                const workflow = String(event?.workflow || 'unknown').trim() || 'unknown';
-                const detailParts = [
-                    typeof event?.action === 'string' && event.action.trim() ? `action=${event.action.trim()}` : '',
-                    typeof event?.outcome === 'string' && event.outcome.trim() ? `outcome=${event.outcome.trim()}` : '',
-                    typeof event?.targetColumn === 'string' && event.targetColumn.trim() ? `target=${event.targetColumn.trim()}` : ''
-                ].filter(Boolean);
+        const columnRoleMap: Record<string, string> = {
+            'CREATED': 'Planner',
+            'PLAN REVIEWED': 'Planner',
+            'LEAD CODED': 'Lead Coder',
+            'CODER CODED': 'Coder',
+            'CODE REVIEWED': 'Reviewer'
+        };
 
-                return {
-                    timestamp: String(event?.timestamp || ''),
-                    workflow,
-                    details: detailParts.join(' · ') || 'No additional details'
-                };
-            });
+        return [...events].reverse().map((event) => {
+            const action = String(event?.action || '').trim().toLowerCase();
+            const targetColumn = String(event?.targetColumn || '').trim();
+            const outcome = String(event?.outcome || '').trim().toLowerCase();
+            const workflow = String(event?.workflow || 'unknown').trim() || 'unknown';
+
+            const role = columnRoleMap[targetColumn] || '';
+
+            let details = '';
+            if (action === 'execute' || action === 'delegate_task') {
+                details = role ? `SENT TO ${role}` : `Dispatched (${workflow})`;
+            } else if (action === 'submit_result') {
+                details = role ? `COMPLETED — ${role}` : `Completed (${workflow})`;
+            } else if (outcome === 'failed' || outcome === 'fail') {
+                details = role ? `FAILED — ${role}` : `Failed (${workflow})`;
+            } else if (action === 'start_workflow') {
+                details = `Started ${workflow}`;
+            } else if (action === 'complete_workflow_phase') {
+                details = `Phase completed (${workflow})`;
+            } else {
+                const parts = [
+                    action ? `action=${action}` : '',
+                    outcome ? `outcome=${outcome}` : '',
+                    targetColumn ? `target=${targetColumn}` : ''
+                ].filter(Boolean);
+                details = parts.join(' · ') || 'No additional details';
+            }
+
+            return { timestamp: String(event?.timestamp || ''), workflow, details };
+        });
     }
 
     public async getReviewTicketData(sessionId: string): Promise<{

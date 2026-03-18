@@ -426,6 +426,33 @@ ${this._formatCardsForPrompt(cards, workspaceRoot, true)}
 After completing all plans, summarize what was changed and any verification steps needed.`;
     }
 
+    /** Get the next column ID in the pipeline, or null for the last column. */
+    private _getNextColumnId(column: string): string | null {
+        const allColumns = buildKanbanColumns([]);
+        const idx = allColumns.findIndex(c => c.id === column);
+        if (idx < 0 || idx >= allColumns.length - 1) { return null; }
+        return allColumns[idx + 1].id;
+    }
+
+    /** Determine the appropriate workflow name for advancing from a given column. */
+    private _workflowForColumn(column: string): string {
+        switch (column) {
+            case 'CREATED': return 'improve-plan';
+            case 'PLAN REVIEWED': return 'handoff';
+            case 'LEAD CODED': return 'handoff';
+            case 'CODER CODED': return 'review';
+            default: return 'handoff';
+        }
+    }
+
+    /** Generate a prompt appropriate for the given source column and cards. */
+    private _generatePromptForColumn(cards: KanbanCard[], column: string, workspaceRoot: string): string {
+        if (column === 'CREATED') {
+            return this._generateBatchPlannerPrompt(cards, workspaceRoot);
+        }
+        return this._generateBatchLowComplexityPrompt(cards, workspaceRoot);
+    }
+
     private async _getEligibleSessionIds(sessionIds: string[], expectedColumn: string, workspaceRoot?: string): Promise<string[]> {
         const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
         if (!resolvedWorkspaceRoot || sessionIds.length === 0) {
@@ -713,6 +740,16 @@ After completing all plans, summarize what was changed and any verification step
             if (!fs.existsSync(resolvedPlanPath)) return 'Unknown';
             const content = await fs.promises.readFile(resolvedPlanPath, 'utf8');
 
+            // Highest priority: explicit manual complexity override (user-set via dropdown).
+            // This supersedes all text-derived heuristics.
+            const overrideMatch = content.match(/\*\*Manual Complexity Override:\*\*\s*(Low|High|Unknown)/i);
+            if (overrideMatch) {
+                const val = overrideMatch[1].toLowerCase();
+                if (val === 'low') return 'Low';
+                if (val === 'high') return 'High';
+                return 'Unknown';
+            }
+
             // Primary signal: Agent Recommendation section.
             // The improve-plan workflow always adds an explicit recommendation
             // like "Send it to the Lead Coder" or "Send it to the Coder agent".
@@ -765,7 +802,7 @@ After completing all plans, summarize what was changed and any verification step
             const isEmptyMarker = (line: string): boolean => {
                 if (!line) return true;
                 if (/^(?:\u2014|-)+$/.test(line)) return true;
-                return /^(none|n\/?a)\.?$/.test(line);
+                return /^(none|n\/?a|unknown)\.?$/.test(line);
             };
 
             const meaningful = bandBContent
@@ -859,6 +896,27 @@ After completing all plans, summarize what was changed and any verification step
         }
         const complexity = await this.getComplexityFromPlan(workspaceRoot, sheet.planFile);
         return complexity === 'Low' ? 'coder' : 'lead';
+    }
+
+    /** Partition session IDs by their complexity-routed role ('lead' or 'coder'). */
+    private async _partitionByComplexityRoute(
+        workspaceRoot: string,
+        sessionIds: string[]
+    ): Promise<Map<'lead' | 'coder', string[]>> {
+        const groups = new Map<'lead' | 'coder', string[]>([
+            ['lead', []],
+            ['coder', []]
+        ]);
+        for (const sid of sessionIds) {
+            const role = await this._resolveComplexityRoutedRole(workspaceRoot, sid);
+            groups.get(role)!.push(sid);
+        }
+        return groups;
+    }
+
+    /** Map a resolved dispatch role to its target Kanban column. */
+    private _targetColumnForDispatchRole(role: 'lead' | 'coder'): string {
+        return role === 'coder' ? 'CODER CODED' : 'LEAD CODED';
     }
 
     private async _resolveMcpMoveTarget(workspaceRoot: string, sessionId: string, target: string): Promise<McpMoveTargetResolution | null> {
@@ -1093,6 +1151,156 @@ After completing all plans, summarize what was changed and any verification step
                 vscode.window.showInformationMessage(`Dispatched ${dispatchedCount} LOW-complexity plans to Jules.`);
                 break;
             }
+            case 'moveSelected': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                const column: string = msg.column;
+
+                // PLAN REVIEWED uses dynamic complexity routing per-session
+                if (column === 'PLAN REVIEWED') {
+                    const groups = await this._partitionByComplexityRoute(workspaceRoot, msg.sessionIds);
+                    for (const [role, sids] of groups) {
+                        if (sids.length === 0) { continue; }
+                        const targetCol = this._targetColumnForDispatchRole(role);
+                        if (this._cliTriggersEnabled) {
+                            if (sids.length === 1) {
+                                await vscode.commands.executeCommand('switchboard.triggerAgentFromKanban', role, sids[0], undefined, workspaceRoot);
+                            } else {
+                                await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, sids, undefined, workspaceRoot);
+                            }
+                        } else {
+                            await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sids, targetCol, workspaceRoot);
+                        }
+                    }
+                } else {
+                    const nextCol = this._getNextColumnId(column);
+                    if (!nextCol) { break; }
+                    if (this._cliTriggersEnabled) {
+                        const role = this._columnToRole(nextCol);
+                        if (role) {
+                            const instruction = role === 'planner' ? 'improve-plan' : undefined;
+                            if (msg.sessionIds.length === 1) {
+                                await vscode.commands.executeCommand('switchboard.triggerAgentFromKanban', role, msg.sessionIds[0], instruction, workspaceRoot);
+                            } else {
+                                await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, msg.sessionIds, instruction, workspaceRoot);
+                            }
+                        } else {
+                            await vscode.commands.executeCommand('switchboard.kanbanForwardMove', msg.sessionIds, nextCol, workspaceRoot);
+                        }
+                    } else {
+                        await vscode.commands.executeCommand('switchboard.kanbanForwardMove', msg.sessionIds, nextCol, workspaceRoot);
+                    }
+                }
+                await this._refreshBoard(workspaceRoot);
+                break;
+            }
+            case 'moveAll': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) { break; }
+                const column: string = msg.column;
+
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === column);
+                if (sourceCards.length === 0) {
+                    vscode.window.showInformationMessage(`No plans in ${column} to move.`);
+                    break;
+                }
+                const sessionIds = sourceCards.map(card => card.sessionId);
+
+                // PLAN REVIEWED uses dynamic complexity routing per-session
+                if (column === 'PLAN REVIEWED') {
+                    const groups = await this._partitionByComplexityRoute(workspaceRoot, sessionIds);
+                    const movedParts: string[] = [];
+                    for (const [role, sids] of groups) {
+                        if (sids.length === 0) { continue; }
+                        const targetCol = this._targetColumnForDispatchRole(role);
+                        if (this._cliTriggersEnabled) {
+                            if (sids.length === 1) {
+                                await vscode.commands.executeCommand('switchboard.triggerAgentFromKanban', role, sids[0], undefined, workspaceRoot);
+                            } else {
+                                await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, sids, undefined, workspaceRoot);
+                            }
+                        } else {
+                            await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sids, targetCol, workspaceRoot);
+                        }
+                        movedParts.push(`${sids.length} → ${targetCol}`);
+                    }
+                    await this._refreshBoard(workspaceRoot);
+                    vscode.window.showInformationMessage(`Moved ${sourceCards.length} plans from ${column}: ${movedParts.join(', ')}.`);
+                } else {
+                    const nextCol = this._getNextColumnId(column);
+                    if (!nextCol) { break; }
+                    if (this._cliTriggersEnabled) {
+                        const role = this._columnToRole(nextCol);
+                        if (role) {
+                            await vscode.commands.executeCommand('switchboard.triggerBatchAgentFromKanban', role, sessionIds, undefined, workspaceRoot);
+                        } else {
+                            await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sessionIds, nextCol, workspaceRoot);
+                        }
+                    } else {
+                        await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sessionIds, nextCol, workspaceRoot);
+                    }
+                    await this._refreshBoard(workspaceRoot);
+                    vscode.window.showInformationMessage(`Moved ${sourceCards.length} plans from ${column} to ${nextCol}.`);
+                }
+                break;
+            }
+            case 'promptSelected': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                const column: string = msg.column;
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === column && msg.sessionIds.includes(card.sessionId));
+                if (sourceCards.length === 0) {
+                    vscode.window.showInformationMessage('No matching plans found for prompt generation.');
+                    break;
+                }
+                const prompt = this._generatePromptForColumn(sourceCards, column, workspaceRoot);
+                await vscode.env.clipboard.writeText(prompt);
+                const workflow = this._workflowForColumn(column);
+                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), column, workflow, workspaceRoot);
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Copied prompt for ${sourceCards.length} plans. Advanced ${advanced.length} to next stage.`);
+                break;
+            }
+            case 'promptAll': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) { break; }
+                const column: string = msg.column;
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === column);
+                if (sourceCards.length === 0) {
+                    vscode.window.showInformationMessage(`No plans in ${column} for prompt generation.`);
+                    break;
+                }
+                const prompt = this._generatePromptForColumn(sourceCards, column, workspaceRoot);
+                await vscode.env.clipboard.writeText(prompt);
+                const workflow = this._workflowForColumn(column);
+                const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), column, workflow, workspaceRoot);
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Copied prompt for ${sourceCards.length} plans. Advanced ${advanced.length} to next stage.`);
+                break;
+            }
+            case 'julesSelected': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                const visibleAgents = await this._getVisibleAgents(workspaceRoot);
+                if (visibleAgents.jules === false) {
+                    vscode.window.showWarningMessage('Jules is currently disabled in setup.');
+                    break;
+                }
+                const eligibleSessionIds = await this._getEligibleSessionIds(msg.sessionIds, 'PLAN REVIEWED', workspaceRoot);
+                let dispatchedCount = 0;
+                for (const sessionId of eligibleSessionIds) {
+                    const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', 'jules', sessionId, undefined, workspaceRoot);
+                    if (dispatched) {
+                        dispatchedCount++;
+                    }
+                }
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Dispatched ${dispatchedCount} plans to Jules.`);
+                break;
+            }
             case 'completePlan':
                 if (msg.sessionId) {
                     await vscode.commands.executeCommand('switchboard.completePlanFromKanban', msg.sessionId, msg.workspaceRoot);
@@ -1159,6 +1367,19 @@ After completing all plans, summarize what was changed and any verification step
         const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource}; style-src 'unsafe-inline' ${webview.cspSource}; img-src ${webview.cspSource} data:; font-src ${webview.cspSource}; connect-src 'none';">`;
         content = content.replace('<head>', `<head>\n    ${csp}`);
         content = content.replace(/<script>/g, `<script nonce="${nonce}">`);
+
+        // Inject icon URIs for column button area
+        const iconDir = vscode.Uri.joinPath(this._extensionUri, 'icons');
+        const iconMap: Record<string, string> = {
+            '{{ICON_22}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-22.png')).toString(),
+            '{{ICON_28}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-28.png')).toString(),
+            '{{ICON_53}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-53.png')).toString(),
+            '{{ICON_54}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-54.png')).toString(),
+            '{{ICON_115}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-115.png')).toString(),
+        };
+        for (const [placeholder, uri] of Object.entries(iconMap)) {
+            content = content.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), uri);
+        }
 
         return content;
     }

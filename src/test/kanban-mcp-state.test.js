@@ -98,7 +98,7 @@ async function run() {
             Object.keys(payload),
             ['CREATED', 'PLAN REVIEWED', 'LEAD CODED', 'CODER CODED', 'CODE REVIEWED']
         );
-        assert.strictEqual(payload.CREATED.label, 'Plan Created');
+        assert.strictEqual(payload.CREATED.label, 'New');
         assert.strictEqual(payload['PLAN REVIEWED'].label, 'Planned');
         assert.strictEqual(payload['LEAD CODED'].label, 'Lead Coder');
         assert.strictEqual(payload['CODER CODED'].label, 'Coder');
@@ -113,20 +113,26 @@ async function run() {
 
         const fullResult = await getKanbanState({});
         const filteredById = await getKanbanState({ column: 'CREATED' });
-        const filteredByAlias = await getKanbanState({ column: 'Plan Created' });
+        const filteredByCurrentLabel = await getKanbanState({ column: 'New' });
+        const filteredByLegacyAlias = await getKanbanState({ column: 'Plan Created' });
         const filteredByLabel = await getKanbanState({ column: 'Planned' });
 
         const filteredByIdPayload = JSON.parse(readText(filteredById));
-        const filteredByAliasPayload = JSON.parse(readText(filteredByAlias));
+        const filteredByCurrentLabelPayload = JSON.parse(readText(filteredByCurrentLabel));
+        const filteredByLegacyAliasPayload = JSON.parse(readText(filteredByLegacyAlias));
         const filteredByLabelPayload = JSON.parse(readText(filteredByLabel));
 
         assert.deepStrictEqual(Object.keys(filteredByIdPayload), ['CREATED']);
-        assert.strictEqual(filteredByIdPayload.CREATED.label, 'Plan Created');
+        assert.strictEqual(filteredByIdPayload.CREATED.label, 'New');
         assert.strictEqual(filteredByIdPayload.CREATED.items.length, 1);
 
-        assert.deepStrictEqual(Object.keys(filteredByAliasPayload), ['CREATED']);
-        assert.strictEqual(filteredByAliasPayload.CREATED.label, 'Plan Created');
-        assert.strictEqual(filteredByAliasPayload.CREATED.items.length, 1);
+        assert.deepStrictEqual(Object.keys(filteredByCurrentLabelPayload), ['CREATED']);
+        assert.strictEqual(filteredByCurrentLabelPayload.CREATED.label, 'New');
+        assert.strictEqual(filteredByCurrentLabelPayload.CREATED.items.length, 1);
+
+        assert.deepStrictEqual(Object.keys(filteredByLegacyAliasPayload), ['CREATED']);
+        assert.strictEqual(filteredByLegacyAliasPayload.CREATED.label, 'New');
+        assert.strictEqual(filteredByLegacyAliasPayload.CREATED.items.length, 1);
 
         assert.deepStrictEqual(Object.keys(filteredByLabelPayload), ['PLAN REVIEWED']);
         assert.strictEqual(filteredByLabelPayload['PLAN REVIEWED'].label, 'Planned');
@@ -144,7 +150,7 @@ async function run() {
 
         assert.strictEqual(result.isError, true);
         assert.match(readText(result), /Unknown kanban column 'Does Not Exist'/);
-        assert.match(readText(result), /CREATED \(Plan Created\)/);
+        assert.match(readText(result), /CREATED \(New\)/);
         assert.match(readText(result), /PLAN REVIEWED \(Planned\)/);
     });
 

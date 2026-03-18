@@ -504,6 +504,160 @@
             content: '⚡ ';
             animation: autobanPulse 2s ease-in-out infinite;
         }
+
+        /* Selected card highlight */
+        .kanban-card.selected {
+            border-color: var(--accent-teal);
+            border-left-color: var(--accent-teal);
+            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-teal) 35%, transparent),
+                        inset 0 0 4px color-mix(in srgb, var(--accent-teal) 10%, transparent);
+        }
+
+        /* Column button area */
+        .column-button-area {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 5px 8px;
+            background: var(--panel-bg2);
+            border-bottom: 1px solid var(--border-color);
+            min-height: 32px;
+        }
+
+        .column-icon-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            cursor: pointer;
+            padding: 3px;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s;
+            position: relative;
+        }
+
+        .column-icon-btn:hover {
+            border-color: var(--accent-teal-dim);
+            background: color-mix(in srgb, var(--accent-teal) 10%, transparent);
+            box-shadow: 0 0 6px color-mix(in srgb, var(--accent-teal) 25%, transparent);
+        }
+
+        .column-icon-btn img {
+            width: 22px;
+            height: 22px;
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9);
+            transition: filter 0.15s;
+        }
+
+        .column-icon-btn:hover img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.2);
+        }
+
+        /* Flash animation for icon button clicks */
+        @keyframes iconFlash {
+            0% { filter: sepia(1) saturate(5) hue-rotate(140deg) brightness(2.5) drop-shadow(0 0 8px var(--accent-teal)); }
+            100% { filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9); }
+        }
+        .column-icon-btn.flash img {
+            animation: iconFlash 0.35s ease-out forwards;
+        }
+
+        /* CSS Toggle Switch */
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 32px;
+            height: 16px;
+            flex-shrink: 0;
+        }
+
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: var(--border-color);
+            border-radius: 16px;
+            transition: background 0.2s;
+        }
+
+        .toggle-slider::before {
+            content: '';
+            position: absolute;
+            height: 12px;
+            width: 12px;
+            left: 2px;
+            bottom: 2px;
+            background: var(--text-secondary);
+            border-radius: 50%;
+            transition: all 0.2s;
+        }
+
+        .toggle-switch input:checked + .toggle-slider {
+            background: color-mix(in srgb, var(--accent-teal) 50%, transparent);
+        }
+
+        .toggle-switch input:checked + .toggle-slider::before {
+            transform: translateX(16px);
+            background: var(--accent-teal);
+            box-shadow: 0 0 4px var(--accent-teal);
+        }
+
+        /* Inline autoban timers in controls strip */
+        .autoban-timers-inline {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .autoban-timer-badge {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            background: color-mix(in srgb, var(--accent-teal) 6%, transparent);
+            border: 1px solid color-mix(in srgb, var(--accent-teal) 15%, transparent);
+            padding: 2px 6px;
+            border-radius: 2px;
+            white-space: nowrap;
+        }
+
+        .autoban-timer-badge.is-active {
+            color: var(--accent-teal);
+            border-color: color-mix(in srgb, var(--accent-teal) 35%, transparent);
+        }
+
+        /* Controls strip spacer */
+        .controls-spacer {
+            flex: 1;
+        }
+
+        /* CLI toggle inline label */
+        .cli-toggle-inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            letter-spacing: 0.6px;
+            color: var(--accent-teal);
+            text-transform: uppercase;
+            user-select: none;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .cli-toggle-inline.is-off {
+            color: var(--accent-orange);
+        }
     </style>
 </head>
 
@@ -516,17 +670,17 @@
     </div>
     <div class="controls-strip">
         <button class="strip-btn" id="btn-autoban" title="Start or stop the autoban engine">▶ START AUTOBAN</button>
-        <button class="strip-btn" id="btn-batch-planner" title="Copy improve-plan prompt and advance all CREATED plans to PLAN REVIEWED">📋 COPY PLANNER PROMPT</button>
-        <button class="strip-btn" id="btn-copy-low" title="Copy coding prompt and advance low-complexity PLAN REVIEWED plans to the Coder column">📋 COPY CODER PROMPT</button>
-        <button class="strip-btn" id="btn-jules-low" title="Send low-complexity plans to Jules" style="display:none">🚀 SEND TO JULES</button>
-        <button class="strip-btn" id="btn-refresh-strip" title="Sync board with latest backend state">↻ SYNC BOARD</button>
-    </div>
-    <div class="settings-strip">
-        <label class="cli-toggle" id="cli-toggle" title="When OFF, drag-drop moves cards without triggering CLI agent actions">
-            <input type="checkbox" id="cli-triggers-toggle" checked>
+        <div class="autoban-timers-inline" id="autoban-timers-inline"></div>
+        <span class="controls-spacer"></span>
+        <span class="triggers-off-badge" id="triggers-off-badge" hidden>⚠ TRIGGERS OFF</span>
+        <label class="cli-toggle-inline" id="cli-toggle" title="When OFF, moves and prompts do not trigger CLI agent actions">
+            <label class="toggle-switch">
+                <input type="checkbox" id="cli-triggers-toggle" checked>
+                <span class="toggle-slider"></span>
+            </label>
             <span class="toggle-label">CLI Triggers</span>
         </label>
-        <span class="triggers-off-badge" id="triggers-off-badge" hidden>⚠ TRIGGERS OFF</span>
+        <button class="strip-btn" id="btn-refresh-strip" title="Sync board with latest backend state">↻ SYNC BOARD</button>
     </div>
     <div class="kanban-board" id="kanban-board"></div>
 
@@ -534,7 +688,7 @@
         const vscode = acquireVsCodeApi();
         const kanbanBoard = document.getElementById('kanban-board');
         let columnDefinitions = [
-            { id: 'CREATED', label: 'Plan Created', role: null, autobanEnabled: true },
+            { id: 'CREATED', label: 'New', role: null, autobanEnabled: true },
             { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', autobanEnabled: true },
             { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', autobanEnabled: true },
             { id: 'CODER CODED', label: 'Coder', role: 'coder', autobanEnabled: true },
@@ -551,6 +705,17 @@
         let lastBoardSignature = '';
         let currentWorkspaceRoot = '';
         let workspaceItems = [];
+        const selectedCards = new Set();
+
+        // Column abbreviations for inline timers
+        const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R' };
+
+        // Icon URIs injected by extension
+        const ICON_MOVE_SELECTED = '{{ICON_53}}';
+        const ICON_MOVE_ALL = '{{ICON_54}}';
+        const ICON_PROMPT_SELECTED = '{{ICON_22}}';
+        const ICON_PROMPT_ALL = '{{ICON_115}}';
+        const ICON_JULES = '{{ICON_28}}';
 
         function getActiveWorkspaceRoot() {
             return currentWorkspaceRoot || (workspaceItems[0] && workspaceItems[0].workspaceRoot) || '';
@@ -590,6 +755,37 @@
             if (titleEl) {
                 titleEl.classList.toggle('triggers-off', !cliTriggersEnabled);
             }
+        }
+
+        /** Get the next column in the pipeline (returns null for last column). */
+        function getNextColumn(col) {
+            const idx = columns.indexOf(col);
+            if (idx < 0 || idx >= columns.length - 1) return null;
+            return columns[idx + 1];
+        }
+
+        /** Flash an icon button for visual feedback. */
+        function flashIconBtn(btn) {
+            btn.classList.remove('flash');
+            void btn.offsetWidth;
+            btn.classList.add('flash');
+            btn.addEventListener('animationend', () => btn.classList.remove('flash'), { once: true });
+        }
+
+        /** Get all selected session IDs within a specific column. */
+        function getSelectedInColumn(col) {
+            const container = document.getElementById('col-' + col);
+            if (!container) return [];
+            const ids = [];
+            container.querySelectorAll('.kanban-card.selected').forEach(el => {
+                ids.push(el.dataset.session);
+            });
+            return ids;
+        }
+
+        /** Get all session IDs within a specific column. */
+        function getAllInColumn(col) {
+            return currentCards.filter(c => c.column === col).map(c => c.sessionId);
         }
 
         function escapeAttr(value) {
@@ -632,29 +828,49 @@
         }
 
         function renderColumns() {
+            const lastColumnId = columnDefinitions.length > 0 ? columnDefinitions[columnDefinitions.length - 1].id : null;
+
             kanbanBoard.innerHTML = columnDefinitions.map(def => {
                 const isCreated = def.id === 'CREATED';
                 const isPlanReviewed = def.id === 'PLAN REVIEWED';
+                const isLastColumn = def.id === lastColumnId;
                 const hasAgent = !isCreated;
                 const rightSide = isCreated
                     ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
                             <button class="btn-add-plan" id="btn-add-plan" title="Add Plan">+</button>
                             <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
                        </div>`
-                    : isPlanReviewed
-                            ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
-                                    <button class="btn-batch" id="btn-batch-low" title="Batch dispatch all Low complexity plans">⚡ Low</button>
-                                    <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
-                               </div>`
-                        : `<span class="column-count" id="count-${escapeAttr(def.id)}">0</span>`;
+                    : `<span class="column-count" id="count-${escapeAttr(def.id)}">0</span>`;
                 const subline = hasAgent
                     ? `<div class="column-agent" id="agent-${escapeAttr(def.id)}"></div>`
                     : `<div class="column-subline-spacer" aria-hidden="true"></div>`;
-                const autoban = def.autobanEnabled
-                    ? `<div class="autoban-status-bar" id="autoban-status-${escapeAttr(def.id)}">
-                            <span class="autoban-indicator" id="autoban-indicator-${escapeAttr(def.id)}"></span>
-                       </div>`
-                    : `<div class="autoban-status-bar"></div>`;
+
+                // Column button area (with buttons for all columns except last, empty strip for last)
+                let buttonArea = '';
+                if (!isLastColumn) {
+                    const julesBtn = isPlanReviewed
+                        ? `<button class="column-icon-btn" data-action="julesSelected" data-column="${escapeAttr(def.id)}" title="Send selected plans to Jules">
+                               <img src="${ICON_JULES}" alt="Jules">
+                           </button>`
+                        : '';
+                    buttonArea = `<div class="column-button-area">
+                        <button class="column-icon-btn" data-action="moveSelected" data-column="${escapeAttr(def.id)}" title="Move selected plans to next stage (triggers CLI if enabled)">
+                            <img src="${ICON_MOVE_SELECTED}" alt="Move Selected">
+                        </button>
+                        <button class="column-icon-btn" data-action="moveAll" data-column="${escapeAttr(def.id)}" title="Move all plans in this column to next stage">
+                            <img src="${ICON_MOVE_ALL}" alt="Move All">
+                        </button>
+                        <button class="column-icon-btn" data-action="promptSelected" data-column="${escapeAttr(def.id)}" title="Copy prompt for selected plans and advance to next stage">
+                            <img src="${ICON_PROMPT_SELECTED}" alt="Prompt Selected">
+                        </button>
+                        <button class="column-icon-btn" data-action="promptAll" data-column="${escapeAttr(def.id)}" title="Copy prompt for all plans in this column and advance">
+                            <img src="${ICON_PROMPT_ALL}" alt="Prompt All">
+                        </button>
+                        ${julesBtn}
+                    </div>`;
+                } else {
+                    buttonArea = `<div class="column-button-area"></div>`;
+                }
 
                 return `<div class="kanban-column" data-column="${escapeAttr(def.id)}">
                     <div class="column-header">
@@ -664,7 +880,7 @@
                         </div>
                         ${rightSide}
                     </div>
-                    ${autoban}
+                    ${buttonArea}
                     <div class="column-body" id="col-${escapeAttr(def.id)}"></div>
                 </div>`;
             }).join('');
@@ -673,8 +889,53 @@
                 postKanbanMessage({ type: 'createPlan' });
             });
 
-            document.getElementById('btn-batch-low')?.addEventListener('click', () => {
-                postKanbanMessage({ type: 'batchDispatchLow' });
+            // Column icon button handlers
+            document.querySelectorAll('.column-icon-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    flashIconBtn(btn);
+                    const action = btn.dataset.action;
+                    const column = btn.dataset.column;
+                    const nextCol = getNextColumn(column);
+                    if (!nextCol && action !== 'julesSelected') return;
+
+                    switch (action) {
+                        case 'moveSelected': {
+                            const ids = getSelectedInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'moveSelected', column, sessionIds: ids });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'moveAll': {
+                            const ids = getAllInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'moveAll', column });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'promptSelected': {
+                            const ids = getSelectedInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'promptSelected', column, sessionIds: ids });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'promptAll': {
+                            const ids = getAllInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'promptAll', column });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'julesSelected': {
+                            const ids = getSelectedInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'julesSelected', sessionIds: ids });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                    }
+                });
             });
 
             document.querySelectorAll('.column-body').forEach(container => {
@@ -733,9 +994,7 @@
         }
 
         function updateJulesButtonVisibility() {
-            const julesBtn = document.getElementById('btn-jules-low');
-            if (!julesBtn) return;
-            julesBtn.style.display = lastVisibleAgents.jules === false ? 'none' : 'inline-flex';
+            // Jules button is now per-column in PLAN REVIEWED; visibility managed by renderColumns
         }
 
         function updateAutobanButtonState() {
@@ -789,6 +1048,24 @@
             document.querySelectorAll('.kanban-card').forEach(el => {
                 el.addEventListener('dragstart', handleDragStart);
                 el.addEventListener('dragend', handleDragEnd);
+
+                // Card selection toggle (click on card body, not on buttons)
+                el.addEventListener('click', (e) => {
+                    if (e.target.closest('.card-btn') || e.target.closest('button')) return;
+                    const sid = el.dataset.session;
+                    if (selectedCards.has(sid)) {
+                        selectedCards.delete(sid);
+                        el.classList.remove('selected');
+                    } else {
+                        selectedCards.add(sid);
+                        el.classList.add('selected');
+                    }
+                });
+
+                // Re-apply selection state after re-render
+                if (selectedCards.has(el.dataset.session)) {
+                    el.classList.add('selected');
+                }
             });
 
             document.querySelectorAll('.card-btn.review').forEach(btn => {
@@ -1092,33 +1369,32 @@
             return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
         }
 
-        /** Update all autoban status indicators based on current config. */
+        /** Update autoban timer badges inline in the controls strip. */
         function updateAutobanIndicators() {
-            autobanColumns.forEach(col => {
-                const indicator = document.getElementById('autoban-indicator-' + col);
-                if (!indicator) return;
+            const container = document.getElementById('autoban-timers-inline');
+            if (!container) { updateAutobanButtonState(); return; }
 
-                if (!autobanConfig || !autobanConfig.enabled) {
-                    indicator.textContent = '';
-                    indicator.className = 'autoban-indicator';
-                    return;
-                }
+            if (!autobanConfig || !autobanConfig.enabled) {
+                container.innerHTML = '';
+                updateAutobanButtonState();
+                return;
+            }
 
+            const badges = autobanColumns.map(col => {
+                const abbrev = COLUMN_ABBREV[col] || col.charAt(0);
                 const rule = autobanConfig.rules && autobanConfig.rules[col];
                 if (rule && rule.enabled) {
                     const lastTickAt = Number(autobanConfig.lastTickAt && autobanConfig.lastTickAt[col]) || Date.now();
                     const intervalMs = Math.max(1, Number(rule.intervalMinutes) || 1) * 60 * 1000;
                     const nextTickAt = lastTickAt + intervalMs;
                     const remainingSec = Math.max(0, Math.ceil((nextTickAt - Date.now()) / 1000));
-                    indicator.textContent = remainingSec > 0
-                        ? `Next: ${formatCountdown(remainingSec)} (Batch: ${autobanConfig.batchSize})`
-                        : 'Dispatching...';
-                    indicator.className = 'autoban-indicator is-active';
+                    const text = remainingSec > 0 ? `${abbrev}: ${formatCountdown(remainingSec)}` : `${abbrev}: GO`;
+                    return `<span class="autoban-timer-badge is-active">${text}</span>`;
                 } else {
-                    indicator.textContent = 'Auto: off';
-                    indicator.className = 'autoban-indicator';
+                    return `<span class="autoban-timer-badge">${abbrev}: off</span>`;
                 }
-            });
+            }).join('');
+            container.innerHTML = badges;
             updateAutobanButtonState();
         }
 
@@ -1130,15 +1406,6 @@
         document.getElementById('btn-autoban')?.addEventListener('click', () => {
             const currentlyEnabled = !!(autobanConfig && autobanConfig.enabled);
             postKanbanMessage({ type: 'toggleAutoban', enabled: !currentlyEnabled });
-        });
-        document.getElementById('btn-batch-planner')?.addEventListener('click', () => {
-            postKanbanMessage({ type: 'batchPlannerPrompt' });
-        });
-        document.getElementById('btn-copy-low')?.addEventListener('click', () => {
-            postKanbanMessage({ type: 'batchLowComplexity' });
-        });
-        document.getElementById('btn-jules-low')?.addEventListener('click', () => {
-            postKanbanMessage({ type: 'julesLowComplexity' });
         });
         document.getElementById('btn-refresh-strip').addEventListener('click', () => {
             postKanbanMessage({ type: 'refresh' });
@@ -1153,7 +1420,6 @@
         updateCliToggleUi();
         renderColumns();
         renderBoard([]);
-        updateJulesButtonVisibility();
         updateAutobanButtonState();
         syncAutobanCountdownTimer();
     </script>
