@@ -106,3 +106,36 @@ if (isAutobanPanelInteracting && currentSubTab === 'autoban') return;
 
 ## Agent Recommendation
 **Coder** — Steps 1 and 2 are straightforward deletions/additions. Step 3 (Option B) is a well-scoped fix. If Option A is chosen, upgrade to **Lead Coder**.
+
+## Reviewer Pass (2026-03-19)
+
+### Implementation Status: ✅ COMPLETE — 1 MAJOR fix applied
+
+### Files Changed by Implementation
+- `src/webview/implementation.html` (line 2390): `isAutobanPanelInteracting` flag declared.
+- `src/webview/implementation.html` (line 2579): Guard in `renderAgentList()` — skips re-render when user is interacting with autoban dropdowns.
+- `src/webview/implementation.html` (lines 2858–2861): `guardInteraction()` helper attaches `focus`/`blur` listeners to all dropdown/input elements.
+- `src/webview/implementation.html` — `createAutobanPanel()`: ON/OFF toggle fully removed. `evaluateIntervalWarning()` function and all `warnLabel` elements removed. Static explanation text added at line 3046–3049.
+
+### Files Changed by Reviewer
+- `src/webview/implementation.html` (line 3024): **MAJOR FIX** — `maxSendsInput` change handler now clears `isAutobanPanelInteracting = false` before calling `renderAgentList()`. Previously, the guard flag was still `true` when the explicit re-render was requested (blur hadn't fired yet), so the render was silently skipped and terminal pool display didn't update after changing max sends.
+
+### Grumpy Findings
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| 1 | MAJOR | `maxSendsInput` change handler called `renderAgentList()` while `isAutobanPanelInteracting` was still `true`, causing the re-render to be silently skipped. Terminal pool display didn't refresh after changing max sends per terminal. | **FIXED** |
+| 2 | MAJOR | `blur` fires before `change` on `<select>` in some browsers — race condition where the interaction guard clears before the state sync from the backend arrives. Known limitation of Option B acknowledged in plan. | **DEFERRED** — requires Option A (DOM reconciliation) to fully resolve. Option B covers the 90% case. |
+| 3 | NIT | Toggle removal, warning removal, and static text addition are all clean deletions/additions. No remnants found. | OK |
+
+### Balanced Synthesis
+- Steps 1 (toggle removal) and 2 (static explanation) are clean and complete.
+- Step 3 (Option B interaction guard) works correctly for the common case. The maxSendsInput re-render bug was a real issue that would have confused users — now fixed.
+- The blur/change race on `<select>` is an inherent Option B limitation. Option A would resolve it but adds complexity disproportionate to the remaining risk.
+
+### Validation Results
+- `npm run compile`: ✅ PASSED (webpack compiled successfully)
+- No TypeScript changes — pure frontend HTML/JS.
+
+### Remaining Risks
+- `<select>` blur/change race condition in edge cases (deferred — Option B limitation).
+- No visual indicator of autoban running/stopped state in the tab after toggle removal (noted in plan's Open Questions).

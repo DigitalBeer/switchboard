@@ -19,6 +19,7 @@ let mcpServerProcess: ChildProcess | null = null;
 let mcpOutputChannel: vscode.OutputChannel | null = null;
 let mcpHealthCheckInterval: ReturnType<typeof setInterval> | null = null;
 const DISPATCH_SIGNING_KEY_SECRET = 'switchboard.dispatchSigningKey.v1';
+const MCP_PID_FILENAME = '.switchboard/.mcp_server.pid';
 
 function getWorkspaceMcpDirectory(workspaceRoot: string): string {
     return path.join(workspaceRoot, '.switchboard', 'MCP');
@@ -545,8 +546,58 @@ async function spawnBundledMcpServer(context: vscode.ExtensionContext, workspace
     attachMcpListeners(mcpServerProcess, workspaceRoot);
     mcpOutputChannel?.appendLine(`[MCP] Bundled server started (PID: ${mcpServerProcess.pid})`);
 
+    // Persist PID for orphan detection on next activation
+    persistMcpPid(workspaceRoot, mcpServerProcess.pid ?? null);
+
     // Initial settings sync
     syncSettingsToMcp();
+}
+
+function persistMcpPid(workspaceRoot: string, pid: number | null): void {
+    try {
+        const pidPath = path.join(workspaceRoot, MCP_PID_FILENAME);
+        if (pid) {
+            fs.writeFileSync(pidPath, String(pid), 'utf8');
+        } else {
+            if (fs.existsSync(pidPath)) fs.unlinkSync(pidPath);
+        }
+    } catch {
+        // Best-effort — don't block on PID file errors
+    }
+}
+
+function killOrphanMcpServer(workspaceRoot: string): void {
+    try {
+        const pidPath = path.join(workspaceRoot, MCP_PID_FILENAME);
+        if (!fs.existsSync(pidPath)) return;
+        const pidStr = fs.readFileSync(pidPath, 'utf8').trim();
+        const pid = parseInt(pidStr, 10);
+        if (!Number.isFinite(pid) || pid <= 0) return;
+
+        // Check if process is still alive
+        try {
+            process.kill(pid, 0); // Signal 0 = existence check only
+        } catch {
+            // Process doesn't exist — clean up stale PID file
+            try { fs.unlinkSync(pidPath); } catch { }
+            return;
+        }
+
+        // Kill the orphan
+        mcpOutputChannel?.appendLine(`[MCP] Killing orphaned MCP server (PID: ${pid})`);
+        if (process.platform === 'win32') {
+            try {
+                execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+            } catch {
+                try { process.kill(pid, 'SIGKILL'); } catch { }
+            }
+        } else {
+            try { process.kill(pid, 'SIGKILL'); } catch { }
+        }
+        try { fs.unlinkSync(pidPath); } catch { }
+    } catch (e) {
+        mcpOutputChannel?.appendLine(`[MCP] Orphan cleanup failed: ${e}`);
+    }
 }
 
 async function restartBundledMcpServer(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
@@ -686,6 +737,9 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!mcpOutputChannel) {
             mcpOutputChannel = vscode.window.createOutputChannel('Switchboard');
         }
+
+        // Kill orphaned MCP server from a previous session that didn't shut down cleanly
+        killOrphanMcpServer(workspaceRoot);
 
         // Read old terminal names from state.json BEFORE cleanWorkspace resets it.
         // This lets us dispose orphaned terminals that survived a crash or restart
@@ -2963,21 +3017,41 @@ export function deactivate() {
     }
     registeredTerminals.clear();
 
-    // Kill bundled MCP server with process tree termination
+    // Kill bundled MCP server with process tree termination + force-kill fallback
     if (mcpServerProcess && mcpServerProcess.pid) {
+        const pid = mcpServerProcess.pid;
         mcpOutputChannel?.appendLine('[MCP] Shutting down server...');
         if (process.platform === 'win32') {
             // Windows: Use taskkill with /T to kill entire process tree
             try {
-                execFileSync('taskkill', ['/pid', String(mcpServerProcess.pid), '/T', '/F'], { windowsHide: true });
+                execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
             } catch {
                 // Fallback if taskkill fails
-                mcpServerProcess.kill('SIGKILL');
+                try { mcpServerProcess.kill('SIGKILL'); } catch { }
             }
         } else {
-            mcpServerProcess.kill('SIGTERM');
+            // Unix: SIGTERM first, then SIGKILL after 3 seconds if still alive
+            try {
+                mcpServerProcess.kill('SIGTERM');
+                setTimeout(() => {
+                    try {
+                        process.kill(pid, 0); // Check if still alive
+                        process.kill(pid, 'SIGKILL');
+                    } catch {
+                        // Already dead — nothing to do
+                    }
+                }, 3000);
+            } catch {
+                try { mcpServerProcess.kill('SIGKILL'); } catch { }
+            }
         }
         mcpServerProcess = null;
+
+        // Clean up PID file
+        const workspaceRoot = getPreferredWorkspaceRoot();
+        if (workspaceRoot) {
+            persistMcpPid(workspaceRoot, null);
+        }
     }
 
     // Cleanup other resources

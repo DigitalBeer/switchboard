@@ -810,6 +810,7 @@ function normalizeBandBLine(line) {
         .replace(/^[\s>*\-+\u2013\u2014:]+/, '')
         .replace(/[*_`~]/g, '')
         .trim()
+        .replace(/\((?:complex(?:\s*[\/&]\s*|\s+)risky|complex|risky|high complexity)\)/gi, '')
         .replace(/^\((.*)\)$/, '$1')
         .replace(/[\s:\u2013\u2014-]+$/g, '')
         .replace(/\s+/g, ' ')
@@ -836,12 +837,14 @@ function getComplexityFromContent(content) {
         return overrideMatch[1].toLowerCase();
     }
 
+    // Agent Recommendation: check before Band B parsing (matches KanbanProvider.ts priority).
+    const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
+    const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
+    if (leadCoderRec.test(content)) return 'high';
+    if (coderAgentRec.test(content)) return 'low';
+
     const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
     if (!auditMatch) {
-        const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
-        const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
-        if (leadCoderRec.test(content)) return 'high';
-        if (coderAgentRec.test(content)) return 'low';
         return 'unknown';
     }
     const afterAudit = content.slice(auditMatch.index + auditMatch[0].length);

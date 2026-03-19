@@ -43,9 +43,14 @@ const lockfile = __importStar(require("proper-lockfile"));
 const cp = __importStar(require("child_process"));
 const SessionActionLog_1 = require("./SessionActionLog");
 const terminalUtils_1 = require("./terminalUtils");
-const InteractiveOrchestrator_1 = require("./InteractiveOrchestrator");
 const PipelineOrchestrator_1 = require("./PipelineOrchestrator");
 const ContextBundler_1 = require("./ContextBundler");
+const agentConfig_1 = require("./agentConfig");
+const kanbanColumnDerivation_1 = require("./kanbanColumnDerivation");
+const agentPromptBuilder_1 = require("./agentPromptBuilder");
+const KanbanDatabase_1 = require("./KanbanDatabase");
+const KanbanMigration_1 = require("./KanbanMigration");
+const autobanState_1 = require("./autobanState");
 const { syncMirrorToBrain } = require('./mirrorSync');
 class TaskViewerProvider {
     _extensionUri;
@@ -58,14 +63,21 @@ class TaskViewerProvider {
     _fsStateWatcher;
     _fsPlansWatcher;
     _brainWatcher;
+    _configuredPlanWatcher;
     _stagingWatcher;
+    _configuredPlanFsWatcher;
     // TTL-based sets for reliable loop prevention (boolean flags reset before async watcher callbacks fire)
     _recentMirrorWrites = new Map(); // mirror paths we just wrote
     _recentBrainWrites = new Map(); // brain paths we just wrote
     _brainDebounceTimers = new Map(); // debounce brain watcher events
+    _configuredPlanSyncTimer;
+    _managedImportMirrorsForActiveFolder = new Set();
     _recentActionDispatches = new Map(); // short TTL dedupe for sidebar actions
     _pendingPlanCreations = new Set(); // suppress watcher for internally created plans
     _planFsDebounceTimers = new Map(); // debounce native plan watcher events
+    _sessionWatcher;
+    _fsSessionWatcher;
+    _sessionSyncTimer;
     _refreshTimeout;
     _julesStatusPollTimer;
     _isRefreshingJules = false;
@@ -76,11 +88,21 @@ class TaskViewerProvider {
     _mcpToolReachable = false;
     _mcpDiagnostic = 'MCP: Checking...';
     _registeredTerminals;
-    _orchestrator;
     _pipeline;
-    _coderReviewerSessions = new Map();
     _tombstones = new Set();
     _tombstonesReady = null;
+    // Autoban continuous background polling engine
+    _autobanTimers = new Map();
+    _autobanLastTickAt = new Map();
+    _autobanLaneLastDispatchAt = new Map();
+    // Serialization queue: ensures only one column tick runs at a time to prevent terminal dispatch contention.
+    _autobanTickQueue = Promise.resolve();
+    _autobanState = (0, autobanState_1.normalizeAutobanConfigState)();
+    // Tracks session IDs currently dispatched, keyed by the source column that dispatched them.
+    // Prevents duplicate dispatch within the same column while still allowing downstream column ticks.
+    _activeDispatchSessions = new Map();
+    // Safety-net sweep: checks every 60s whether source columns are empty and stops autoban if so.
+    _autobanEmptyColumnSweepTimer;
     // Dedupe key set: tracks recently processed mirror events (sessionId+stablePath) to prevent watcher churn re-processing
     _recentMirrorProcessed = new Map();
     // Persisted workspace blacklist: stable-path keys of brain plans present during setup.
@@ -88,6 +110,7 @@ class TaskViewerProvider {
     _brainPlanBlacklist = new Set();
     _gitCommitDisposable;
     // Hard workspace ownership scoping
+    _activeWorkspaceRoot = null;
     _workspaceId = null;
     _planRegistry = { version: 1, entries: {} };
     _ownershipInitPromise = null;
@@ -95,14 +118,17 @@ class TaskViewerProvider {
     // Session Tracking
     _lastSessionId = null;
     _lastActiveWorkflow = null;
-    _sessionLog;
+    _sessionLogs = new Map();
     _kanbanProvider;
+    _kanbanDbs = new Map();
+    _lastKanbanDbWarnings = new Map();
     _notifiedSessions = new Set(); // Track sessions that have been notified of completion
     // Batched State Updates
     _updateQueue = [];
     _updateResolvers = [];
     _updateTimer;
     static MAX_BRAIN_PLAN_SIZE_BYTES = 500 * 1024;
+    static MANAGED_IMPORT_PREFIX = 'ingested_';
     static JULES_SESSION_RETENTION = 50;
     static JULES_BULK_POLL_TIMEOUT_MS = 8000;
     static JULES_TARGETED_POLL_TIMEOUT_MS = 6000;
@@ -117,31 +143,113 @@ class TaskViewerProvider {
         this._extensionUri = _extensionUri;
         this._context = _context;
         this._needsSetup = needsSetup;
-        this._orchestrator = new InteractiveOrchestrator_1.InteractiveOrchestrator(() => this._postOrchestratorState(), (role, sessionId, instruction) => this._handleTriggerAgentAction(role, sessionId, instruction), this._context.globalState);
         this._pipeline = new PipelineOrchestrator_1.PipelineOrchestrator(() => this._postPipelineState(), async (role, sessionId, instruction) => {
             const dispatched = await this._handleTriggerAgentActionInternal(role, sessionId, instruction);
             if (!dispatched) {
                 throw new Error(`Pipeline dispatch failed for role '${role}' in session '${sessionId}'.`);
             }
         }, () => {
-            const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+            const root = this._resolveWorkspaceRoot();
             return root ? this._getSessionLog(root).getRunSheets() : Promise.resolve([]);
         }, this._context.globalState);
+        // Restore persisted Autoban state
+        const savedAutoban = this._context.workspaceState.get('autoban.state');
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)(savedAutoban);
         this._setupStateWatcher();
         this._setupPlanWatcher();
+        this._setupSessionWatcher();
         this._setupGitCommitWatcher();
         // Initialize ownership registry before brain watcher (async, fire-and-forget)
         this._ensureOwnershipRegistryInitialized().then(() => {
             this._setupBrainWatcher();
+            void this._refreshConfiguredPlanWatcher();
             void this._refreshRunSheets();
         }).catch(e => {
             console.error('[TaskViewerProvider] Registry initialization failed, starting brain watcher anyway:', e);
             this._setupBrainWatcher();
+            void this._refreshConfiguredPlanWatcher();
             void this._refreshRunSheets();
         });
         this._julesStatusPollTimer = setInterval(() => {
             this._refreshJulesStatus();
         }, 30000);
+    }
+    _getWorkspaceRoots() {
+        return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+    }
+    _resolveWorkspaceRoot(workspaceRoot) {
+        const roots = this._getWorkspaceRoots();
+        if (roots.length === 0) {
+            return null;
+        }
+        if (workspaceRoot) {
+            const resolved = path.resolve(workspaceRoot);
+            if (roots.includes(resolved)) {
+                this._activeWorkspaceRoot = resolved;
+                return resolved;
+            }
+        }
+        if (this._activeWorkspaceRoot && roots.includes(this._activeWorkspaceRoot)) {
+            return this._activeWorkspaceRoot;
+        }
+        this._activeWorkspaceRoot = roots[0];
+        return this._activeWorkspaceRoot;
+    }
+    async _resolveWorkspaceRootForSession(sessionId, preferredWorkspaceRoot) {
+        const orderedRoots = this._getWorkspaceRoots();
+        if (orderedRoots.length === 0) {
+            return null;
+        }
+        const candidates = [];
+        const preferred = this._resolveWorkspaceRoot(preferredWorkspaceRoot || undefined);
+        if (preferred) {
+            candidates.push(preferred);
+        }
+        for (const root of orderedRoots) {
+            if (!candidates.includes(root)) {
+                candidates.push(root);
+            }
+        }
+        for (const workspaceRoot of candidates) {
+            const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+            if (fs.existsSync(runSheetPath)) {
+                this._activeWorkspaceRoot = workspaceRoot;
+                return workspaceRoot;
+            }
+        }
+        return preferred || orderedRoots[0];
+    }
+    _resolveWorkspaceRootForPath(candidatePath, preferredWorkspaceRoot) {
+        const orderedRoots = this._getWorkspaceRoots();
+        if (orderedRoots.length === 0) {
+            return null;
+        }
+        const absoluteCandidate = path.resolve(candidatePath);
+        const preferred = preferredWorkspaceRoot ? this._resolveWorkspaceRoot(preferredWorkspaceRoot) : null;
+        if (preferred && this._isPathWithinRoot(absoluteCandidate, preferred)) {
+            this._activeWorkspaceRoot = preferred;
+            return preferred;
+        }
+        for (const workspaceRoot of orderedRoots) {
+            if (this._isPathWithinRoot(absoluteCandidate, workspaceRoot)) {
+                this._activeWorkspaceRoot = workspaceRoot;
+                return workspaceRoot;
+            }
+        }
+        return preferred || this._resolveWorkspaceRoot();
+    }
+    async _activateWorkspaceContext(workspaceRoot) {
+        const resolved = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolved) {
+            throw new Error('No workspace folder found.');
+        }
+        this._activeWorkspaceRoot = resolved;
+        this._workspaceId = null;
+        await this._ensureTombstonesLoaded(resolved);
+        await this._getOrCreateWorkspaceId(resolved);
+        await this._loadPlanRegistry(resolved);
+        this._loadBrainPlanBlacklist(resolved);
+        return resolved;
     }
     _ensureOwnershipRegistryInitialized() {
         if (this._ownershipInitPromise)
@@ -153,12 +261,10 @@ class TaskViewerProvider {
         return this._ownershipInitPromise;
     }
     async _initializeOwnershipRegistry() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        await this._ensureTombstonesLoaded(workspaceRoot);
-        await this._getOrCreateWorkspaceId(workspaceRoot);
+        await this._activateWorkspaceContext(workspaceRoot);
         await this._migrateLegacyToRegistry(workspaceRoot);
         await this._loadPlanRegistry(workspaceRoot);
         console.log(`[TaskViewerProvider] Ownership registry initialized: ${Object.keys(this._planRegistry.entries).length} entries, workspaceId=${this._workspaceId}`);
@@ -282,8 +388,7 @@ class TaskViewerProvider {
             return normalizedCandidates.has(name) || normalizedCandidates.has(creationName);
         });
     }
-    _computeDispatchReadiness(enrichedTerminals, terminalsMap, activeTerminals) {
-        const roles = ['lead', 'coder', 'reviewer', 'planner', 'analyst'];
+    _computeDispatchReadiness(enrichedTerminals, terminalsMap, activeTerminals, roles, roleCandidates) {
         const readiness = {};
         for (const role of roles) {
             const directTerminalEntry = Object.entries(enrichedTerminals).find(([, info]) => this._normalizeAgentKey(info?.role) === role &&
@@ -316,7 +421,7 @@ class TaskViewerProvider {
                 };
                 continue;
             }
-            const roleFallbackMatch = this._findOpenTerminalMatch(activeTerminals, this._roleNameCandidates(role));
+            const roleFallbackMatch = this._findOpenTerminalMatch(activeTerminals, roleCandidates[role] || this._roleNameCandidates(role));
             if (roleFallbackMatch) {
                 readiness[role] = {
                     state: 'recoverable',
@@ -357,10 +462,9 @@ class TaskViewerProvider {
         this._updateQueue = [];
         this._updateResolvers = [];
         try {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders)
+            const workspaceRoot = this._resolveWorkspaceRoot();
+            if (!workspaceRoot)
                 return;
-            const workspaceRoot = workspaceFolders[0].uri.fsPath;
             const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
             // Ensure state.json and its directory exist
             if (!fs.existsSync(statePath)) {
@@ -412,6 +516,255 @@ class TaskViewerProvider {
     }
     setKanbanProvider(provider) {
         this._kanbanProvider = provider;
+        this._kanbanProvider.updateAutobanConfig(this._getAutobanBroadcastState());
+    }
+    _deriveLastActionFromEvents(events) {
+        for (let i = events.length - 1; i >= 0; i--) {
+            const workflow = String(events[i]?.workflow || '').trim();
+            if (workflow)
+                return workflow;
+        }
+        return '';
+    }
+    _normalizeLegacyKanbanColumn(column) {
+        const normalized = String(column || '').trim();
+        return normalized === 'CODED' ? 'LEAD CODED' : normalized;
+    }
+    _codedColumnForRole(role) {
+        switch (role) {
+            case 'lead':
+            case 'team':
+                return 'LEAD CODED';
+            case 'coder':
+            case 'jules':
+                return 'CODER CODED';
+            default:
+                return null;
+        }
+    }
+    _codedColumnForDispatchRoles(roles) {
+        return roles.includes('lead') ? 'LEAD CODED' : 'CODER CODED';
+    }
+    _isCompletedCodingColumn(column) {
+        const normalizedColumn = this._normalizeLegacyKanbanColumn(column);
+        return normalizedColumn === 'LEAD CODED' || normalizedColumn === 'CODER CODED';
+    }
+    _targetColumnForRole(role) {
+        switch (role) {
+            case 'planner':
+                return 'PLAN REVIEWED';
+            case 'lead':
+            case 'coder':
+            case 'jules':
+            case 'team':
+                return this._codedColumnForRole(role);
+            case 'reviewer':
+                return 'CODE REVIEWED';
+            default:
+                return role.startsWith('custom_agent_') ? role : null;
+        }
+    }
+    _roleForKanbanColumn(column) {
+        switch (this._normalizeLegacyKanbanColumn(column)) {
+            case 'PLAN REVIEWED':
+                return 'planner';
+            case 'LEAD CODED':
+                return 'lead';
+            case 'CODER CODED':
+                return 'coder';
+            case 'CODE REVIEWED':
+                return 'reviewer';
+            default:
+                return column.startsWith('custom_agent_') ? column : null;
+        }
+    }
+    async _resolvePlanReviewedDispatchRole(sessionId, workspaceRoot) {
+        if (!this._kanbanProvider) {
+            return 'lead';
+        }
+        const sheet = await this._getSessionLog(workspaceRoot).getRunSheet(sessionId);
+        if (!sheet?.planFile) {
+            return 'lead';
+        }
+        const complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, sheet.planFile);
+        return complexity === 'Low' ? 'coder' : 'lead';
+    }
+    async _getNextKanbanColumnForSession(currentColumn, sessionId, workspaceRoot, customAgents) {
+        const normalizedCurrent = this._normalizeLegacyKanbanColumn(currentColumn);
+        switch (normalizedCurrent) {
+            case 'CREATED':
+                return 'PLAN REVIEWED';
+            case 'PLAN REVIEWED':
+                return this._targetColumnForRole(await this._resolvePlanReviewedDispatchRole(sessionId, workspaceRoot));
+            case 'LEAD CODED':
+            case 'CODER CODED':
+                return 'CODE REVIEWED';
+            case 'CODE REVIEWED':
+                return null;
+            default: {
+                const columnIds = (0, agentConfig_1.buildKanbanColumns)(customAgents).map(column => column.id);
+                const currentIndex = columnIds.indexOf(normalizedCurrent);
+                if (currentIndex < 0 || currentIndex >= columnIds.length - 1) {
+                    return null;
+                }
+                return columnIds[currentIndex + 1];
+            }
+        }
+    }
+    async _updateKanbanColumnForSession(workspaceRoot, sessionId, column) {
+        if (!column)
+            return;
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (!db)
+            return;
+        await db.updateColumn(sessionId, column);
+    }
+    async _getKanbanPlanRecordForSession(workspaceRoot, sessionId) {
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (!db) {
+            return undefined;
+        }
+        const workspaceId = this._workspaceId || await this._getOrCreateWorkspaceId(workspaceRoot);
+        return (await db.getBoard(workspaceId)).find(entry => entry.sessionId === sessionId);
+    }
+    _getEffectiveKanbanColumnForSession(sheet, customAgents, row) {
+        const events = Array.isArray(sheet?.events) ? sheet.events : [];
+        const derivedColumn = this._normalizeLegacyKanbanColumn((0, kanbanColumnDerivation_1.deriveKanbanColumn)(events, customAgents));
+        return this._normalizeLegacyKanbanColumn(row?.kanbanColumn || derivedColumn);
+    }
+    async _refreshKanbanMetadataFromSheet(workspaceRoot, sheet) {
+        if (!sheet?.sessionId)
+            return;
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (!db)
+            return;
+        const sessionId = String(sheet.sessionId);
+        const topic = String(sheet.topic || sheet.planFile || 'Untitled').trim();
+        if (topic) {
+            await db.updateTopic(sessionId, topic);
+        }
+        if (this._kanbanProvider && typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
+            const complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, sheet.planFile);
+            await db.updateComplexity(sessionId, complexity);
+        }
+    }
+    async _buildKanbanRecordFromSheet(workspaceRoot, workspaceId, sheet, customAgents) {
+        const planId = this._getPlanIdForRunSheet(sheet);
+        if (!planId || typeof sheet?.sessionId !== 'string' || !sheet.sessionId.trim()) {
+            return undefined;
+        }
+        const events = Array.isArray(sheet.events) ? sheet.events : [];
+        const createdAt = typeof sheet.createdAt === 'string' && sheet.createdAt ? sheet.createdAt : new Date().toISOString();
+        const activityTs = this._getSheetActivityTimestamp(sheet);
+        const updatedAt = activityTs > 0 ? new Date(activityTs).toISOString() : createdAt;
+        const rawPlanFile = typeof sheet.planFile === 'string' ? sheet.planFile : '';
+        let complexity = 'Unknown';
+        if (this._kanbanProvider && rawPlanFile) {
+            try {
+                complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, rawPlanFile);
+            }
+            catch {
+                complexity = 'Unknown';
+            }
+        }
+        return {
+            planId,
+            sessionId: sheet.sessionId,
+            topic: String(sheet.topic || sheet.planFile || 'Untitled'),
+            planFile: rawPlanFile,
+            kanbanColumn: (0, kanbanColumnDerivation_1.deriveKanbanColumn)(events, customAgents),
+            status: sheet.completed ? 'completed' : 'active',
+            complexity,
+            workspaceId,
+            createdAt,
+            updatedAt,
+            lastAction: this._deriveLastActionFromEvents(events),
+            sourceType: sheet.brainSourcePath ? 'brain' : 'local'
+        };
+    }
+    async _syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents, _archiveMissing = true) {
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (!db)
+            return null;
+        await this._ensureOwnershipRegistryInitialized();
+        const workspaceId = this._workspaceId || await this._getOrCreateWorkspaceId(workspaceRoot);
+        const records = [];
+        for (const sheet of sheets) {
+            const record = await this._buildKanbanRecordFromSheet(workspaceRoot, workspaceId, sheet, customAgents);
+            if (!record)
+                continue;
+            if (record.status === 'active') {
+                if (!this._isOwnedActiveRunSheet(sheet))
+                    continue;
+            }
+            else {
+                const entry = this._planRegistry.entries[record.planId];
+                if (!entry || entry.ownerWorkspaceId !== workspaceId)
+                    continue;
+            }
+            records.push(record);
+        }
+        if (records.length === 0) {
+            return workspaceId;
+        }
+        const bootstrapped = await KanbanMigration_1.KanbanMigration.bootstrapIfNeeded(db, workspaceId, records);
+        if (!bootstrapped)
+            return null;
+        const synced = await KanbanMigration_1.KanbanMigration.syncNewPlansOnly(db, workspaceId, records);
+        if (!synced)
+            return null;
+        return workspaceId;
+    }
+    async _collectAndSyncKanbanSnapshot(workspaceRoot, archiveMissing = true) {
+        await this._ensureOwnershipRegistryInitialized();
+        await this._ensureTombstonesLoaded(workspaceRoot);
+        await this._reconcileLocalPlansFromRunSheets(workspaceRoot);
+        const allSheets = await this._getSessionLog(workspaceRoot).getRunSheets();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, allSheets, customAgents, archiveMissing);
+        return allSheets;
+    }
+    async initializeKanbanDbOnStartup() {
+        const workspaceRoots = this._getWorkspaceRoots();
+        for (const workspaceRoot of workspaceRoots) {
+            try {
+                await this._activateWorkspaceContext(workspaceRoot);
+                await this._collectAndSyncKanbanSnapshot(workspaceRoot, true);
+            }
+            catch (e) {
+                console.error(`[TaskViewerProvider] Failed to initialize Kanban DB on startup for ${workspaceRoot}:`, e);
+            }
+        }
+    }
+    async _getAutobanStateFromDb(workspaceRoot, workspaceId, sourceColumn) {
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (!db)
+            return null;
+        const rows = await db.getBoard(workspaceId);
+        if (rows.length === 0) {
+            return null;
+        }
+        const currentColumnBySession = new Map();
+        const cardsInColumn = [];
+        for (const row of rows) {
+            currentColumnBySession.set(row.sessionId, row.kanbanColumn);
+            if (row.kanbanColumn !== sourceColumn)
+                continue;
+            const rawPlanFile = String(row.planFile || '').trim();
+            const resolvedPlanPath = rawPlanFile
+                ? (path.isAbsolute(rawPlanFile) ? rawPlanFile : path.resolve(workspaceRoot, rawPlanFile))
+                : '';
+            if (!resolvedPlanPath || !fs.existsSync(resolvedPlanPath)) {
+                console.warn(`[Autoban] Skipping session ${row.sessionId}: missing plan file (${rawPlanFile || 'none'})`);
+                continue;
+            }
+            cardsInColumn.push({
+                sessionId: row.sessionId,
+                lastActivity: row.updatedAt || row.createdAt || '',
+                planFile: resolvedPlanPath
+            });
+        }
+        return { cardsInColumn, currentColumnBySession };
     }
     refresh() {
         if (this._refreshTimeout) {
@@ -434,30 +787,366 @@ class TaskViewerProvider {
         this._view?.webview.postMessage({ type: 'loading', value: loading });
     }
     /** Called by the Kanban board to trigger an agent action on a plan session. */
-    async handleKanbanTrigger(role, sessionId) {
-        await this._handleTriggerAgentAction(role, sessionId);
+    async handleKanbanTrigger(role, sessionId, instruction, workspaceRoot) {
+        return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot);
     }
-    /** Called by the Kanban board to mark a plan as complete. */
-    async handleKanbanCompletePlan(sessionId) {
-        await this._handleCompletePlan(sessionId);
+    /** Called by the Kanban board to generate a context map for a plan session. */
+    async handleAnalystContextMap(sessionId, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
+            return false;
+        }
+        const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        if (!fs.existsSync(sessionPath)) {
+            console.warn(`[TaskViewerProvider] No session file for analyst map: ${sessionId}`);
+            return false;
+        }
+        let planFileAbsolute;
+        try {
+            const sessionContent = await fs.promises.readFile(sessionPath, 'utf8');
+            const session = JSON.parse(sessionContent);
+            if (!session.planFile) {
+                console.warn(`[TaskViewerProvider] No plan file in session: ${sessionId}`);
+                return false;
+            }
+            planFileAbsolute = path.resolve(resolvedWorkspaceRoot, session.planFile);
+        }
+        catch (e) {
+            console.error(`[TaskViewerProvider] Failed to read session for analyst map: ${e}`);
+            return false;
+        }
+        if (!fs.existsSync(planFileAbsolute)) {
+            console.warn(`[TaskViewerProvider] Plan file not found for analyst map: ${planFileAbsolute}`);
+            return false;
+        }
+        try {
+            const planContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
+            return this._handleAnalystMapForPlan(planFileAbsolute, planContent);
+        }
+        catch (e) {
+            console.error(`[TaskViewerProvider] Failed to read plan for analyst map: ${e}`);
+            return false;
+        }
     }
-    /** Called by the Kanban board to open a plan file. */
-    async handleKanbanViewPlan(sessionId) {
-        await this._handleViewPlan(sessionId);
+    /** Called by the Kanban board to silently reset a card to an earlier stage. */
+    async handleKanbanBackwardMove(sessionIds, targetColumn, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : (sessionIds.length > 0 ? await this._resolveWorkspaceRootForSession(sessionIds[0]) : null);
+        if (!resolvedWorkspaceRoot) {
+            return;
+        }
+        const workflowName = 'reset-to-' + targetColumn.toLowerCase().replace(/\s+/g, '-');
+        for (const sessionId of sessionIds) {
+            await this._applyManualKanbanColumnChange(sessionId, targetColumn, workflowName, 'User manually moved plan backwards', resolvedWorkspaceRoot);
+        }
     }
-    async getStartupCommands() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+    _workflowForForwardMove(targetColumn) {
+        const normalizedTarget = String(targetColumn || '').trim().toLowerCase().replace(/\s+/g, '-');
+        return normalizedTarget ? `move-to-${normalizedTarget}` : null;
+    }
+    _workflowForManualColumnChange(currentColumn, targetColumn, customAgents) {
+        const normalizedCurrent = this._normalizeLegacyKanbanColumn(currentColumn);
+        const normalizedTarget = this._normalizeLegacyKanbanColumn(targetColumn);
+        if (!normalizedTarget || normalizedCurrent === normalizedTarget) {
+            return null;
+        }
+        const orderedColumns = (0, agentConfig_1.buildKanbanColumns)(customAgents)
+            .map(column => this._normalizeLegacyKanbanColumn(column.id));
+        const currentIndex = orderedColumns.indexOf(normalizedCurrent);
+        const targetIndex = orderedColumns.indexOf(normalizedTarget);
+        if (currentIndex >= 0 && targetIndex >= 0 && targetIndex < currentIndex) {
+            return 'reset-to-' + normalizedTarget.toLowerCase().replace(/\s+/g, '-');
+        }
+        return this._workflowForForwardMove(normalizedTarget);
+    }
+    async _applyManualKanbanColumnChange(sessionId, targetColumn, workflowName, outcome, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
+            return false;
+        }
+        const normalizedTargetColumn = this._normalizeLegacyKanbanColumn(targetColumn);
+        if (!normalizedTargetColumn || !workflowName) {
+            return false;
+        }
+        await this._updateSessionRunSheet(sessionId, workflowName, outcome, true, resolvedWorkspaceRoot);
+        await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, normalizedTargetColumn);
+        return true;
+    }
+    _plannerWorkflowNameForInstruction(instruction) {
+        const { baseInstruction } = this._parsePromptInstruction(instruction);
+        if (baseInstruction === 'improve-plan') {
+            return 'Improved plan';
+        }
+        if (baseInstruction === 'enhance') {
+            return 'Enhanced plan';
+        }
+        return undefined;
+    }
+    _parsePromptInstruction(instruction) {
+        if (!instruction) {
+            return { baseInstruction: undefined, includeInlineChallenge: false };
+        }
+        if (instruction === 'with-challenge') {
+            return { baseInstruction: undefined, includeInlineChallenge: true };
+        }
+        const challengeSuffix = ':with-challenge';
+        if (instruction.endsWith(challengeSuffix)) {
+            const baseInstruction = instruction.slice(0, -challengeSuffix.length) || undefined;
+            return { baseInstruction, includeInlineChallenge: true };
+        }
+        return { baseInstruction: instruction, includeInlineChallenge: false };
+    }
+    _getPromptInstructionOptions(role, instruction) {
+        const parsedInstruction = this._parsePromptInstruction(instruction);
+        if (role !== 'lead') {
+            return {
+                baseInstruction: parsedInstruction.baseInstruction,
+                includeInlineChallenge: false
+            };
+        }
+        if (parsedInstruction.includeInlineChallenge || this._isLeadInlineChallengeEnabled()) {
+            return {
+                baseInstruction: parsedInstruction.baseInstruction,
+                includeInlineChallenge: true
+            };
+        }
+        return parsedInstruction;
+    }
+    _buildReviewerExecutionIntro(planCount) {
+        if (planCount <= 1) {
+            return 'The implementation for this plan is complete. Execute a direct reviewer pass in-place.';
+        }
+        return `The implementation for each of the following ${planCount} plans is complete. Execute a direct reviewer pass in-place for each plan.`;
+    }
+    _buildReviewerExecutionModeLine(expectation) {
+        return `Mode:
+- You are the reviewer-executor for this task.
+- Do not start any auxiliary workflow; execute this task directly.
+- Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
+- ${expectation}`;
+    }
+    async handleKanbanForwardMove(sessionIds, targetColumn, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : (sessionIds.length > 0 ? await this._resolveWorkspaceRootForSession(sessionIds[0]) : null);
+        if (!resolvedWorkspaceRoot) {
+            return;
+        }
+        const workflowName = this._workflowForForwardMove(targetColumn);
+        if (!workflowName) {
+            return;
+        }
+        for (const sessionId of sessionIds) {
+            await this._applyManualKanbanColumnChange(sessionId, targetColumn, workflowName, 'User manually moved plan forwards', resolvedWorkspaceRoot);
+        }
+    }
+    /**
+     * Called by the Autoban engine to trigger a batched agent action on multiple plan sessions.
+     * Sequentially updates runsheets to avoid file-lock contention, then constructs
+     * a single multi-plan prompt and dispatches it to the target agent.
+     */
+    async handleKanbanBatchTrigger(role, sessionIds, instruction, workspaceRoot, targetTerminalOverride) {
+        if (sessionIds.length === 0) {
+            return false;
+        }
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionIds[0]);
+        if (!resolvedWorkspaceRoot) {
+            return false;
+        }
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const targetAgent = String(targetTerminalOverride || '').trim() || await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
+        if (!targetAgent) {
+            vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Cannot dispatch batch.`);
+            return false;
+        }
+        if (!this._isValidAgentName(targetAgent)) {
+            console.error(`[TaskViewerProvider] Rejected invalid agent name for batch dispatch: ${targetAgent}`);
+            return false;
+        }
+        // Resolve valid plan paths from session IDs
+        const validPlans = [];
+        for (const sid of sessionIds) {
+            try {
+                const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sid}.json`);
+                if (!fs.existsSync(sessionPath)) {
+                    continue;
+                }
+                const content = await fs.promises.readFile(sessionPath, 'utf8');
+                const session = JSON.parse(content);
+                if (!session.planFile) {
+                    continue;
+                }
+                const absolutePath = path.resolve(resolvedWorkspaceRoot, session.planFile);
+                if (!fs.existsSync(absolutePath)) {
+                    continue;
+                }
+                validPlans.push({
+                    sessionId: sid,
+                    topic: session.topic || session.planFile || 'Untitled',
+                    absolutePath
+                });
+            }
+            catch {
+                console.error(`[TaskViewerProvider] Failed to resolve plan for session ${sid}`);
+            }
+        }
+        if (validPlans.length === 0) {
+            console.warn('[TaskViewerProvider] Batch trigger: no valid plans resolved.');
+            return false;
+        }
+        // Determine workflow name for runsheet updates
+        const workflowMap = {
+            'planner': 'sidebar-review',
+            'reviewer': 'reviewer-pass',
+            'lead': 'handoff-lead',
+            'coder': 'handoff'
+        };
+        const workflowName = role === 'planner'
+            ? (this._plannerWorkflowNameForInstruction(instruction) || workflowMap[role])
+            : workflowMap[role];
+        const prompt = this._buildKanbanBatchPrompt(role, validPlans, instruction);
+        // Dispatch the batched prompt FIRST, then update runsheets only on success.
+        // This prevents cards from being moved forward if the dispatch fails.
+        try {
+            vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
+            await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, prompt, {
+                batch: true,
+                sessionIds: validPlans.map(p => p.sessionId)
+            });
+            for (const plan of validPlans) {
+                if (workflowName) {
+                    await this._updateSessionRunSheet(plan.sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
+                }
+                await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, plan.sessionId, this._targetColumnForRole(role));
+            }
+            await this._logEvent('dispatch', {
+                event: 'batch_dispatch_sent',
+                role,
+                sessionIds: validPlans.map(p => p.sessionId),
+                targetAgent,
+                planCount: validPlans.length
+            }, undefined, resolvedWorkspaceRoot);
+            return true;
+        }
+        catch (e) {
+            await this._logEvent('dispatch', {
+                event: 'batch_dispatch_failed',
+                role,
+                sessionIds: validPlans.map(p => p.sessionId),
+                targetAgent,
+                error: String(e)
+            }, undefined, resolvedWorkspaceRoot);
+            console.error(`[TaskViewerProvider] Batch dispatch failed for role '${role}':`, e);
+            return false;
+        }
+    }
+    async handleKanbanCompletePlan(sessionId, workspaceRoot) {
+        return await this._handleCompletePlan(sessionId, workspaceRoot);
+    }
+    async handleDeletePlanFromReview(sessionId, workspaceRoot) {
+        return await this._handleDeletePlan(sessionId, workspaceRoot);
+    }
+    async sendReviewTicketToNextAgent(sessionId) {
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
+            return { ok: false, message: 'No workspace folder found.' };
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+        const ticketData = await this.getReviewTicketData(sessionId);
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const currentColumn = this._normalizeLegacyKanbanColumn(ticketData.column);
+        const targetColumn = await this._getNextKanbanColumnForSession(currentColumn, sessionId, workspaceRoot, customAgents);
+        if (!targetColumn) {
+            return { ok: false, message: 'Plan is already in the final column.' };
+        }
+        const role = this._roleForKanbanColumn(targetColumn);
+        if (!role) {
+            await this.handleKanbanForwardMove([sessionId], targetColumn, workspaceRoot);
+            return { ok: true, message: `Moved to ${targetColumn}.` };
+        }
+        const instruction = role === 'planner' ? 'improve-plan' : undefined;
+        const dispatched = await this.handleKanbanTrigger(role, sessionId, instruction, workspaceRoot);
+        if (!dispatched) {
+            return { ok: false, message: `Failed to send plan to ${targetColumn}.` };
+        }
+        return { ok: true, message: `Sent to ${targetColumn}.` };
+    }
+    async handleKanbanReviewPlan(sessionId, workspaceRoot) {
+        await this._handleReviewPlan(sessionId, workspaceRoot);
+    }
+    async getStartupCommands(workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
             return {};
-        const statePath = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'state.json');
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
         try {
             const content = await fs.promises.readFile(statePath, 'utf8');
             const state = JSON.parse(content);
-            return state.startupCommands || {};
+            const startupCommands = { ...(state.startupCommands || {}) };
+            for (const agent of (0, agentConfig_1.parseCustomAgents)(state.customAgents)) {
+                startupCommands[agent.role] = agent.startupCommand;
+            }
+            return startupCommands;
         }
         catch {
             return {};
         }
+    }
+    async getPlanIngestionFolder(workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return '';
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
+        try {
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            return this._normalizeConfiguredPlanFolder(state.planIngestionFolder, resolvedRoot);
+        }
+        catch {
+            return '';
+        }
+    }
+    async getVisibleAgents(workspaceRoot) {
+        const defaults = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return defaults;
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
+        try {
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            for (const agent of (0, agentConfig_1.parseCustomAgents)(state.customAgents)) {
+                defaults[agent.role] = true;
+            }
+            return { ...defaults, ...state.visibleAgents };
+        }
+        catch {
+            return defaults;
+        }
+    }
+    async getCustomAgents(workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return [];
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
+        try {
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            return (0, agentConfig_1.parseCustomAgents)(state.customAgents);
+        }
+        catch {
+            return [];
+        }
+    }
+    _sanitizeCustomAgents(raw) {
+        return (0, agentConfig_1.parseCustomAgents)(raw);
     }
     _sendInitialState() {
         const activeTab = this._context.workspaceState.get(TaskViewerProvider.ACTIVE_TAB_STATE_KEY, 'agents');
@@ -474,27 +1163,53 @@ class TaskViewerProvider {
         });
     }
     _getSessionLog(workspaceRoot) {
-        if (!this._sessionLog) {
-            this._sessionLog = new SessionActionLog_1.SessionActionLog(workspaceRoot);
+        const resolvedRoot = path.resolve(workspaceRoot);
+        const existing = this._sessionLogs.get(resolvedRoot);
+        if (existing) {
+            return existing;
         }
-        return this._sessionLog;
+        const created = new SessionActionLog_1.SessionActionLog(resolvedRoot);
+        this._sessionLogs.set(resolvedRoot, created);
+        return created;
     }
-    async _logEvent(type, payload, correlationId) {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot)
+    async _logEvent(type, payload, correlationId, workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
             return;
         try {
-            await this._getSessionLog(workspaceRoot).logEvent(type, payload, correlationId);
+            await this._getSessionLog(resolvedRoot).logEvent(type, payload, correlationId);
         }
         catch (error) {
             console.error('[TaskViewerProvider] Failed to write session audit event:', error);
         }
     }
-    async _postRecentActivity(limit, beforeTimestamp) {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot)
+    async _announceAutobanDispatch(sourceColumn, targetRole, sessionIds, workspaceRoot) {
+        if (!Array.isArray(sessionIds) || sessionIds.length === 0) {
             return;
-        const page = await this._getSessionLog(workspaceRoot).getRecentActivity(limit, beforeTimestamp);
+        }
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot) {
+            return;
+        }
+        try {
+            await this._logEvent('autoban_dispatch', {
+                sourceColumn,
+                targetRole,
+                sessionIds,
+                batchSize: sessionIds.length,
+                message: `Autoban moved ${sessionIds.length} plan(s) from ${sourceColumn} -> ${targetRole}`
+            }, undefined, resolvedRoot);
+            await this._postRecentActivity(50, undefined, resolvedRoot);
+        }
+        catch (error) {
+            console.error('[Autoban] Failed to publish dispatch activity:', error);
+        }
+    }
+    async _postRecentActivity(limit, beforeTimestamp, workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return;
+        const page = await this._getSessionLog(resolvedRoot).getRecentActivity(limit, beforeTimestamp);
         this._view?.webview.postMessage({
             type: 'recentActivity',
             events: page.events,
@@ -503,11 +1218,674 @@ class TaskViewerProvider {
             append: typeof beforeTimestamp === 'string' && beforeTimestamp.length > 0
         });
     }
-    _postOrchestratorState() {
-        this._view?.webview.postMessage({
-            type: 'orchestratorState',
-            state: this._orchestrator.getState()
+    async _getKanbanDb(workspaceRoot) {
+        const resolvedRoot = path.resolve(workspaceRoot);
+        let db = this._kanbanDbs.get(resolvedRoot);
+        if (!db) {
+            db = KanbanDatabase_1.KanbanDatabase.forWorkspace(resolvedRoot);
+            this._kanbanDbs.set(resolvedRoot, db);
+        }
+        const ready = await db.ensureReady();
+        if (!ready) {
+            const initError = db.lastInitError || 'unknown error';
+            console.warn(`[TaskViewerProvider] Kanban DB unavailable, falling back to file-based state: ${initError}`);
+            if (this._lastKanbanDbWarnings.get(resolvedRoot) !== initError) {
+                this._lastKanbanDbWarnings.set(resolvedRoot, initError);
+                vscode.window.showWarningMessage(`Kanban DB initialization failed: ${initError}. Using file-based fallback.`);
+            }
+            return undefined;
+        }
+        this._lastKanbanDbWarnings.set(resolvedRoot, null);
+        return db;
+    }
+    async _logAndPostRecentActivityBackfill(workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return;
+        await this._postRecentActivity(50, undefined, resolvedRoot);
+    }
+    async _getAgentNameForRole(role, workspaceRoot) {
+        const resolvedRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedRoot)
+            return undefined;
+        const statePath = path.join(resolvedRoot, '.switchboard', 'state.json');
+        try {
+            if (!fs.existsSync(statePath))
+                return undefined;
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            if (state.terminals) {
+                for (const [name, info] of Object.entries(state.terminals)) {
+                    if (info.role === role)
+                        return name;
+                }
+            }
+            if (state.chatAgents) {
+                for (const [name, info] of Object.entries(state.chatAgents)) {
+                    if (info.role === role)
+                        return name;
+                }
+            }
+            return undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+    async _persistAutobanState() {
+        await this._context.workspaceState.update('autoban.state', this._autobanState);
+    }
+    _resetAutobanSessionCounters() {
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            sessionSendCount: 0,
+            sendCounts: {},
+            poolCursor: {}
         });
+    }
+    _autobanPoolRoles(customAgentRoles) {
+        const builtIn = ['planner', 'coder', 'lead', 'reviewer'];
+        if (!customAgentRoles || customAgentRoles.length === 0) {
+            return builtIn;
+        }
+        const seen = new Set(builtIn);
+        for (const role of customAgentRoles) {
+            if (role && !seen.has(role)) {
+                builtIn.push(role);
+                seen.add(role);
+            }
+        }
+        return builtIn;
+    }
+    _normalizeAutobanPoolRole(role) {
+        return this._normalizeAgentKey(role);
+    }
+    _limitAutobanPool(entries) {
+        return Array.from(new Set(entries
+            .map(entry => String(entry || '').trim())
+            .filter(Boolean))).slice(0, autobanState_1.MAX_AUTOBAN_TERMINALS_PER_ROLE);
+    }
+    _getConfiguredAutobanPool(role) {
+        return this._limitAutobanPool(this._autobanState.terminalPools[this._normalizeAutobanPoolRole(role)] || []);
+    }
+    _getManagedAutobanPool(role) {
+        return this._limitAutobanPool(this._autobanState.managedTerminalPools[this._normalizeAutobanPoolRole(role)] || []);
+    }
+    _isAutobanBackupTerminalInfo(info) {
+        return String(info?.purpose || '').trim().toLowerCase() === 'autoban-backup';
+    }
+    _getAutobanRoleLabel(role) {
+        switch (this._normalizeAutobanPoolRole(role)) {
+            case 'planner': return 'Planner';
+            case 'coder': return 'Coder';
+            case 'lead': return 'Lead Coder';
+            case 'reviewer': return 'Reviewer';
+            default: return role.trim() || 'Agent';
+        }
+    }
+    async _readTerminalRegistryState(workspaceRoot) {
+        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
+        try {
+            if (!fs.existsSync(statePath)) {
+                return {};
+            }
+            const content = await fs.promises.readFile(statePath, 'utf8');
+            const state = JSON.parse(content);
+            return state.terminals || {};
+        }
+        catch (error) {
+            console.error('[Autoban] Failed to read terminal registry state:', error);
+            return {};
+        }
+    }
+    async _getAliveAutobanTerminalRegistry(workspaceRoot) {
+        const terminalsMap = await this._readTerminalRegistryState(workspaceRoot);
+        const activeTerminals = vscode.window.terminals;
+        const activeNames = new Set();
+        const activePids = new Set();
+        for (const terminal of activeTerminals) {
+            activeNames.add(terminal.name);
+            const creationName = terminal.creationOptions?.name;
+            if (creationName) {
+                activeNames.add(creationName);
+            }
+        }
+        for (const terminal of activeTerminals) {
+            try {
+                const pid = await this._waitWithTimeout(terminal.processId, 1000, undefined);
+                if (pid) {
+                    activePids.add(pid);
+                }
+            }
+            catch { }
+        }
+        const currentIdeName = (vscode.env.appName || '').toLowerCase();
+        const aliveTerminals = {};
+        for (const [name, rawInfo] of Object.entries(terminalsMap)) {
+            const info = { ...rawInfo };
+            const friendlyName = typeof info.friendlyName === 'string' ? info.friendlyName : name;
+            const nameMatch = activeNames.has(name) || activeNames.has(friendlyName);
+            const pidMatch = activePids.has(info.pid) || activePids.has(info.childPid);
+            const termIdeName = (info.ideName || '').toLowerCase();
+            const ideMatches = !termIdeName ||
+                termIdeName === currentIdeName ||
+                (termIdeName === 'antigravity' && currentIdeName.includes('visual studio code')) ||
+                (termIdeName.includes('visual studio code') && currentIdeName === 'antigravity');
+            const isLocal = pidMatch || (nameMatch && ideMatches);
+            const lastSeenMs = Date.parse(info.lastSeen || '');
+            const heartbeatAlive = !Number.isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < 60_000;
+            const alive = isLocal || heartbeatAlive;
+            if (!alive) {
+                continue;
+            }
+            aliveTerminals[name] = {
+                ...info,
+                alive,
+                _isLocal: isLocal
+            };
+        }
+        return aliveTerminals;
+    }
+    async _getAliveAutobanTerminalNames(role, workspaceRoot, includeBackups = true) {
+        const aliveTerminals = await this._getAliveAutobanTerminalRegistry(workspaceRoot);
+        return this._getAliveAutobanTerminalNamesFromRegistry(role, aliveTerminals, includeBackups);
+    }
+    _getAliveAutobanTerminalNamesFromRegistry(role, aliveTerminals, includeBackups = true) {
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        return Object.entries(aliveTerminals)
+            .filter(([, info]) => this._normalizeAgentKey(info?.role) === normalizedRole)
+            .filter(([, info]) => includeBackups || !this._isAutobanBackupTerminalInfo(info))
+            .map(([name]) => name)
+            .sort((a, b) => a.localeCompare(b));
+    }
+    async _resolveAutobanEffectivePool(role, workspaceRoot) {
+        const aliveRoleTerminals = await this._getAliveAutobanTerminalNames(role, workspaceRoot, true);
+        const alivePrimaryRoleTerminals = await this._getAliveAutobanTerminalNames(role, workspaceRoot, false);
+        const configuredPool = this._getConfiguredAutobanPool(role);
+        if (configuredPool.length > 0) {
+            return this._limitAutobanPool(configuredPool.filter(name => aliveRoleTerminals.includes(name)));
+        }
+        return this._limitAutobanPool(alivePrimaryRoleTerminals);
+    }
+    _autobanPoolsEqual(left, right) {
+        return left.length === right.length && left.every((entry, index) => entry === right[index]);
+    }
+    async _reconcileAutobanPoolState(workspaceRoot, options = {}) {
+        const aliveTerminals = await this._getAliveAutobanTerminalRegistry(workspaceRoot);
+        const nextTerminalPools = {};
+        const nextManagedTerminalPools = {};
+        const nextPoolCursor = {};
+        const validSendCountNames = new Set();
+        let stateChanged = false;
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const customAgentRoles = customAgents.filter(a => a.includeInKanban).map(a => a.role);
+        for (const rawRole of this._autobanPoolRoles(customAgentRoles)) {
+            const role = this._normalizeAutobanPoolRole(rawRole);
+            const aliveRoleTerminals = this._getAliveAutobanTerminalNamesFromRegistry(role, aliveTerminals, true);
+            const alivePrimaryRoleTerminals = this._getAliveAutobanTerminalNamesFromRegistry(role, aliveTerminals, false);
+            const configuredPool = this._getConfiguredAutobanPool(role);
+            const managedPool = this._getManagedAutobanPool(role);
+            const reconciledConfiguredPool = this._limitAutobanPool(configuredPool.filter(name => aliveRoleTerminals.includes(name)));
+            const reconciledManagedPool = this._limitAutobanPool(managedPool.filter(name => reconciledConfiguredPool.includes(name)));
+            const effectivePool = reconciledConfiguredPool.length > 0 ? reconciledConfiguredPool : alivePrimaryRoleTerminals;
+            if (!this._autobanPoolsEqual(configuredPool, reconciledConfiguredPool)) {
+                stateChanged = true;
+            }
+            if (!this._autobanPoolsEqual(managedPool, reconciledManagedPool)) {
+                stateChanged = true;
+            }
+            if (reconciledConfiguredPool.length > 0) {
+                nextTerminalPools[role] = reconciledConfiguredPool;
+            }
+            if (reconciledManagedPool.length > 0) {
+                nextManagedTerminalPools[role] = reconciledManagedPool;
+            }
+            const currentCursor = this._autobanState.poolCursor[role];
+            if (effectivePool.length > 0 && typeof currentCursor === 'number' && Number.isFinite(currentCursor)) {
+                nextPoolCursor[role] = currentCursor;
+            }
+            else if (currentCursor !== undefined) {
+                stateChanged = true;
+            }
+            effectivePool.forEach(name => validSendCountNames.add(name));
+        }
+        const nextSendCounts = Object.fromEntries(Object.entries(this._autobanState.sendCounts).filter(([name]) => validSendCountNames.has(name)));
+        if (Object.keys(nextSendCounts).length !== Object.keys(this._autobanState.sendCounts).length) {
+            stateChanged = true;
+        }
+        if (Object.keys(nextPoolCursor).length !== Object.keys(this._autobanState.poolCursor).length) {
+            stateChanged = true;
+        }
+        if (stateChanged) {
+            this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+                ...this._autobanState,
+                terminalPools: nextTerminalPools,
+                managedTerminalPools: nextManagedTerminalPools,
+                sendCounts: nextSendCounts,
+                poolCursor: nextPoolCursor
+            });
+            await this._persistAutobanState();
+        }
+        if (options.pruneStaleBackupRegistry) {
+            let registryChanged = false;
+            await this.updateState(async (state) => {
+                if (!state.terminals) {
+                    return;
+                }
+                for (const [name, info] of Object.entries(state.terminals)) {
+                    if (this._isAutobanBackupTerminalInfo(info) && !aliveTerminals[name]) {
+                        delete state.terminals[name];
+                        registryChanged = true;
+                    }
+                }
+            });
+            if (registryChanged) {
+                await this._refreshTerminalStatuses();
+            }
+        }
+    }
+    _getAutobanRemainingSessionCapacity() {
+        return Math.max(0, (this._autobanState.globalSessionCap || autobanState_1.DEFAULT_AUTOBAN_GLOBAL_SESSION_CAP) - (this._autobanState.sessionSendCount || 0));
+    }
+    async _selectAutobanTerminal(role, workspaceRoot) {
+        const effectivePool = await this._resolveAutobanEffectivePool(role, workspaceRoot);
+        if (effectivePool.length === 0 || this._getAutobanRemainingSessionCapacity() <= 0) {
+            return null;
+        }
+        const maxSendsPerTerminal = Math.max(1, Number(this._autobanState.maxSendsPerTerminal) || 1);
+        const available = effectivePool
+            .map(name => {
+            const currentCount = this._autobanState.sendCounts[name] || 0;
+            return {
+                name,
+                count: currentCount,
+                remaining: maxSendsPerTerminal - currentCount
+            };
+        })
+            .filter(entry => entry.remaining > 0);
+        if (available.length === 0) {
+            return null;
+        }
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const cursor = Math.max(0, this._autobanState.poolCursor[normalizedRole] || 0);
+        const rotatedPool = effectivePool.map((_, index) => effectivePool[(cursor + index) % effectivePool.length]);
+        const minCount = Math.min(...available.map(entry => entry.count));
+        const leastUsedNames = new Set(available.filter(entry => entry.count === minCount).map(entry => entry.name));
+        const selectedName = rotatedPool.find(name => leastUsedNames.has(name))
+            || rotatedPool.find(name => available.some(entry => entry.name === name))
+            || available[0].name;
+        const selectedEntry = available.find(entry => entry.name === selectedName) || available[0];
+        return {
+            terminalName: selectedEntry.name,
+            remainingDispatches: Math.min(selectedEntry.remaining, this._getAutobanRemainingSessionCapacity()),
+            effectivePool
+        };
+    }
+    async _recordAutobanDispatch(role, terminalName, dispatchCount, effectivePool) {
+        if (dispatchCount <= 0) {
+            return;
+        }
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const nextSendCounts = {
+            ...this._autobanState.sendCounts,
+            [terminalName]: (this._autobanState.sendCounts[terminalName] || 0) + dispatchCount
+        };
+        const nextCursor = { ...this._autobanState.poolCursor };
+        const terminalIndex = effectivePool.indexOf(terminalName);
+        nextCursor[normalizedRole] = terminalIndex >= 0 ? terminalIndex + 1 : (nextCursor[normalizedRole] || 0) + 1;
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            sendCounts: nextSendCounts,
+            sessionSendCount: (this._autobanState.sessionSendCount || 0) + dispatchCount,
+            poolCursor: nextCursor
+        });
+        await this._persistAutobanState();
+    }
+    async _allEnabledAutobanRolesExhausted(workspaceRoot) {
+        if (this._getAutobanRemainingSessionCapacity() <= 0) {
+            return true;
+        }
+        const rolesToCheck = new Set();
+        for (const [column, rule] of Object.entries(this._autobanState.rules)) {
+            if (!rule.enabled) {
+                continue;
+            }
+            if (column === 'PLAN REVIEWED') {
+                if (this._autobanState.routingMode === 'all_coder') {
+                    rolesToCheck.add('coder');
+                }
+                else if (this._autobanState.routingMode === 'all_lead') {
+                    rolesToCheck.add('lead');
+                }
+                else {
+                    rolesToCheck.add('coder');
+                    rolesToCheck.add('lead');
+                }
+                continue;
+            }
+            const role = this._autobanColumnToRole(column);
+            if (role) {
+                rolesToCheck.add(role);
+            }
+        }
+        if (rolesToCheck.size === 0) {
+            return false;
+        }
+        for (const role of rolesToCheck) {
+            const selection = await this._selectAutobanTerminal(role, workspaceRoot);
+            if (selection) {
+                return false;
+            }
+        }
+        return true;
+    }
+    async _stopAutobanWithMessage(message, level = 'warning') {
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            enabled: false
+        });
+        this._stopAutobanEngine();
+        console.log(`[Autoban] Stopped: ${this._autobanState.sessionSendCount ?? 0} plans dispatched this session.`);
+        this._resetAutobanSessionCounters();
+        await this._persistAutobanState();
+        this._postAutobanState();
+        if (level === 'info') {
+            vscode.window.showInformationMessage(message);
+            return;
+        }
+        vscode.window.showWarningMessage(message);
+    }
+    async _stopAutobanForExhaustion(message) {
+        await this._stopAutobanWithMessage(message);
+    }
+    async _stopAutobanForNoValidTickets() {
+        await this._stopAutobanWithMessage('Autoban stopped: no more valid tickets remain in enabled columns.', 'info');
+    }
+    _getEnabledAutobanSourceColumns() {
+        return Object.entries(this._autobanState.rules)
+            .filter(([, rule]) => rule.enabled)
+            .map(([column]) => column);
+    }
+    _getAutobanReviewerLaneColumns(sourceColumn) {
+        return (0, autobanState_1.isSharedReviewerAutobanColumn)(sourceColumn)
+            ? (0, autobanState_1.getEnabledSharedReviewerAutobanColumns)(this._autobanState.rules)
+            : [sourceColumn];
+    }
+    _getEligibleAutobanCards(cardsInColumn) {
+        return [...cardsInColumn]
+            .sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''))
+            .filter(card => this._activeDispatchSessions.get(card.sessionId) !== card.sourceColumn);
+    }
+    async _selectAutobanPlanReviewedCards(workspaceRoot, eligibleCards, batchSize) {
+        const complexityFilter = this._autobanState.complexityFilter;
+        const selectedCards = [];
+        for (const card of eligibleCards) {
+            let complexity = 'High';
+            try {
+                if (card.planFile) {
+                    complexity = this._normalizeAutobanComplexity(await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, card.planFile));
+                }
+            }
+            catch {
+                complexity = 'High';
+            }
+            if (!this._autobanMatchesComplexityFilter(complexity, complexityFilter)) {
+                continue;
+            }
+            selectedCards.push({ sessionId: card.sessionId, complexity, sourceColumn: card.sourceColumn });
+            if (selectedCards.length >= batchSize) {
+                break;
+            }
+        }
+        return selectedCards;
+    }
+    async _autobanColumnHasEligibleCards(sourceColumn, cardsInColumn, workspaceRoot) {
+        const eligibleCards = this._getEligibleAutobanCards(cardsInColumn);
+        if (eligibleCards.length === 0) {
+            return false;
+        }
+        if (sourceColumn !== 'PLAN REVIEWED' || !this._kanbanProvider) {
+            return true;
+        }
+        const selectedCards = await this._selectAutobanPlanReviewedCards(workspaceRoot, eligibleCards, 1);
+        return selectedCards.length > 0;
+    }
+    async _autobanHasEligibleCardsInEnabledColumns(workspaceRoot) {
+        const enabledColumns = this._getEnabledAutobanSourceColumns();
+        if (enabledColumns.length === 0) {
+            return false;
+        }
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumns(workspaceRoot, enabledColumns);
+        this._releaseSettledDispatchLocks(currentColumnBySession);
+        const cardsByColumn = new Map();
+        for (const card of cardsInColumn) {
+            const columnCards = cardsByColumn.get(card.sourceColumn) || [];
+            columnCards.push(card);
+            cardsByColumn.set(card.sourceColumn, columnCards);
+        }
+        for (const column of enabledColumns) {
+            if (await this._autobanColumnHasEligibleCards(column, cardsByColumn.get(column) || [], workspaceRoot)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    async _stopAutobanIfNoValidTicketsRemain(workspaceRoot) {
+        if (!this._autobanState.enabled) {
+            return false;
+        }
+        const hasEligible = await this._autobanHasEligibleCardsInEnabledColumns(workspaceRoot);
+        console.log(`[Autoban] Empty-column check: eligible=${hasEligible}`);
+        if (hasEligible) {
+            return false;
+        }
+        await this._stopAutobanForNoValidTickets();
+        return true;
+    }
+    async _removeAutobanTerminalReferences(terminalName) {
+        const trimmedName = String(terminalName || '').trim();
+        if (!trimmedName) {
+            return false;
+        }
+        let changed = false;
+        const nextSendCounts = { ...this._autobanState.sendCounts };
+        if (trimmedName in nextSendCounts) {
+            delete nextSendCounts[trimmedName];
+            changed = true;
+        }
+        const nextTerminalPools = {};
+        for (const [role, entries] of Object.entries(this._autobanState.terminalPools)) {
+            const filtered = entries.filter(entry => entry !== trimmedName);
+            if (filtered.length !== entries.length) {
+                changed = true;
+            }
+            if (filtered.length > 0) {
+                nextTerminalPools[role] = filtered;
+            }
+        }
+        const nextManagedPools = {};
+        for (const [role, entries] of Object.entries(this._autobanState.managedTerminalPools)) {
+            const filtered = entries.filter(entry => entry !== trimmedName);
+            if (filtered.length !== entries.length) {
+                changed = true;
+            }
+            if (filtered.length > 0) {
+                nextManagedPools[role] = filtered;
+            }
+        }
+        if (!changed) {
+            return false;
+        }
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            sendCounts: nextSendCounts,
+            terminalPools: nextTerminalPools,
+            managedTerminalPools: nextManagedPools
+        });
+        await this._persistAutobanState();
+        this._postAutobanState();
+        return true;
+    }
+    async _createAutobanTerminal(role, requestedName) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('No workspace folder found. Cannot create an autoban terminal.');
+            return;
+        }
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const customAgentRoles = customAgents.filter(a => a.includeInKanban).map(a => a.role);
+        if (!this._autobanPoolRoles(customAgentRoles).includes(normalizedRole)) {
+            vscode.window.showErrorMessage(`Unsupported autoban pool role '${role}'.`);
+            return;
+        }
+        const resolvedRequestedName = typeof requestedName === 'string' ? requestedName.trim() : '';
+        const roleLabel = this._getAutobanRoleLabel(normalizedRole);
+        const configuredPool = this._getConfiguredAutobanPool(normalizedRole);
+        const livePrimaryRoleTerminals = await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot, false);
+        const poolSize = configuredPool.length > 0 ? configuredPool.length : livePrimaryRoleTerminals.length;
+        if (poolSize >= autobanState_1.MAX_AUTOBAN_TERMINALS_PER_ROLE) {
+            vscode.window.showWarningMessage(`${roleLabel} already has ${autobanState_1.MAX_AUTOBAN_TERMINALS_PER_ROLE} autoban terminals.`);
+            return;
+        }
+        const terminalState = await this._readTerminalRegistryState(workspaceRoot);
+        const usedNames = new Set([
+            ...Object.keys(terminalState),
+            ...vscode.window.terminals.map(terminal => terminal.name),
+            ...Array.from(this._registeredTerminals?.keys() || [])
+        ]);
+        const uniqueName = (0, autobanState_1.getNextAutobanTerminalName)(roleLabel, usedNames, resolvedRequestedName || undefined);
+        const terminal = vscode.window.createTerminal({
+            name: uniqueName,
+            location: vscode.TerminalLocation.Panel,
+            cwd: workspaceRoot
+        });
+        this._registeredTerminals?.set(uniqueName, terminal);
+        terminal.show();
+        let pid;
+        try {
+            pid = await this._waitWithTimeout(terminal.processId, 10000, undefined);
+        }
+        catch {
+            console.warn(`[TaskViewerProvider] Failed to get PID for terminal '${uniqueName}' within 10s. Will retry.`);
+        }
+        // If PID capture failed, schedule a retry after 2 seconds
+        if (!pid) {
+            setTimeout(async () => {
+                try {
+                    const retryPid = await this._waitWithTimeout(terminal.processId, 5000, undefined);
+                    if (retryPid) {
+                        await this.updateState(async (state) => {
+                            if (state.terminals?.[uniqueName]) {
+                                state.terminals[uniqueName].pid = retryPid;
+                                state.terminals[uniqueName].childPid = retryPid;
+                                console.log(`[TaskViewerProvider] Retry: Updated PID for terminal '${uniqueName}' to ${retryPid}`);
+                            }
+                        });
+                        this._refreshTerminalStatuses();
+                    }
+                }
+                catch (e) {
+                    console.error(`[TaskViewerProvider] PID retry failed for terminal '${uniqueName}':`, e);
+                }
+            }, 2000);
+        }
+        await this.updateState(async (state) => {
+            if (!state.terminals) {
+                state.terminals = {};
+            }
+            state.terminals[uniqueName] = {
+                purpose: 'autoban-backup',
+                role: normalizedRole,
+                pid: pid,
+                childPid: pid,
+                startTime: new Date().toISOString(),
+                status: 'active',
+                friendlyName: uniqueName,
+                icon: 'terminal',
+                color: 'cyan',
+                lastSeen: new Date().toISOString(),
+                ideName: vscode.env.appName
+            };
+        });
+        const seededPool = configuredPool.length > 0
+            ? configuredPool
+            : await this._getAliveAutobanTerminalNames(normalizedRole, workspaceRoot, false);
+        const nextTerminalPools = {
+            ...this._autobanState.terminalPools,
+            [normalizedRole]: this._limitAutobanPool([...seededPool, uniqueName])
+        };
+        const nextManagedPools = {
+            ...this._autobanState.managedTerminalPools,
+            [normalizedRole]: this._limitAutobanPool([...this._getManagedAutobanPool(normalizedRole), uniqueName])
+        };
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            terminalPools: nextTerminalPools,
+            managedTerminalPools: nextManagedPools
+        });
+        await this._persistAutobanState();
+        const startupCommands = await this.getStartupCommands(workspaceRoot);
+        const startupCommand = startupCommands[normalizedRole];
+        if (startupCommand && startupCommand.trim()) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            terminal.sendText(startupCommand.trim(), true);
+        }
+        this._refreshTerminalStatuses();
+        this._postAutobanState();
+    }
+    async _removeAutobanTerminal(role, terminalName) {
+        const normalizedRole = this._normalizeAutobanPoolRole(role);
+        const trimmedName = String(terminalName || '').trim();
+        if (!trimmedName) {
+            return;
+        }
+        const isManaged = this._getManagedAutobanPool(normalizedRole).includes(trimmedName);
+        await this._removeAutobanTerminalReferences(trimmedName);
+        if (isManaged) {
+            await this._closeTerminal(trimmedName);
+        }
+        else {
+            this._refreshTerminalStatuses();
+        }
+        this._postAutobanState();
+    }
+    async _resetAutobanPools() {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        const managedTerminalNames = Array.from(new Set(Object.values(this._autobanState.managedTerminalPools).flat()));
+        const wasEnabled = this._autobanState.enabled;
+        this._stopAutobanEngine();
+        this._resetAutobanSessionCounters();
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+            ...this._autobanState,
+            terminalPools: {},
+            managedTerminalPools: {},
+            enabled: wasEnabled
+        });
+        await this._persistAutobanState();
+        for (const terminalName of managedTerminalNames) {
+            await this._closeTerminal(terminalName);
+        }
+        if (workspaceRoot) {
+            await this._reconcileAutobanPoolState(workspaceRoot, { pruneStaleBackupRegistry: true });
+        }
+        if (wasEnabled) {
+            this._startAutobanEngine();
+        }
+        this._refreshTerminalStatuses();
+        this._postAutobanState();
+    }
+    _getAutobanBroadcastState() {
+        return (0, autobanState_1.buildAutobanBroadcastState)(this._autobanState, this._autobanLastTickAt.entries());
+    }
+    _postAutobanState() {
+        const state = this._getAutobanBroadcastState();
+        this._view?.webview.postMessage({
+            type: 'autobanStateSync',
+            state
+        });
+        // Also broadcast to Kanban webview if open
+        this._kanbanProvider?.updateAutobanConfig(state);
     }
     _postPipelineState() {
         this._view?.webview.postMessage({
@@ -515,29 +1893,366 @@ class TaskViewerProvider {
             state: this._pipeline.getState()
         });
     }
-    async _tryRestoreOrchestrator() {
-        const wasRunning = this._context.globalState.get('orchestrator.running', false);
-        if (!wasRunning)
-            return;
-        const sessionId = this._context.globalState.get('orchestrator.sessionId', null);
-        if (!sessionId)
-            return;
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot)
-            return;
-        const sheets = await this._getSessionLog(workspaceRoot).getRunSheets();
-        const sheet = sheets.find((s) => s.sessionId === sessionId && !s.completed);
-        if (!sheet) {
-            // Session is gone — clear stale persistence
-            void this._context.globalState.update('orchestrator.running', undefined);
-            void this._context.globalState.update('orchestrator.sessionId', undefined);
-            void this._context.globalState.update('orchestrator.secondsRemaining', undefined);
-            void this._context.globalState.update('orchestrator.stageIndex', undefined);
+    /** Restore Autoban engine if it was running before reload. */
+    async _tryRestoreAutoban() {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (workspaceRoot) {
+            await this._reconcileAutobanPoolState(workspaceRoot, { pruneStaleBackupRegistry: true });
+        }
+        this._kanbanProvider?.updateAutobanConfig(this._getAutobanBroadcastState());
+        if (this._autobanState.enabled) {
+            this._startAutobanEngine();
+        }
+    }
+    /** Called by Kanban controls strip to toggle the shared Autoban engine state. */
+    async setAutobanEnabledFromKanban(enabled) {
+        const wasEnabled = this._autobanState.enabled;
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({ ...this._autobanState, enabled });
+        if (enabled && !wasEnabled) {
+            this._resetAutobanSessionCounters();
+            this._startAutobanEngine();
+        }
+        else if (!enabled && wasEnabled) {
+            this._stopAutobanEngine();
+        }
+        else if (enabled) {
+            // Preserve existing behavior when config changes while enabled.
+            this._startAutobanEngine();
+        }
+        await this._persistAutobanState();
+        this._postAutobanState();
+    }
+    /** Column-to-role mapping for Autoban dispatches. */
+    _autobanColumnToRole(column) {
+        switch (column) {
+            case 'CREATED': return 'planner';
+            case 'PLAN REVIEWED': return 'lead';
+            case 'LEAD CODED':
+            case 'CODER CODED':
+            case 'CODED':
+                return 'reviewer';
+            default: return null;
+        }
+    }
+    _normalizeAutobanComplexity(complexity) {
+        return complexity === 'Low' ? 'Low' : 'High';
+    }
+    _autobanMatchesComplexityFilter(complexity, filter) {
+        if (filter === 'low_only') {
+            return complexity === 'Low';
+        }
+        if (filter === 'high_only') {
+            return complexity === 'High';
+        }
+        return true;
+    }
+    _autobanRoutePlanReviewedCard(complexity, routingMode) {
+        if (routingMode === 'all_coder') {
+            return 'coder';
+        }
+        if (routingMode === 'all_lead') {
+            return 'lead';
+        }
+        return complexity === 'Low' ? 'coder' : 'lead';
+    }
+    /** Column-to-instruction mapping for Autoban dispatches. */
+    _autobanColumnToInstruction(column) {
+        if (column === 'CREATED') {
+            return 'improve-plan';
+        }
+        return undefined;
+    }
+    async _collectKanbanCardsInColumns(workspaceRoot, sourceColumns) {
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const sourceColumnSet = new Set(sourceColumns);
+        const currentColumnBySession = new Map();
+        const cardsInColumn = [];
+        for (const sheet of sheets) {
+            if (!sheet.sessionId || sheet.completed) {
+                continue;
+            }
+            const events = Array.isArray(sheet.events) ? sheet.events : [];
+            const column = (0, kanbanColumnDerivation_1.deriveKanbanColumn)(events, customAgents);
+            currentColumnBySession.set(sheet.sessionId, column);
+            if (!sourceColumnSet.has(column)) {
+                continue;
+            }
+            const rawPlanFile = typeof sheet.planFile === 'string' ? sheet.planFile.trim() : '';
+            const resolvedPlanPath = rawPlanFile
+                ? (path.isAbsolute(rawPlanFile) ? rawPlanFile : path.resolve(workspaceRoot, rawPlanFile))
+                : '';
+            if (!resolvedPlanPath || !fs.existsSync(resolvedPlanPath)) {
+                console.warn(`[Kanban Dispatch] Skipping session ${sheet.sessionId}: missing plan file (${rawPlanFile || 'none'})`);
+                continue;
+            }
+            let lastActivity = sheet.createdAt || '';
+            for (const e of events) {
+                if (e.timestamp && e.timestamp > lastActivity) {
+                    lastActivity = e.timestamp;
+                }
+            }
+            cardsInColumn.push({ sessionId: sheet.sessionId, lastActivity, planFile: resolvedPlanPath, sourceColumn: column });
+        }
+        try {
+            await this._syncKanbanDbFromSheetsSnapshot(workspaceRoot, sheets, customAgents, false);
+        }
+        catch (e) {
+            console.warn('[Kanban Dispatch] DB sync failed; continuing with file-based snapshot:', e);
+        }
+        return { cardsInColumn, currentColumnBySession };
+    }
+    async _collectKanbanCardsInColumn(workspaceRoot, sourceColumn) {
+        return this._collectKanbanCardsInColumns(workspaceRoot, [sourceColumn]);
+    }
+    _releaseSettledDispatchLocks(currentColumnBySession) {
+        for (const [sessionId, dispatchedFromColumn] of this._activeDispatchSessions) {
+            if (currentColumnBySession.get(sessionId) !== dispatchedFromColumn) {
+                this._activeDispatchSessions.delete(sessionId);
+            }
+        }
+    }
+    _buildKanbanBatchPrompt(role, plans, instruction) {
+        const { baseInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
+        return (0, agentPromptBuilder_1.buildKanbanBatchPrompt)(role, plans, {
+            instruction: baseInstruction,
+            includeInlineChallenge,
+            accurateCodingEnabled: this._isAccurateCodingEnabled()
+        });
+    }
+    _describeAutobanDispatchSourceColumns(cards) {
+        const uniqueColumns = Array.from(new Set(cards
+            .map(card => card.sourceColumn)
+            .filter(column => typeof column === 'string' && column.trim().length > 0)));
+        if (uniqueColumns.length <= 1) {
+            return uniqueColumns[0] || 'Unknown';
+        }
+        return uniqueColumns.sort((a, b) => a.localeCompare(b)).join(' + ');
+    }
+    /**
+     * Enqueue an autoban tick so that column dispatches are always serialized.
+     * This prevents concurrent terminal sends from causing IDE lag and double-tap failures.
+     */
+    _enqueueAutobanTick(column, batchSize) {
+        this._autobanTickQueue = this._autobanTickQueue.then(async () => {
+            if (!this._autobanState.enabled) {
+                return;
+            }
+            try {
+                await this._autobanTickColumn(column, batchSize);
+            }
+            catch (e) {
+                console.error(`[Autoban] Tick failed for column ${column}:`, e);
+            }
+            finally {
+                this._autobanLastTickAt.set(column, Date.now());
+                this._postAutobanState();
+            }
+        });
+    }
+    /** Start the continuous Autoban background polling engine. */
+    _startAutobanEngine() {
+        this._stopAutobanEngine();
+        const { rules, batchSize } = this._autobanState;
+        for (const [column, rule] of Object.entries(rules)) {
+            if (!rule.enabled) {
+                continue;
+            }
+            const intervalMs = Math.max(rule.intervalMinutes, 1) * 60 * 1000;
+            this._autobanLastTickAt.set(column, Date.now());
+            // Fire an immediate tick (serialized via queue) so plans move as soon as the engine starts
+            this._enqueueAutobanTick(column, batchSize);
+            const timer = setInterval(() => {
+                this._enqueueAutobanTick(column, batchSize);
+            }, intervalMs);
+            this._autobanTimers.set(column, timer);
+        }
+        // Safety-net: periodically check if all source columns are empty and auto-stop
+        this._autobanEmptyColumnSweepTimer = setInterval(async () => {
+            if (this._autobanState.enabled) {
+                const workspaceRoot = this._resolveWorkspaceRoot();
+                if (workspaceRoot) {
+                    await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+                }
+            }
+        }, 60_000);
+        this._postAutobanState();
+        console.log('[Autoban] Engine started with rules:', Object.entries(rules).filter(([, r]) => r.enabled).map(([c, r]) => `${c}: ${r.intervalMinutes}m`).join(', '));
+    }
+    /** Stop all Autoban background timers. */
+    _stopAutobanEngine() {
+        for (const [, timer] of this._autobanTimers) {
+            clearInterval(timer);
+        }
+        this._autobanTimers.clear();
+        if (this._autobanEmptyColumnSweepTimer) {
+            clearInterval(this._autobanEmptyColumnSweepTimer);
+            this._autobanEmptyColumnSweepTimer = undefined;
+        }
+        this._autobanLastTickAt.clear();
+        this._autobanLaneLastDispatchAt.clear();
+        this._activeDispatchSessions.clear();
+        this._autobanTickQueue = Promise.resolve();
+    }
+    /** Process one tick for a given column: find cards, batch-dispatch up to batchSize. */
+    async _autobanTickColumn(sourceColumn, batchSize) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             return;
         }
-        const secondsRemaining = this._context.globalState.get('orchestrator.secondsRemaining', 420);
-        const stageIndex = this._context.globalState.get('orchestrator.stageIndex', 0);
-        this._orchestrator.restore(sessionId, secondsRemaining, stageIndex);
+        if (this._getAutobanRemainingSessionCapacity() <= 0) {
+            await this._stopAutobanForExhaustion(`Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`);
+            return;
+        }
+        const role = this._autobanColumnToRole(sourceColumn);
+        if (!role) {
+            return;
+        }
+        const instruction = this._autobanColumnToInstruction(sourceColumn);
+        const reviewerLaneColumns = this._getAutobanReviewerLaneColumns(sourceColumn);
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumns(workspaceRoot, reviewerLaneColumns);
+        this._releaseSettledDispatchLocks(currentColumnBySession);
+        if ((0, autobanState_1.isSharedReviewerAutobanColumn)(sourceColumn) &&
+            (0, autobanState_1.shouldSkipSharedReviewerAutobanDispatch)(this._autobanLaneLastDispatchAt.get('coded-reviewer'), this._autobanLastTickAt, reviewerLaneColumns)) {
+            return;
+        }
+        if (cardsInColumn.length === 0) {
+            await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+            return;
+        }
+        const eligibleCards = this._getEligibleAutobanCards(cardsInColumn);
+        if (eligibleCards.length === 0) {
+            await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+            return;
+        }
+        const dispatchWithAutobanTerminal = async (targetRole, requestedCards) => {
+            const selection = await this._selectAutobanTerminal(targetRole, workspaceRoot);
+            if (!selection) {
+                console.warn(`[Autoban] No eligible terminal available for ${targetRole}; skipping ${requestedCards.length} queued plan(s).`);
+                if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                    const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                        ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                        : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                    await this._stopAutobanForExhaustion(reason);
+                }
+                return false;
+            }
+            const cards = requestedCards.slice();
+            if (cards.length === 0) {
+                return false;
+            }
+            const sessionIds = cards.map(card => card.sessionId);
+            cards.forEach(card => this._activeDispatchSessions.set(card.sessionId, card.sourceColumn));
+            const ok = await this.handleKanbanBatchTrigger(targetRole, sessionIds, instruction, workspaceRoot, selection.terminalName);
+            if (!ok) {
+                sessionIds.forEach(id => this._activeDispatchSessions.delete(id));
+                return false;
+            }
+            await this._recordAutobanDispatch(targetRole, selection.terminalName, 1, selection.effectivePool);
+            if (targetRole === 'reviewer' && (0, autobanState_1.isSharedReviewerAutobanColumn)(sourceColumn)) {
+                this._autobanLaneLastDispatchAt.set('coded-reviewer', Date.now());
+            }
+            await this._announceAutobanDispatch(this._describeAutobanDispatchSourceColumns(cards), targetRole, sessionIds, workspaceRoot);
+            if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                    ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                    : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                await this._stopAutobanForExhaustion(reason);
+            }
+            if (this._autobanState.enabled) {
+                await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+            }
+            return true;
+        };
+        // Complexity-aware routing for PLAN REVIEWED → Lead/Coder lanes
+        if (sourceColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
+            const complexityFilter = this._autobanState.complexityFilter;
+            const routingMode = this._autobanState.routingMode;
+            const selectedCards = await this._selectAutobanPlanReviewedCards(workspaceRoot, eligibleCards, batchSize);
+            if (selectedCards.length === 0) {
+                await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+                return;
+            }
+            const routedSessions = {
+                coder: [],
+                lead: []
+            };
+            for (const card of selectedCards) {
+                const targetRole = this._autobanRoutePlanReviewedCard(card.complexity, routingMode);
+                routedSessions[targetRole].push({ sessionId: card.sessionId, sourceColumn: card.sourceColumn });
+            }
+            console.log(`[Autoban] PLAN REVIEWED routing (${complexityFilter}, ${routingMode}): ${routedSessions.coder.length} → coder, ${routedSessions.lead.length} → lead`);
+            // Dispatch sequentially to avoid file and terminal lock contention
+            if (routedSessions.coder.length > 0) {
+                await dispatchWithAutobanTerminal('coder', routedSessions.coder);
+            }
+            if (routedSessions.lead.length > 0) {
+                await dispatchWithAutobanTerminal('lead', routedSessions.lead);
+            }
+            return;
+        }
+        const batch = eligibleCards.slice(0, batchSize);
+        if (batch.length === 0) {
+            await this._stopAutobanIfNoValidTicketsRemain(workspaceRoot);
+            return;
+        }
+        const selection = await this._selectAutobanTerminal(role, workspaceRoot);
+        if (!selection) {
+            console.warn(`[Autoban] ${sourceColumn}: all ${role} terminals are exhausted or unavailable.`);
+            if (await this._allEnabledAutobanRolesExhausted(workspaceRoot)) {
+                const reason = this._getAutobanRemainingSessionCapacity() <= 0
+                    ? `Autoban stopped: session cap reached (${this._autobanState.sessionSendCount}/${this._autobanState.globalSessionCap}).`
+                    : `Autoban stopped: all enabled autoban terminals are exhausted (cap ${this._autobanState.maxSendsPerTerminal} per terminal).`;
+                await this._stopAutobanForExhaustion(reason);
+            }
+            return;
+        }
+        // Default static routing for other columns
+        console.log(`[Autoban] ${this._describeAutobanDispatchSourceColumns(batch)}: dispatching ${batch.length} card(s) to ${role} via ${selection.terminalName}`);
+        await dispatchWithAutobanTerminal(role, batch);
+    }
+    async handleBatchDispatchLow(workspaceRoot) {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) {
+            return false;
+        }
+        if (!this._kanbanProvider) {
+            vscode.window.showErrorMessage('Kanban provider unavailable. Cannot evaluate plan complexity for batch dispatch.');
+            return false;
+        }
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const sourceColumn = 'PLAN REVIEWED';
+        const { cardsInColumn, currentColumnBySession } = await this._collectKanbanCardsInColumn(resolvedWorkspaceRoot, sourceColumn);
+        this._releaseSettledDispatchLocks(currentColumnBySession);
+        const batchSize = (0, autobanState_1.normalizeAutobanBatchSize)(this._autobanState.batchSize);
+        const orderedCandidates = [...cardsInColumn]
+            .sort((a, b) => (a.lastActivity || '').localeCompare(b.lastActivity || ''))
+            .filter(card => this._activeDispatchSessions.get(card.sessionId) !== sourceColumn);
+        const availableLowSessions = [];
+        for (const card of orderedCandidates) {
+            const complexity = await this._kanbanProvider.getComplexityFromPlan(resolvedWorkspaceRoot, card.planFile || '');
+            if (complexity === 'Low') {
+                availableLowSessions.push(card.sessionId);
+            }
+        }
+        if (availableLowSessions.length === 0) {
+            vscode.window.showInformationMessage('No LOW-complexity PLAN REVIEWED plans are currently eligible for batch dispatch.');
+            return false;
+        }
+        const sessionIds = availableLowSessions.slice(0, batchSize);
+        sessionIds.forEach(id => this._activeDispatchSessions.set(id, sourceColumn));
+        const ok = await this.handleKanbanBatchTrigger('coder', sessionIds, 'low-complexity', resolvedWorkspaceRoot);
+        if (!ok) {
+            sessionIds.forEach(id => this._activeDispatchSessions.delete(id));
+            return false;
+        }
+        await this._kanbanProvider.refresh();
+        const summary = availableLowSessions.length > sessionIds.length
+            ? `Dispatched ${sessionIds.length} of ${availableLowSessions.length} eligible LOW-complexity plans to the coder (batch cap ${batchSize}).`
+            : `Dispatched ${sessionIds.length} LOW-complexity plan${sessionIds.length === 1 ? '' : 's'} to the coder.`;
+        vscode.window.showInformationMessage(summary);
+        return true;
     }
     async resolveWebviewView(webviewView, context, _token) {
         this._view = webviewView;
@@ -561,10 +2276,11 @@ class TaskViewerProvider {
                         this._refreshRunSheets(),
                         this.housekeepStaleTerminals(),
                         this._refreshJulesStatus(),
-                        this._postRecentActivity(50)
+                        this._postRecentActivity(50),
+                        this._sweepOrphanedReviews()
                     ]);
-                    await this._tryRestoreOrchestrator();
-                    this._postOrchestratorState();
+                    await this._tryRestoreAutoban();
+                    this._postAutobanState();
                     await this._pipeline.restore();
                     this._postPipelineState();
                     this._view?.webview.postMessage({ type: 'loading', value: false });
@@ -594,7 +2310,12 @@ class TaskViewerProvider {
                         ]);
                         {
                             const cmds = await this.getStartupCommands();
-                            this._view?.webview.postMessage({ type: 'startupCommands', commands: cmds });
+                            const planIngestionFolder = await this.getPlanIngestionFolder();
+                            this._view?.webview.postMessage({ type: 'startupCommands', commands: cmds, planIngestionFolder });
+                            const vis = await this.getVisibleAgents();
+                            this._view?.webview.postMessage({ type: 'visibleAgents', agents: vis });
+                            const customAgents = await this.getCustomAgents();
+                            this._view?.webview.postMessage({ type: 'customAgents', customAgents });
                         }
                         this._view?.webview.postMessage({ type: 'loading', value: false });
                         break;
@@ -610,11 +2331,6 @@ class TaskViewerProvider {
                     case 'initializeProtocols':
                         await this._handleInitializeProtocols();
                         break;
-                    case 'saveCliAgents':
-                        if (data.agents && typeof data.agents === 'object') {
-                            await this._handleSaveCliAgents(data.agents);
-                        }
-                        break;
                     case 'finishOnboarding':
                         await this._handleFinishOnboarding();
                         break;
@@ -627,24 +2343,13 @@ class TaskViewerProvider {
                         }
                         break;
                     case 'openDocs': {
-                        const workspaceFolders = vscode.workspace.workspaceFolders;
-                        if (workspaceFolders) {
-                            const refUri = vscode.Uri.joinPath(workspaceFolders[0].uri, '.switchboard', 'WORKFLOW_REFERENCE.md');
-                            try {
-                                await vscode.workspace.fs.stat(refUri);
-                                vscode.commands.executeCommand('markdown.showPreview', refUri);
-                            }
-                            catch {
-                                // Fallback to README
-                                const readmeUri = vscode.Uri.joinPath(workspaceFolders[0].uri, '.switchboard', 'README.md');
-                                try {
-                                    await vscode.workspace.fs.stat(readmeUri);
-                                    vscode.commands.executeCommand('markdown.showPreview', readmeUri);
-                                }
-                                catch {
-                                    vscode.window.showErrorMessage('Workflow docs not found. Run setup first.');
-                                }
-                            }
+                        const readmePath = vscode.Uri.joinPath(this._context.extensionUri, 'README.md');
+                        try {
+                            await vscode.workspace.fs.stat(readmePath);
+                            vscode.commands.executeCommand('markdown.showPreview', readmePath);
+                        }
+                        catch {
+                            vscode.window.showErrorMessage('Plugin README.md not found.');
                         }
                         break;
                     }
@@ -655,6 +2360,9 @@ class TaskViewerProvider {
                         break;
                     case 'connectMcp':
                         vscode.commands.executeCommand('switchboard.connectMcp');
+                        break;
+                    case 'recheckMcpConnection':
+                        vscode.commands.executeCommand('switchboard.recheckMcp');
                         break;
                     case 'setTerminalRole':
                         if (data.terminalName && data.role) {
@@ -731,13 +2439,17 @@ class TaskViewerProvider {
                         }
                         break;
                     case 'generateContextMap':
-                        if (data.featureDescription) {
-                            await this._handleGenerateContextMap(data.featureDescription);
-                        }
+                        // Removed: sidebar context map button no longer exists.
+                        // Context map generation is now triggered from the Kanban board.
                         break;
                     case 'viewPlan':
                         if (data.sessionId) {
                             await this._handleViewPlan(data.sessionId);
+                        }
+                        break;
+                    case 'reviewPlan':
+                        if (data.sessionId) {
+                            await this._handleReviewPlan(data.sessionId);
                         }
                         break;
                     case 'copyPlanLink':
@@ -760,16 +2472,11 @@ class TaskViewerProvider {
                             await this._handleClaimPlan(data.brainSourcePath);
                         }
                         break;
-                    case 'initiatePlan':
-                        if (data.title && data.idea && data.mode) {
-                            await this._handleInitiatePlan(data.title, data.idea, data.mode);
-                        }
+                    case 'createDraftPlanTicket':
+                        await this.createDraftPlanTicket();
                         break;
                     case 'mergeAllPlans':
                         await this._handleMergeAllPlans();
-                        break;
-                    case 'archiveAllCompleted':
-                        await this._handleArchiveAllCompleted();
                         break;
                     case 'getRecoverablePlans': {
                         const plans = this._getRecoverablePlans();
@@ -793,18 +2500,76 @@ class TaskViewerProvider {
                                 state.startupCommands = data.commands;
                             });
                         }
+                        if (data.visibleAgents && typeof data.visibleAgents === 'object') {
+                            await this.updateState(async (state) => {
+                                state.visibleAgents = data.visibleAgents;
+                            });
+                            // Notify kanban board of visibility change
+                            this._kanbanProvider?.sendVisibleAgents();
+                        }
                         if (typeof data.accurateCodingEnabled === 'boolean') {
                             await vscode.workspace.getConfiguration('switchboard').update('accurateCoding.enabled', data.accurateCodingEnabled, vscode.ConfigurationTarget.Workspace);
+                        }
+                        if (typeof data.leadChallengeEnabled === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update('leadCoder.inlineChallenge', data.leadChallengeEnabled, vscode.ConfigurationTarget.Workspace);
+                        }
+                        if (typeof data.planIngestionFolder === 'string') {
+                            const normalizedPlanIngestionFolder = this._normalizeConfiguredPlanFolder(data.planIngestionFolder);
+                            let validationError = this._getConfiguredPlanFolderValidationError(normalizedPlanIngestionFolder);
+                            if (!validationError && normalizedPlanIngestionFolder) {
+                                try {
+                                    const folderStat = await fs.promises.stat(normalizedPlanIngestionFolder);
+                                    if (!folderStat.isDirectory()) {
+                                        validationError = 'Plan ingestion folder must point to an existing directory.';
+                                    }
+                                }
+                                catch {
+                                    validationError = 'Plan ingestion folder must point to an existing directory.';
+                                }
+                            }
+                            if (validationError) {
+                                vscode.window.showWarningMessage(validationError);
+                            }
+                            else {
+                                await this.updateState(async (state) => {
+                                    if (normalizedPlanIngestionFolder) {
+                                        state.planIngestionFolder = normalizedPlanIngestionFolder;
+                                    }
+                                    else {
+                                        delete state.planIngestionFolder;
+                                    }
+                                });
+                                await this._refreshConfiguredPlanWatcher();
+                            }
+                        }
+                        if (data.customAgents !== undefined) {
+                            await this.updateState(async (state) => {
+                                state.customAgents = data.customAgents;
+                            });
+                        }
+                        if (data.onboardingComplete === true) {
+                            this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
                         }
                         break;
                     case 'getStartupCommands': {
                         const cmds = await this.getStartupCommands();
-                        this._view?.webview.postMessage({ type: 'startupCommands', commands: cmds });
+                        const planIngestionFolder = await this.getPlanIngestionFolder();
+                        this._view?.webview.postMessage({ type: 'startupCommands', commands: cmds, planIngestionFolder });
+                        break;
+                    }
+                    case 'getVisibleAgents': {
+                        const vis = await this.getVisibleAgents();
+                        this._view?.webview.postMessage({ type: 'visibleAgents', agents: vis });
                         break;
                     }
                     case 'getAccurateCodingSetting': {
                         const enabled = this._isAccurateCodingEnabled();
                         this._view?.webview.postMessage({ type: 'accurateCodingSetting', enabled });
+                        break;
+                    }
+                    case 'getLeadChallengeSetting': {
+                        const enabled = this._isLeadInlineChallengeEnabled();
+                        this._view?.webview.postMessage({ type: 'leadChallengeSetting', enabled });
                         break;
                     }
                     case 'setActiveTab': {
@@ -818,43 +2583,62 @@ class TaskViewerProvider {
                         await this._postRecentActivity(limit, beforeTimestamp);
                         break;
                     }
-                    case 'orchestratorStart':
-                        if (data.sessionId) {
-                            const requestedInterval = typeof data.intervalSeconds === 'number'
-                                ? data.intervalSeconds
-                                : undefined;
-                            this._pipeline.stop(); // mutual exclusion
-                            this._postPipelineState();
-                            this._orchestrator.start(data.sessionId, requestedInterval);
+                    case 'updateAutobanState': {
+                        // Sidebar Autoban configuration changed
+                        if (data.state) {
+                            const wasEnabled = this._autobanState.enabled;
+                            const { lastTickAt: _ignoredLastTickAt, ...incomingState } = data.state;
+                            this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({ ...this._autobanState, ...incomingState });
+                            // Start/stop engine based on toggle
+                            if (this._autobanState.enabled && !wasEnabled) {
+                                this._resetAutobanSessionCounters();
+                                this._startAutobanEngine();
+                            }
+                            else if (!this._autobanState.enabled && wasEnabled) {
+                                this._stopAutobanEngine();
+                            }
+                            else if (this._autobanState.enabled) {
+                                // Rules changed while running — restart with new config
+                                this._startAutobanEngine();
+                            }
+                            await this._persistAutobanState();
+                            this._postAutobanState();
                         }
                         break;
-                    case 'orchestratorAdvance':
-                        await this._orchestrator.advance();
+                    }
+                    case 'updateAutobanMaxSends': {
+                        const requestedMax = Number(data.maxSendsPerTerminal);
+                        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({
+                            ...this._autobanState,
+                            maxSendsPerTerminal: Number.isFinite(requestedMax) ? requestedMax : this._autobanState.maxSendsPerTerminal
+                        });
+                        if (this._autobanState.enabled) {
+                            this._startAutobanEngine();
+                        }
+                        await this._persistAutobanState();
+                        this._postAutobanState();
                         break;
-                    case 'orchestratorStop':
-                        this._orchestrator.stop();
-                        break;
-                    case 'orchestratorSetInterval':
-                        if (typeof data.intervalSeconds === 'number' && Number.isFinite(data.intervalSeconds)) {
-                            this._orchestrator.setInterval(data.intervalSeconds);
+                    }
+                    case 'addAutobanTerminal': {
+                        if (typeof data.role === 'string') {
+                            await this._createAutobanTerminal(data.role, typeof data.name === 'string' ? data.name : undefined);
                         }
                         break;
-                    case 'orchestratorSessionChange':
-                        this._orchestrator.setSession(data.sessionId || null);
-                        this._postOrchestratorState();
+                    }
+                    case 'removeAutobanTerminal': {
+                        if (typeof data.role === 'string' && typeof data.terminalName === 'string') {
+                            await this._removeAutobanTerminal(data.role, data.terminalName);
+                        }
                         break;
-                    case 'orchestratorPause':
-                        this._orchestrator.pause();
+                    }
+                    case 'resetAutobanPools': {
+                        await this._resetAutobanPools();
                         break;
-                    case 'orchestratorUnpause':
-                        this._orchestrator.unpause();
-                        break;
+                    }
                     case 'pipelineStart': {
                         const requestedInterval = typeof data.intervalSeconds === 'number'
                             ? data.intervalSeconds
                             : undefined;
-                        this._orchestrator.stop(); // mutual exclusion
-                        this._postOrchestratorState();
                         this._pipeline.start(requestedInterval);
                         break;
                     }
@@ -870,16 +2654,6 @@ class TaskViewerProvider {
                     case 'pipelineSetInterval':
                         if (typeof data.intervalSeconds === 'number' && Number.isFinite(data.intervalSeconds)) {
                             this._pipeline.setInterval(data.intervalSeconds);
-                        }
-                        break;
-                    case 'startCoderReviewerWorkflow':
-                        if (data.sessionId) {
-                            await this._handleStartCoderReviewerWorkflow(data.sessionId);
-                        }
-                        break;
-                    case 'stopCoderReviewerWorkflow':
-                        if (data.sessionId) {
-                            this._stopCoderReviewerWorkflow(data.sessionId);
                         }
                         break;
                     case 'airlock_export':
@@ -916,17 +2690,24 @@ class TaskViewerProvider {
         if (this._stateWatcher) {
             this._stateWatcher.dispose();
         }
+        try {
+            this._fsStateWatcher?.close();
+        }
+        catch { }
         // Watch .switchboard/state.json for agent updates
         this._stateWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/state.json');
         // Debounced: coalesces rapid file-watcher events (e.g. during batch grid creation).
-        const refreshState = () => this.refresh();
+        const refreshState = () => {
+            void this._refreshConfiguredPlanWatcher();
+            this.refresh();
+        };
         this._stateWatcher.onDidChange(refreshState);
         this._stateWatcher.onDidCreate(refreshState);
         this._stateWatcher.onDidDelete(refreshState);
         // Native fs.watch fallback — VS Code's createFileSystemWatcher skips
         // gitignored directories (.switchboard is gitignored). This ensures
         // cross-window state changes are detected immediately.
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (workspaceRoot) {
             const stateFile = path.join(workspaceRoot, '.switchboard', 'state.json');
             try {
@@ -993,10 +2774,9 @@ class TaskViewerProvider {
         }
         catch { }
         // Initialize plan + sessions directories
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const plansRootDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         for (const dir of [plansRootDir, sessionsDir]) {
@@ -1014,11 +2794,11 @@ class TaskViewerProvider {
         const debouncedTitleSync = (uri) => {
             if (titleSyncTimer)
                 clearTimeout(titleSyncTimer);
-            titleSyncTimer = setTimeout(() => this._handlePlanTitleSync(uri), 300);
+            titleSyncTimer = setTimeout(() => this._handlePlanTitleSync(uri, workspaceRoot), 300);
         };
         // Unified watcher for all plans at the plans root
         this._planWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/plans/*.md');
-        this._planWatcher.onDidCreate((uri) => this._handlePlanCreation(uri));
+        this._planWatcher.onDidCreate((uri) => this._handlePlanCreation(uri, workspaceRoot));
         this._planWatcher.onDidChange((uri) => debouncedTitleSync(uri));
         // Native fs.watch fallback — VS Code's createFileSystemWatcher can miss .switchboard
         // events depending on workspace watcher exclusions and gitignore behavior.
@@ -1035,7 +2815,7 @@ class TaskViewerProvider {
                     return;
                 const uri = vscode.Uri.file(fullPath);
                 try {
-                    await this._handlePlanCreation(uri);
+                    await this._handlePlanCreation(uri, workspaceRoot);
                 }
                 catch (e) {
                     console.error('[TaskViewerProvider] Native plan create sync failed:', e);
@@ -1064,15 +2844,63 @@ class TaskViewerProvider {
         };
         this._fsPlansWatcher = watchPlanDirectory(plansRootDir);
     }
+    _setupSessionWatcher() {
+        if (this._sessionWatcher) {
+            this._sessionWatcher.dispose();
+        }
+        try {
+            this._fsSessionWatcher?.close();
+        }
+        catch { }
+        if (this._sessionSyncTimer) {
+            clearTimeout(this._sessionSyncTimer);
+            this._sessionSyncTimer = undefined;
+        }
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
+            return;
+        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
+        if (!fs.existsSync(sessionsDir)) {
+            try {
+                fs.mkdirSync(sessionsDir, { recursive: true });
+            }
+            catch { }
+        }
+        const debouncedSessionSync = () => {
+            if (this._sessionSyncTimer)
+                clearTimeout(this._sessionSyncTimer);
+            this._sessionSyncTimer = setTimeout(() => {
+                this._sessionSyncTimer = undefined;
+                this._refreshRunSheets();
+            }, 300);
+        };
+        this._sessionWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/sessions/*.json');
+        this._sessionWatcher.onDidCreate(() => debouncedSessionSync());
+        this._sessionWatcher.onDidChange(() => debouncedSessionSync());
+        this._sessionWatcher.onDidDelete(() => debouncedSessionSync());
+        const watchSessionDirectory = (dir) => {
+            try {
+                return fs.watch(dir, (_eventType, filename) => {
+                    if (!filename || !filename.toString().endsWith('.json'))
+                        return;
+                    debouncedSessionSync();
+                });
+            }
+            catch (e) {
+                console.error(`[TaskViewerProvider] fs.watch fallback failed for '${dir}':`, e);
+                return undefined;
+            }
+        };
+        this._fsSessionWatcher = watchSessionDirectory(sessionsDir);
+    }
     _setupBrainWatcher() {
         const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
         if (!fs.existsSync(brainDir))
             return;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'plans');
+        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
         if (!fs.existsSync(stagingDir)) {
             try {
                 fs.mkdirSync(stagingDir, { recursive: true });
@@ -1105,7 +2933,7 @@ class TaskViewerProvider {
                             return;
                         if (fs.existsSync(fullPath)) {
                             await this._ensureTombstonesLoaded(workspaceRoot);
-                            await this._mirrorBrainPlan(fullPath, allowAutoClaim);
+                            await this._mirrorBrainPlan(fullPath, allowAutoClaim, workspaceRoot);
                         }
                     }
                     catch (e) {
@@ -1145,7 +2973,7 @@ class TaskViewerProvider {
                             if (fs.existsSync(fullPath)) {
                                 await this._ensureTombstonesLoaded(workspaceRoot);
                                 // fs.watch "rename" is the closest signal to create/delete.
-                                await this._mirrorBrainPlan(fullPath, _eventType === 'rename');
+                                await this._mirrorBrainPlan(fullPath, _eventType === 'rename', workspaceRoot);
                             }
                         }
                         catch (e) {
@@ -1227,6 +3055,192 @@ class TaskViewerProvider {
         catch (e) {
             console.error('[TaskViewerProvider] Staging watcher failed:', e);
         }
+    }
+    _normalizeConfiguredPlanFolder(folder, workspaceRoot) {
+        if (typeof folder !== 'string')
+            return '';
+        const trimmed = folder.trim();
+        if (!trimmed)
+            return '';
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        return path.resolve(resolvedWorkspaceRoot || process.cwd(), trimmed);
+    }
+    _getConfiguredPlanFolderValidationError(configuredPlanFolder, workspaceRoot) {
+        if (!configuredPlanFolder) {
+            return undefined;
+        }
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (resolvedWorkspaceRoot && this._isPathWithin(resolvedWorkspaceRoot, configuredPlanFolder)) {
+            return 'Plan ingestion folder must be outside the current workspace.';
+        }
+        const antigravityBrainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        if (this._isPathWithin(antigravityBrainDir, configuredPlanFolder)) {
+            return 'Plan ingestion folder is already covered by the Antigravity brain watcher.';
+        }
+        return undefined;
+    }
+    _getManagedImportMirrorFilename(sourcePath) {
+        const stablePath = this._getStablePath(sourcePath);
+        const hash = crypto.createHash('sha256').update(stablePath).digest('hex');
+        return `${TaskViewerProvider.MANAGED_IMPORT_PREFIX}${hash}.md`;
+    }
+    async _listMarkdownFilesRecursively(rootDir) {
+        const results = [];
+        const visit = async (dir) => {
+            const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    if (entry.name.toLowerCase() === 'completed') {
+                        continue;
+                    }
+                    await visit(fullPath);
+                }
+                else if (entry.isFile() && /\.md$/i.test(entry.name)) {
+                    results.push(fullPath);
+                }
+            }
+        };
+        await visit(rootDir);
+        return results;
+    }
+    async _removeManagedImportMirror(mirrorFilename, workspaceRoot) {
+        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
+        const mirrorPath = path.join(stagingDir, mirrorFilename);
+        const relativePlanPath = path.relative(workspaceRoot, mirrorPath).replace(/\\/g, '/');
+        const log = this._getSessionLog(workspaceRoot);
+        const runSheet = await log.findRunSheetByPlanFile(relativePlanPath, { includeCompleted: true });
+        if (runSheet?.sessionId) {
+            await log.deleteRunSheet(runSheet.sessionId);
+            await log.deleteDispatchLog(runSheet.sessionId);
+        }
+        let registryChanged = false;
+        for (const [planId, entry] of Object.entries(this._planRegistry.entries)) {
+            if (entry.sourceType === 'local' && entry.localPlanPath === relativePlanPath) {
+                delete this._planRegistry.entries[planId];
+                registryChanged = true;
+            }
+        }
+        if (registryChanged) {
+            await this._savePlanRegistry(workspaceRoot);
+        }
+        if (fs.existsSync(mirrorPath)) {
+            try {
+                await fs.promises.unlink(mirrorPath);
+            }
+            catch (e) {
+                console.error('[TaskViewerProvider] Failed to remove managed import mirror:', e);
+            }
+        }
+    }
+    async _syncConfiguredPlanFolder(planFolder, workspaceRoot, cleanupMissingManagedImports = false) {
+        const resolvedPlanFolder = this._normalizeConfiguredPlanFolder(planFolder, workspaceRoot);
+        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
+        if (!fs.existsSync(stagingDir)) {
+            await fs.promises.mkdir(stagingDir, { recursive: true });
+        }
+        if (!resolvedPlanFolder || !fs.existsSync(resolvedPlanFolder)) {
+            return;
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+        const desiredMirrors = new Set();
+        const markdownFiles = await this._listMarkdownFilesRecursively(resolvedPlanFolder);
+        for (const filePath of markdownFiles) {
+            if (!(await this._isLikelyPlanFile(filePath))) {
+                continue;
+            }
+            const mirrorFilename = this._getManagedImportMirrorFilename(filePath);
+            desiredMirrors.add(mirrorFilename);
+            const mirrorPath = path.join(stagingDir, mirrorFilename);
+            const content = await fs.promises.readFile(filePath, 'utf8');
+            const alreadyExists = fs.existsSync(mirrorPath);
+            if (alreadyExists) {
+                const existingContent = await fs.promises.readFile(mirrorPath, 'utf8');
+                if (existingContent === content) {
+                    continue;
+                }
+            }
+            await fs.promises.writeFile(mirrorPath, content);
+            const mirrorUri = vscode.Uri.file(mirrorPath);
+            if (alreadyExists) {
+                await this._handlePlanTitleSync(mirrorUri, workspaceRoot);
+            }
+            else {
+                await this._handlePlanCreation(mirrorUri, workspaceRoot);
+            }
+        }
+        if (cleanupMissingManagedImports) {
+            for (const mirrorFilename of this._managedImportMirrorsForActiveFolder) {
+                if (!desiredMirrors.has(mirrorFilename)) {
+                    await this._removeManagedImportMirror(mirrorFilename, workspaceRoot);
+                }
+            }
+        }
+        this._managedImportMirrorsForActiveFolder = desiredMirrors;
+        await this._refreshRunSheets(workspaceRoot);
+    }
+    _disposeConfiguredPlanWatcher() {
+        try {
+            this._configuredPlanWatcher?.dispose();
+        }
+        catch { }
+        try {
+            this._configuredPlanFsWatcher?.close();
+        }
+        catch { }
+        this._configuredPlanWatcher = undefined;
+        this._configuredPlanFsWatcher = undefined;
+        this._managedImportMirrorsForActiveFolder.clear();
+        if (this._configuredPlanSyncTimer) {
+            clearTimeout(this._configuredPlanSyncTimer);
+            this._configuredPlanSyncTimer = undefined;
+        }
+    }
+    async _refreshConfiguredPlanWatcher(workspaceRoot) {
+        this._disposeConfiguredPlanWatcher();
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot)
+            return;
+        const configuredPlanFolder = this._normalizeConfiguredPlanFolder(await this.getPlanIngestionFolder(resolvedWorkspaceRoot), resolvedWorkspaceRoot);
+        const scheduleSync = () => {
+            if (this._configuredPlanSyncTimer) {
+                clearTimeout(this._configuredPlanSyncTimer);
+            }
+            this._configuredPlanSyncTimer = setTimeout(() => {
+                this._configuredPlanSyncTimer = undefined;
+                void this._syncConfiguredPlanFolder(configuredPlanFolder, resolvedWorkspaceRoot, true);
+            }, 300);
+        };
+        if (!configuredPlanFolder || !fs.existsSync(configuredPlanFolder)) {
+            return;
+        }
+        const validationError = this._getConfiguredPlanFolderValidationError(configuredPlanFolder, resolvedWorkspaceRoot);
+        if (validationError) {
+            console.warn(`[TaskViewerProvider] Skipping configured plan watcher: ${validationError} (${configuredPlanFolder})`);
+            return;
+        }
+        try {
+            const configuredUri = vscode.Uri.file(configuredPlanFolder);
+            const configuredPattern = new vscode.RelativePattern(configuredUri, '**/*.md');
+            this._configuredPlanWatcher = vscode.workspace.createFileSystemWatcher(configuredPattern);
+            this._configuredPlanWatcher.onDidCreate(() => scheduleSync());
+            this._configuredPlanWatcher.onDidChange(() => scheduleSync());
+            this._configuredPlanWatcher.onDidDelete(() => scheduleSync());
+        }
+        catch (e) {
+            console.error('[TaskViewerProvider] Configured plan watcher failed:', e);
+        }
+        try {
+            this._configuredPlanFsWatcher = fs.watch(configuredPlanFolder, { recursive: true }, (_eventType, filename) => {
+                if (!filename || !/\.md$/i.test(String(filename)))
+                    return;
+                scheduleSync();
+            });
+        }
+        catch (e) {
+            console.error('[TaskViewerProvider] Configured plan fs.watch fallback failed (non-fatal):', e);
+        }
+        await this._syncConfiguredPlanFolder(configuredPlanFolder, resolvedWorkspaceRoot);
     }
     _getStablePath(p) {
         const normalized = path.normalize(p);
@@ -1353,8 +3367,7 @@ class TaskViewerProvider {
         return !s || s === '(untitled)' || /^(simple\s+)?implementation\s+plan$/i.test(s.trim());
     }
     _getRecoverablePlans() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = workspaceFolders ? workspaceFolders[0].uri.fsPath : '';
+        const workspaceRoot = this._resolveWorkspaceRoot() || '';
         const mirrorDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'plans') : '';
         // Pre-scan archive plans directory once for efficiency
         const archivePlansDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'archive', 'plans') : '';
@@ -1493,10 +3506,10 @@ class TaskViewerProvider {
         return recoverable;
     }
     async _handleRestorePlan(planId) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return false;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        await this._activateWorkspaceContext(workspaceRoot);
         const entry = this._planRegistry.entries[planId];
         if (!entry) {
             vscode.window.showErrorMessage('Plan not found in registry.');
@@ -1548,7 +3561,7 @@ class TaskViewerProvider {
             resolvedSessionId = runSheetId;
             await this._restoreRunSheet(workspaceRoot, runSheetId, path.resolve(entry.brainSourcePath));
             // Trigger re-mirror
-            await this._mirrorBrainPlan(path.resolve(entry.brainSourcePath));
+            await this._mirrorBrainPlan(path.resolve(entry.brainSourcePath), false, workspaceRoot);
         }
         else if (entry.sourceType === 'local') {
             resolvedSessionId = planId;
@@ -1560,7 +3573,7 @@ class TaskViewerProvider {
             planId,
             topic: entry.topic
         });
-        await this._refreshRunSheets();
+        await this._refreshRunSheets(workspaceRoot);
         if (resolvedSessionId) {
             this._view?.webview.postMessage({ type: 'selectSession', sessionId: resolvedSessionId });
         }
@@ -1590,18 +3603,18 @@ class TaskViewerProvider {
             delete sheet.completedAt;
             if (brainSourcePath) {
                 sheet.brainSourcePath = brainSourcePath;
-                // Also restore the mirror file from archive so planFile remains valid
-                if (typeof sheet.planFile === 'string') {
-                    const mirrorAbsPath = path.isAbsolute(sheet.planFile)
-                        ? sheet.planFile
-                        : path.join(workspaceRoot, sheet.planFile);
-                    if (!fs.existsSync(mirrorAbsPath)) {
-                        const archivedMirrorPath = path.join(workspaceRoot, '.switchboard', 'archive', 'plans', path.basename(mirrorAbsPath));
-                        if (fs.existsSync(archivedMirrorPath)) {
-                            await fs.promises.mkdir(path.dirname(mirrorAbsPath), { recursive: true });
-                            await fs.promises.copyFile(archivedMirrorPath, mirrorAbsPath);
-                            console.log(`[TaskViewerProvider] Restored mirror file from archive: ${path.basename(mirrorAbsPath)}`);
-                        }
+            }
+            // Also restore the plan file from archive so planFile remains valid
+            if (typeof sheet.planFile === 'string') {
+                const mirrorAbsPath = path.isAbsolute(sheet.planFile)
+                    ? sheet.planFile
+                    : path.join(workspaceRoot, sheet.planFile);
+                if (!fs.existsSync(mirrorAbsPath)) {
+                    const archivedMirrorPath = path.join(workspaceRoot, '.switchboard', 'archive', 'plans', path.basename(mirrorAbsPath));
+                    if (fs.existsSync(archivedMirrorPath)) {
+                        await fs.promises.mkdir(path.dirname(mirrorAbsPath), { recursive: true });
+                        await fs.promises.copyFile(archivedMirrorPath, mirrorAbsPath);
+                        console.log(`[TaskViewerProvider] Restored plan file from archive: ${path.basename(mirrorAbsPath)}`);
                     }
                 }
             }
@@ -1991,10 +4004,9 @@ class TaskViewerProvider {
         fs.renameSync(tempPath, filePath);
     }
     async seedBrainPlanBlacklistFromCurrentBrainSnapshot() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
         const entries = fs.existsSync(brainDir)
             ? this._collectBrainPlanBlacklistEntries(brainDir)
@@ -2375,15 +4387,15 @@ class TaskViewerProvider {
         }
         return false;
     }
-    async _mirrorBrainPlan(brainFilePath, allowAutoClaim = false) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+    async _mirrorBrainPlan(brainFilePath, allowAutoClaim = false, workspaceRoot) {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const stagingDir = path.join(workspaceRoot, '.switchboard', 'plans');
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const stagingDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'plans');
+        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
         try {
-            await this._ensureTombstonesLoaded(workspaceRoot);
+            await this._ensureTombstonesLoaded(resolvedWorkspaceRoot);
             const stat = fs.statSync(brainFilePath);
             if (stat.size > TaskViewerProvider.MAX_BRAIN_PLAN_SIZE_BYTES)
                 return;
@@ -2407,11 +4419,11 @@ class TaskViewerProvider {
             const mirrorPath = path.join(stagingDir, mirrorFilename);
             const runSheetId = `antigravity_${pathHash}`;
             const runSheetPath = path.join(sessionsDir, `${runSheetId}.json`);
-            const existingRunSheetPath = await this._findExistingRunSheetPath(workspaceRoot, runSheetId);
-            const runSheetKnown = await this._runSheetExists(workspaceRoot, runSheetId);
+            const existingRunSheetPath = await this._findExistingRunSheetPath(resolvedWorkspaceRoot, runSheetId);
+            const runSheetKnown = await this._runSheetExists(resolvedWorkspaceRoot, runSheetId);
             // Hard-stop: never recreate active antigravity runsheets/mirrors when a completed
             // archived sibling already exists for this deterministic session ID.
-            if (await this._hasArchivedCompletedRunSheet(workspaceRoot, runSheetId)) {
+            if (await this._hasArchivedCompletedRunSheet(resolvedWorkspaceRoot, runSheetId)) {
                 if (fs.existsSync(runSheetPath)) {
                     try {
                         const activeSheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
@@ -2428,7 +4440,7 @@ class TaskViewerProvider {
             }
             // Guard: workspace scoping via registry ownership.
             // New runtime-created plans may auto-claim so they appear immediately in dropdown.
-            const eligibility = this._isPlanEligibleForWorkspace(stablePath, workspaceRoot);
+            const eligibility = this._isPlanEligibleForWorkspace(stablePath, resolvedWorkspaceRoot);
             const existingEntry = this._planRegistry.entries[pathHash];
             const shouldAutoClaim = !eligibility.eligible && allowAutoClaim && !existingEntry;
             if (!eligibility.eligible && !shouldAutoClaim) {
@@ -2460,9 +4472,9 @@ class TaskViewerProvider {
                 topic = this._inferTopicFromPath(brainFilePath);
             }
             if (shouldAutoClaim) {
-                const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
+                const wsId = await this._getOrCreateWorkspaceId(resolvedWorkspaceRoot);
                 const now = new Date().toISOString();
-                await this._registerPlan(workspaceRoot, {
+                await this._registerPlan(resolvedWorkspaceRoot, {
                     planId: pathHash,
                     ownerWorkspaceId: wsId,
                     sourceType: 'brain',
@@ -2514,7 +4526,7 @@ class TaskViewerProvider {
             }
             const runSheet = {
                 sessionId: runSheetId,
-                planFile: path.relative(workspaceRoot, mirrorPath),
+                planFile: path.relative(resolvedWorkspaceRoot, mirrorPath),
                 brainSourcePath: baseBrainPath,
                 topic,
                 createdAt: originalCreatedAt || new Date(fileCreationTimeMs).toISOString(),
@@ -2523,28 +4535,28 @@ class TaskViewerProvider {
             };
             await fs.promises.writeFile(runSheetPath, JSON.stringify(runSheet, null, 2));
             console.log(`[TaskViewerProvider] Mirrored brain plan: ${topic}`);
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
             this._view?.webview.postMessage({ type: 'selectSession', sessionId: runSheetId });
         }
         catch (e) {
             console.error('[TaskViewerProvider] Failed to mirror brain plan:', e);
         }
     }
-    async _handlePlanCreation(uri) {
+    async _handlePlanCreation(uri, workspaceRoot) {
         const stablePath = this._normalizePendingPlanPath(uri.fsPath);
         if (this._pendingPlanCreations.has(stablePath)) {
             console.log(`[TaskViewerProvider] Ignoring internal plan creation: ${uri.fsPath}`);
             this._logEvent('plan_management', { operation: 'watcher_suppressed', file: uri.fsPath });
             return;
         }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+        if (!resolvedWorkspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
-        const planFileRelative = path.relative(workspaceRoot, uri.fsPath);
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const statePath = path.join(resolvedWorkspaceRoot, '.switchboard', 'state.json');
+        const planFileRelative = path.relative(resolvedWorkspaceRoot, uri.fsPath);
         const normalizedPlanFileRelative = planFileRelative.replace(/\\/g, '/');
-        const log = this._getSessionLog(workspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
         try {
             // Deduplicate: if any runsheet (active or completed) already points at this exact
             // plan file, do not auto-create a new runsheet from watcher events.
@@ -2552,7 +4564,7 @@ class TaskViewerProvider {
                 includeCompleted: true
             });
             if (existingForPlan) {
-                await this._refreshRunSheets();
+                await this._refreshRunSheets(resolvedWorkspaceRoot);
                 return;
             }
             // Read current state (best-effort; anonymous session if unavailable)
@@ -2611,8 +4623,8 @@ class TaskViewerProvider {
             await log.createRunSheet(sessionId, runSheet);
             console.log(`[TaskViewerProvider] Created Run Sheet for session ${sessionId}: ${topic}`);
             // Register local plan in ownership registry
-            const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
-            await this._registerPlan(workspaceRoot, {
+            const wsId = await this._getOrCreateWorkspaceId(resolvedWorkspaceRoot);
+            await this._registerPlan(resolvedWorkspaceRoot, {
                 planId: sessionId,
                 ownerWorkspaceId: wsId,
                 sourceType: 'local',
@@ -2622,7 +4634,7 @@ class TaskViewerProvider {
                 updatedAt: new Date().toISOString(),
                 status: 'active'
             });
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
             // Auto-focus the new plan in the dropdown
             this._view?.webview.postMessage({ type: 'selectSession', sessionId });
         }
@@ -2630,64 +4642,565 @@ class TaskViewerProvider {
             console.error('[TaskViewerProvider] Failed to handle plan creation:', e);
         }
     }
-    async _handleViewPlan(sessionId) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
-            return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+    async _resolvePlanContextForSession(sessionId, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
+            throw new Error('No workspace folder found.');
+        }
+        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        const content = await fs.promises.readFile(runSheetPath, 'utf8');
+        const sheet = JSON.parse(content);
+        const planPath = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
+            ? sheet.planFile.trim()
+            : (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
+        if (!planPath) {
+            throw new Error('No plan file associated with this session.');
+        }
+        const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, planPath);
+        if (!this._isPathWithinRoot(planFileAbsolute, resolvedWorkspaceRoot)) {
+            throw new Error('Plan file path is outside the workspace boundary.');
+        }
+        const topic = (typeof sheet.topic === 'string' && sheet.topic.trim())
+            ? sheet.topic.trim()
+            : path.basename(planFileAbsolute);
+        return { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot };
+    }
+    _getPlanPathFromSheet(workspaceRoot, sheet) {
+        const planPath = (typeof sheet?.planFile === 'string' && sheet.planFile.trim())
+            ? sheet.planFile.trim()
+            : (typeof sheet?.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
+        if (!planPath) {
+            throw new Error('No plan file associated with this session.');
+        }
+        const planFileAbsolute = path.isAbsolute(planPath)
+            ? path.resolve(planPath)
+            : path.resolve(workspaceRoot, planPath);
+        if (!this._isPathWithinRoot(planFileAbsolute, workspaceRoot)) {
+            throw new Error('Plan file path is outside the workspace boundary.');
+        }
+        return planFileAbsolute;
+    }
+    _parsePlanDependencies(content) {
+        const sectionMatch = content.match(/^#{1,4}\s+Dependencies\b[^\n]*$/im);
+        if (!sectionMatch || sectionMatch.index === undefined) {
+            return [];
+        }
+        const afterHeading = content.slice(sectionMatch.index + sectionMatch[0].length);
+        const nextHeadingMatch = afterHeading.match(/^\s*#{1,4}\s+/m);
+        const sectionBody = nextHeadingMatch
+            ? afterHeading.slice(0, nextHeadingMatch.index)
+            : afterHeading;
+        return Array.from(new Set(sectionBody
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .map(line => line.replace(/^[-*+]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+            .filter(line => line.length > 0)
+            .filter(line => !/^(none|n\/a|na|unknown)$/i.test(line))));
+    }
+    _replaceOrAppendMarkdownSection(content, heading, body) {
+        const normalizedContent = content.replace(/\r\n/g, '\n');
+        const sectionRegex = new RegExp(`^#{1,4}\\s+${heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[^\\n]*$`, 'im');
+        const match = sectionRegex.exec(normalizedContent);
+        const replacement = `${match ? match[0] : `## ${heading}`}\n${body.trimEnd()}\n`;
+        if (!match || match.index === undefined) {
+            return `${normalizedContent.replace(/\s*$/, '')}\n\n## ${heading}\n${body.trimEnd()}\n`;
+        }
+        const afterHeadingIndex = match.index + match[0].length;
+        const afterHeading = normalizedContent.slice(afterHeadingIndex);
+        const nextHeadingMatch = afterHeading.match(/^\s*#{1,4}\s+/m);
+        const sectionEnd = nextHeadingMatch && nextHeadingMatch.index !== undefined
+            ? afterHeadingIndex + nextHeadingMatch.index
+            : normalizedContent.length;
+        return `${normalizedContent.slice(0, match.index)}${replacement}${normalizedContent.slice(sectionEnd).replace(/^\n*/, '\n')}`;
+    }
+    _applyComplexityToPlanContent(content, complexity) {
+        const bandBBody = complexity === 'High'
+            ? '\n### Band B — Complex / Risky\n- User marked this plan as high complexity.\n'
+            : complexity === 'Low'
+                ? '\n### Band B — Complex / Risky\n- None.\n'
+                : '\n### Band B — Complex / Risky\n- Unknown.\n';
+        const normalizedContent = content.replace(/\r\n/g, '\n');
+        const auditRegex = /^#{1,4}\s+Complexity\s+Audit\b[^\n]*$/im;
+        const auditMatch = auditRegex.exec(normalizedContent);
+        if (!auditMatch || auditMatch.index === undefined) {
+            const overrideLine = `\n**Manual Complexity Override:** ${complexity}\n`;
+            return `${normalizedContent.replace(/\s*$/, '')}\n\n## Complexity Audit${overrideLine}${bandBBody}`;
+        }
+        const auditStart = auditMatch.index;
+        const afterAuditHeadingIndex = auditStart + auditMatch[0].length;
+        const afterAuditHeading = normalizedContent.slice(afterAuditHeadingIndex);
+        const nextSectionMatch = afterAuditHeading.match(/^\s*#{1,2}\s+/m);
+        const auditEnd = nextSectionMatch && nextSectionMatch.index !== undefined
+            ? afterAuditHeadingIndex + nextSectionMatch.index
+            : normalizedContent.length;
+        const auditSection = normalizedContent.slice(auditStart, auditEnd);
+        const bandBRegex = /^#{1,4}\s+Band\s+B\b[^\n]*$/im;
+        const bandBMatch = bandBRegex.exec(auditSection);
+        let updatedAuditSection = auditSection;
+        if (!bandBMatch || bandBMatch.index === undefined) {
+            updatedAuditSection = `${auditSection.replace(/\s*$/, '')}${bandBBody}`;
+        }
+        else {
+            const bandBStart = bandBMatch.index;
+            const bandBAfterHeadingIndex = bandBStart + bandBMatch[0].length;
+            const afterBandB = auditSection.slice(bandBAfterHeadingIndex);
+            const nextBandMatch = afterBandB.match(/^\s*#{1,4}\s+(?:Band\s+[C-Z]\b|[A-Za-z])/m);
+            const bandBEnd = nextBandMatch && nextBandMatch.index !== undefined
+                ? bandBAfterHeadingIndex + nextBandMatch.index
+                : auditSection.length;
+            updatedAuditSection = `${auditSection.slice(0, bandBStart)}### Band B — Complex / Risky\n${bandBBody.replace(/^\n### Band B — Complex \/ Risky\n/, '')}${auditSection.slice(bandBEnd).replace(/^\n*/, '\n')}`;
+        }
+        // Insert or update the manual complexity override marker
+        const overrideRegex = /\*\*Manual Complexity Override:\*\*\s*(Low|High|Unknown)/i;
+        const overrideLine = `**Manual Complexity Override:** ${complexity}`;
+        if (overrideRegex.test(updatedAuditSection)) {
+            updatedAuditSection = updatedAuditSection.replace(overrideRegex, overrideLine);
+        }
+        else {
+            // Insert after the Complexity Audit heading line
+            const localAuditHeading = updatedAuditSection.match(/^#{1,4}\s+Complexity\s+Audit\b[^\n]*/im);
+            if (localAuditHeading && localAuditHeading.index !== undefined) {
+                const insertPos = localAuditHeading.index + localAuditHeading[0].length;
+                updatedAuditSection = updatedAuditSection.slice(0, insertPos) + `\n\n${overrideLine}\n` + updatedAuditSection.slice(insertPos);
+            }
+        }
+        return `${normalizedContent.slice(0, auditStart)}${updatedAuditSection}${normalizedContent.slice(auditEnd)}`;
+    }
+    _applyTopicToPlanContent(content, topic) {
+        const normalizedContent = content.replace(/\r\n/g, '\n');
+        const trimmedTopic = topic.trim();
+        if (!trimmedTopic) {
+            return normalizedContent;
+        }
+        if (/^#\s+.+$/m.test(normalizedContent)) {
+            return normalizedContent.replace(/^#\s+.+$/m, `# ${trimmedTopic}`);
+        }
+        return `# ${trimmedTopic}\n\n${normalizedContent.replace(/^\s*/, '')}`;
+    }
+    _getReviewLogEntries(events) {
+        const columnRoleMap = {
+            'CREATED': 'Planner',
+            'PLAN REVIEWED': 'Planner',
+            'LEAD CODED': 'Lead Coder',
+            'CODER CODED': 'Coder',
+            'CODE REVIEWED': 'Reviewer'
+        };
+        return [...events].reverse().map((event) => {
+            const action = String(event?.action || '').trim().toLowerCase();
+            const targetColumn = String(event?.targetColumn || '').trim();
+            const outcome = String(event?.outcome || '').trim().toLowerCase();
+            const workflow = String(event?.workflow || 'unknown').trim() || 'unknown';
+            const role = columnRoleMap[targetColumn] || '';
+            let details = '';
+            if (action === 'execute' || action === 'delegate_task') {
+                details = role ? `SENT TO ${role}` : `Dispatched (${workflow})`;
+            }
+            else if (action === 'submit_result') {
+                details = role ? `COMPLETED — ${role}` : `Completed (${workflow})`;
+            }
+            else if (outcome === 'failed' || outcome === 'fail') {
+                details = role ? `FAILED — ${role}` : `Failed (${workflow})`;
+            }
+            else if (action === 'start_workflow') {
+                details = `Started ${workflow}`;
+            }
+            else if (action === 'complete_workflow_phase') {
+                details = `Phase completed (${workflow})`;
+            }
+            else {
+                const parts = [
+                    action ? `action=${action}` : '',
+                    outcome ? `outcome=${outcome}` : '',
+                    targetColumn ? `target=${targetColumn}` : ''
+                ].filter(Boolean);
+                details = parts.join(' · ') || 'No additional details';
+            }
+            return { timestamp: String(event?.timestamp || ''), workflow, details };
+        });
+    }
+    async getReviewTicketData(sessionId) {
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
+            throw new Error('No workspace folder found.');
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+        const log = this._getSessionLog(workspaceRoot);
+        const sheet = await log.getRunSheet(sessionId);
+        if (!sheet) {
+            throw new Error(`Run sheet not found for session ${sessionId}.`);
+        }
+        const planFileAbsolute = this._getPlanPathFromSheet(workspaceRoot, sheet);
+        const planText = await fs.promises.readFile(planFileAbsolute, 'utf8');
+        const stats = await fs.promises.stat(planFileAbsolute);
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const columns = (0, agentConfig_1.buildKanbanColumns)(customAgents).map(column => ({ id: column.id, label: column.label }));
+        const events = Array.isArray(sheet.events) ? sheet.events : [];
+        const dependencies = this._parsePlanDependencies(planText);
+        const row = await this._getKanbanPlanRecordForSession(workspaceRoot, sessionId);
+        let column = this._getEffectiveKanbanColumnForSession(sheet, customAgents, row);
+        let complexity = 'Unknown';
+        if (row) {
+            complexity = row.complexity;
+        }
+        if (complexity === 'Unknown' && this._kanbanProvider && typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
+            complexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, sheet.planFile);
+        }
+        return {
+            sessionId,
+            topic: String(sheet.topic || path.basename(planFileAbsolute)),
+            planFileAbsolute,
+            column,
+            isCompleted: sheet.completed === true,
+            complexity,
+            dependencies,
+            planText,
+            planMtimeMs: stats.mtimeMs,
+            actionLog: this._getReviewLogEntries(events),
+            columns,
+            canEditMetadata: true
+        };
+    }
+    async getReviewOpenPlans(sessionId) {
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
+            throw new Error('No workspace folder found.');
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+        const log = this._getSessionLog(workspaceRoot);
+        const sheets = await log.getRunSheets();
+        const customAgents = await this.getCustomAgents(workspaceRoot);
+        const openPlans = sheets
+            .filter((sheet) => sheet?.sessionId && !sheet.completed && sheet.sessionId !== sessionId)
+            .map((sheet) => {
+            const events = Array.isArray(sheet.events) ? sheet.events : [];
+            let lastActivity = String(sheet.createdAt || '');
+            for (const event of events) {
+                if (event?.timestamp && event.timestamp > lastActivity) {
+                    lastActivity = event.timestamp;
+                }
+            }
+            try {
+                return {
+                    sessionId: String(sheet.sessionId),
+                    topic: String(sheet.topic || sheet.sessionId || 'Untitled plan'),
+                    column: (0, kanbanColumnDerivation_1.deriveKanbanColumn)(events, customAgents),
+                    planFileAbsolute: this._getPlanPathFromSheet(workspaceRoot, sheet),
+                    lastActivity
+                };
+            }
+            catch {
+                return null;
+            }
+        })
+            .filter((entry) => !!entry)
+            .sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || ''))
+            .slice(0, 50)
+            .map(({ lastActivity, ...entry }) => entry);
+        return openPlans;
+    }
+    async _renameSessionPlanFile(workspaceRoot, sessionId, sheet, nextTopic) {
+        const currentPlanFileAbsolute = this._getPlanPathFromSheet(workspaceRoot, sheet);
+        const currentRelative = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
+            ? sheet.planFile.trim().replace(/\\/g, '/')
+            : path.relative(workspaceRoot, currentPlanFileAbsolute).replace(/\\/g, '/');
+        const currentDir = path.dirname(currentPlanFileAbsolute);
+        const currentExt = path.extname(currentPlanFileAbsolute) || '.md';
+        const currentBase = path.basename(currentPlanFileAbsolute, currentExt);
+        const prefixMatch = currentBase.match(/^(feature_plan_\d{8}_\d{6})_/i);
+        const prefix = prefixMatch ? prefixMatch[1] : currentBase;
+        const slug = this._toPlanSlug(nextTopic);
+        const baseTargetName = `${prefix}_${slug}${currentExt}`;
+        let candidateAbsolute = path.join(currentDir, baseTargetName);
+        let suffix = 2;
+        while (candidateAbsolute !== currentPlanFileAbsolute && fs.existsSync(candidateAbsolute)) {
+            candidateAbsolute = path.join(currentDir, `${prefix}_${slug}_${suffix}${currentExt}`);
+            suffix += 1;
+        }
+        if (candidateAbsolute === currentPlanFileAbsolute) {
+            return {
+                planFileAbsolute: currentPlanFileAbsolute,
+                planFileRelative: currentRelative
+            };
+        }
+        await fs.promises.rename(currentPlanFileAbsolute, candidateAbsolute);
+        const nextRelative = path.relative(workspaceRoot, candidateAbsolute).replace(/\\/g, '/');
+        await this._getSessionLog(workspaceRoot).updateRunSheet(sessionId, (current) => {
+            current.planFile = nextRelative;
+            return current;
+        });
+        const planId = this._getPlanIdForRunSheet(sheet);
+        if (planId) {
+            const entry = this._planRegistry.entries[planId];
+            if (entry) {
+                entry.localPlanPath = nextRelative;
+                entry.updatedAt = new Date().toISOString();
+                await this._savePlanRegistry(workspaceRoot);
+            }
+        }
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (db) {
+            await db.updatePlanFile(sessionId, nextRelative);
+        }
+        sheet.planFile = nextRelative;
+        return {
+            planFileAbsolute: candidateAbsolute,
+            planFileRelative: nextRelative
+        };
+    }
+    async updateReviewTicket(request) {
+        const sessionId = String(request?.sessionId || '').trim();
+        if (!sessionId) {
+            return { ok: false, message: 'Session ID is required.' };
+        }
+        const workspaceRoot = await this._resolveWorkspaceRootForSession(sessionId);
+        if (!workspaceRoot) {
+            return { ok: false, message: 'No workspace folder found.' };
+        }
+        await this._activateWorkspaceContext(workspaceRoot);
+        const log = this._getSessionLog(workspaceRoot);
+        const sheet = await log.getRunSheet(sessionId);
+        if (!sheet) {
+            return { ok: false, message: `Run sheet not found for session ${sessionId}.` };
+        }
+        const planFileAbsolute = this._getPlanPathFromSheet(workspaceRoot, sheet);
+        const refreshViews = async () => {
+            await this._kanbanProvider?.refresh();
+            this.refresh();
+        };
         try {
-            const content = await fs.promises.readFile(runSheetPath, 'utf8');
-            const sheet = JSON.parse(content);
-            if (!sheet.planFile) {
-                vscode.window.showErrorMessage('No plan file associated with this session.');
-                return;
+            switch (request.type) {
+                case 'setColumn': {
+                    const column = this._normalizeLegacyKanbanColumn(String(request.column || '').trim());
+                    if (!column) {
+                        return { ok: false, message: 'Column is required.' };
+                    }
+                    const customAgents = await this.getCustomAgents(workspaceRoot);
+                    const columns = (0, agentConfig_1.buildKanbanColumns)(customAgents).map(entry => entry.id);
+                    if (!columns.includes(column)) {
+                        return { ok: false, message: `Unknown column '${column}'.` };
+                    }
+                    const currentRow = await this._getKanbanPlanRecordForSession(workspaceRoot, sessionId);
+                    const currentColumn = this._getEffectiveKanbanColumnForSession(sheet, customAgents, currentRow);
+                    if (currentColumn === column) {
+                        break;
+                    }
+                    const workflowName = this._workflowForManualColumnChange(currentColumn, column, customAgents);
+                    if (workflowName) {
+                        const updated = await this._applyManualKanbanColumnChange(sessionId, column, workflowName, 'User manually changed plan column from ticket view', workspaceRoot);
+                        if (!updated) {
+                            return { ok: false, message: 'Failed to persist ticket column change.' };
+                        }
+                    }
+                    break;
+                }
+                case 'setComplexity': {
+                    const complexity = request.complexity || 'Unknown';
+                    const currentContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
+                    const nextContent = this._applyComplexityToPlanContent(currentContent, complexity);
+                    if (nextContent !== currentContent) {
+                        await fs.promises.writeFile(planFileAbsolute, nextContent, 'utf8');
+                    }
+                    const db = await this._getKanbanDb(workspaceRoot);
+                    if (db) {
+                        await db.updateComplexity(sessionId, complexity);
+                    }
+                    break;
+                }
+                case 'setDependencies': {
+                    const dependencies = Array.isArray(request.dependencies)
+                        ? request.dependencies.map(item => String(item || '').trim()).filter(Boolean)
+                        : [];
+                    const currentContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
+                    const body = dependencies.length > 0
+                        ? `\n${dependencies.map(item => `- ${item}`).join('\n')}\n`
+                        : '\n- None\n';
+                    const nextContent = this._replaceOrAppendMarkdownSection(currentContent, 'Dependencies', body);
+                    if (nextContent !== currentContent) {
+                        await fs.promises.writeFile(planFileAbsolute, nextContent, 'utf8');
+                    }
+                    break;
+                }
+                case 'setTopic': {
+                    const topic = String(request.topic || '').trim();
+                    if (!topic) {
+                        return { ok: false, message: 'Topic is required.' };
+                    }
+                    await log.updateRunSheet(sessionId, (current) => {
+                        current.topic = topic;
+                        return current;
+                    });
+                    const currentContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
+                    const nextContent = this._applyTopicToPlanContent(currentContent, topic);
+                    if (nextContent !== currentContent) {
+                        await fs.promises.writeFile(planFileAbsolute, nextContent, 'utf8');
+                    }
+                    const planId = this._getPlanIdForRunSheet(sheet);
+                    if (planId) {
+                        const entry = this._planRegistry.entries[planId];
+                        if (entry) {
+                            entry.topic = topic;
+                            entry.updatedAt = new Date().toISOString();
+                            await this._savePlanRegistry(workspaceRoot);
+                        }
+                    }
+                    const db = await this._getKanbanDb(workspaceRoot);
+                    if (db) {
+                        await db.updateTopic(sessionId, topic);
+                    }
+                    break;
+                }
+                case 'savePlanText': {
+                    const requestedTopic = String(request.topic || '').trim();
+                    const content = typeof request.content === 'string' ? request.content : '';
+                    const nextContent = requestedTopic
+                        ? this._applyTopicToPlanContent(content, requestedTopic)
+                        : content;
+                    const expectedMtimeMs = Number(request.expectedMtimeMs);
+                    const currentStats = await fs.promises.stat(planFileAbsolute);
+                    if (Number.isFinite(expectedMtimeMs) && Math.abs(currentStats.mtimeMs - expectedMtimeMs) > 1) {
+                        return { ok: false, message: 'Plan file changed on disk since this ticket was opened. Reload the ticket and try again.' };
+                    }
+                    await fs.promises.writeFile(planFileAbsolute, nextContent, 'utf8');
+                    const h1Match = nextContent.match(/^#\s+(.+)$/m);
+                    const nextTopic = requestedTopic || (h1Match ? h1Match[1].trim() : String(sheet.topic || '').trim());
+                    let activePlanFileAbsolute = planFileAbsolute;
+                    if (nextTopic) {
+                        const renamed = await this._renameSessionPlanFile(workspaceRoot, sessionId, sheet, nextTopic);
+                        activePlanFileAbsolute = renamed.planFileAbsolute;
+                        await log.updateRunSheet(sessionId, (current) => {
+                            current.topic = nextTopic;
+                            return current;
+                        });
+                        const db = await this._getKanbanDb(workspaceRoot);
+                        if (db) {
+                            await db.updateTopic(sessionId, nextTopic);
+                        }
+                        const planId = this._getPlanIdForRunSheet(sheet);
+                        if (planId) {
+                            const entry = this._planRegistry.entries[planId];
+                            if (entry) {
+                                entry.topic = nextTopic;
+                                entry.updatedAt = new Date().toISOString();
+                                await this._savePlanRegistry(workspaceRoot);
+                            }
+                        }
+                    }
+                    if (this._kanbanProvider && activePlanFileAbsolute.trim()) {
+                        const nextComplexity = await this._kanbanProvider.getComplexityFromPlan(workspaceRoot, activePlanFileAbsolute);
+                        const db = await this._getKanbanDb(workspaceRoot);
+                        if (db) {
+                            await db.updateComplexity(sessionId, nextComplexity);
+                        }
+                    }
+                    break;
+                }
             }
-            const planFileAbsolute = path.resolve(workspaceRoot, sheet.planFile);
-            // F-06 SECURITY: Enforce workspace containment for plan paths
-            if (!this._isPathWithinRoot(planFileAbsolute, workspaceRoot)) {
-                vscode.window.showErrorMessage('Plan file path is outside the workspace boundary.');
-                return;
-            }
+            await refreshViews();
+            return {
+                ok: true,
+                message: request.type === 'savePlanText' ? 'Plan saved.' : 'Ticket updated.',
+                data: await this.getReviewTicketData(sessionId)
+            };
+        }
+        catch (e) {
+            return {
+                ok: false,
+                message: e instanceof Error ? e.message : String(e)
+            };
+        }
+    }
+    async _handleViewPlan(sessionId, workspaceRoot) {
+        try {
+            const { planFileAbsolute } = await this._resolvePlanContextForSession(sessionId, workspaceRoot);
             await vscode.commands.executeCommand('switchboard.openPlan', vscode.Uri.file(planFileAbsolute));
         }
         catch (e) {
             vscode.window.showErrorMessage(`Failed to open plan: ${e}`);
         }
     }
-    async _handleCopyPlanLink(sessionId) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
-            return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+    async _handleReviewPlan(sessionId, workspaceRoot) {
+        try {
+            const { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot } = await this._resolvePlanContextForSession(sessionId, workspaceRoot);
+            await vscode.commands.executeCommand('switchboard.reviewPlan', { sessionId, planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot });
+        }
+        catch (e) {
+            vscode.window.showErrorMessage(`Failed to open review panel: ${e}`);
+        }
+    }
+    /** Called by the Kanban board to copy a plan link to clipboard. Returns true on success. */
+    async handleKanbanCopyPlan(sessionId, column, workspaceRoot) {
+        return await this._handleCopyPlanLink(sessionId, column, workspaceRoot);
+    }
+    async _handleCopyPlanLink(sessionId, column, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot)
+            return false;
+        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
         try {
             const content = await fs.promises.readFile(runSheetPath, 'utf8');
             const sheet = JSON.parse(content);
             const topic = (sheet.topic || 'Plan').toString().trim() || 'Plan';
             let planPathAbsolute;
             if (typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
-                planPathAbsolute = path.resolve(workspaceRoot, sheet.planFile.trim());
+                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.planFile.trim());
             }
             else if (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim()) {
-                planPathAbsolute = path.resolve(workspaceRoot, sheet.brainSourcePath.trim());
+                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.brainSourcePath.trim());
             }
             if (!planPathAbsolute) {
                 throw new Error('No plan file path is available for this session.');
             }
             // F-06 SECURITY: Enforce workspace containment for plan paths
-            if (!this._isPathWithinRoot(planPathAbsolute, workspaceRoot)) {
+            if (!this._isPathWithinRoot(planPathAbsolute, resolvedWorkspaceRoot)) {
                 throw new Error('Plan file path is outside the workspace boundary.');
             }
-            const planUri = vscode.Uri.file(planPathAbsolute).toString();
-            const markdownLink = `[${topic}](${planUri})`;
-            await vscode.env.clipboard.writeText(markdownLink);
+            const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
+            const effectiveColumn = this._normalizeLegacyKanbanColumn(column || (0, kanbanColumnDerivation_1.deriveKanbanColumn)(Array.isArray(sheet.events) ? sheet.events : [], customAgents));
+            // For PLAN REVIEWED, use complexity-based role selection
+            let role;
+            if (effectiveColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
+                const complexity = await this._kanbanProvider.getComplexityFromPlan(resolvedWorkspaceRoot, planPathAbsolute);
+                role = complexity === 'Low' ? 'coder' : 'lead';
+            }
+            else {
+                role = (0, agentPromptBuilder_1.columnToPromptRole)(effectiveColumn) || 'coder';
+            }
+            const plan = { topic, absolutePath: planPathAbsolute };
+            let textToCopy = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)(role, [plan], {
+                accurateCodingEnabled: this._isAccurateCodingEnabled()
+            });
+            const customAgent = (0, agentConfig_1.findCustomAgentByRole)(customAgents, effectiveColumn);
+            if (customAgent?.promptInstructions) {
+                textToCopy += `\n\nAdditional Instructions: ${customAgent.promptInstructions}`;
+            }
+            await vscode.env.clipboard.writeText(textToCopy);
             this._view?.webview.postMessage({ type: 'copyPlanLinkResult', success: true });
+            const workflowName = effectiveColumn === 'CREATED'
+                ? 'improve-plan'
+                : effectiveColumn === 'PLAN REVIEWED'
+                    ? (role === 'lead' ? 'handoff-lead' : 'handoff')
+                    : this._isCompletedCodingColumn(effectiveColumn)
+                        ? 'reviewer-pass'
+                        : undefined;
+            if (workflowName) {
+                try {
+                    await this._updateSessionRunSheet(sessionId, workflowName);
+                }
+                catch (updateError) {
+                    console.error(`[TaskViewerProvider] Failed to auto-advance runsheet after copy for ${sessionId}:`, updateError);
+                }
+            }
+            return true;
         }
         catch (e) {
             const errorMessage = e?.message || String(e);
             this._view?.webview.postMessage({ type: 'copyPlanLinkResult', success: false, error: errorMessage });
             vscode.window.showErrorMessage(`Failed to copy plan link: ${errorMessage}`);
+            return false;
         }
     }
     /**
@@ -2709,16 +5222,17 @@ class TaskViewerProvider {
         console.log(`[TaskViewerProvider] Archived brain plan to: ${destPath}`);
         return destPath;
     }
-    async _handleCompletePlan(sessionId) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
-            return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
+    async _handleCompletePlan(sessionId, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot)
+            return false;
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
         try {
             const sheet = await log.getRunSheet(sessionId);
             if (!sheet)
-                return;
+                return false;
             // Capture original brain path BEFORE archival renames it
             const originalBrainPath = sheet.brainSourcePath;
             // Archive brain source BEFORE marking complete — if archival throws, we do NOT proceed.
@@ -2744,17 +5258,18 @@ class TaskViewerProvider {
                     await this._context.workspaceState.update('switchboard.archivedBrainPaths', [...archived, stablePath]);
                 }
                 const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                await this._addTombstone(workspaceRoot, pathHash);
+                await this._addTombstone(resolvedWorkspaceRoot, pathHash);
                 // Update plan registry status
-                await this._updatePlanRegistryStatus(workspaceRoot, pathHash, 'archived');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, pathHash, 'archived');
             }
             else {
                 // Local plan: use sessionId as planId
-                await this._updatePlanRegistryStatus(workspaceRoot, sessionId, 'archived');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, sessionId, 'archived');
             }
-            const orchestratorState = this._orchestrator.getState();
-            if (orchestratorState.sessionId === sessionId) {
-                this._orchestrator.stop();
+            // Autoban engine doesn't track individual sessions — no cleanup needed
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (db) {
+                await db.updateStatus(sessionId, 'completed');
             }
             await this._logEvent('plan_management', {
                 operation: 'mark_complete',
@@ -2762,18 +5277,20 @@ class TaskViewerProvider {
                 planFile: sheet.planFile,
                 topic: sheet.topic
             });
-            await this._archiveCompletedSession(sessionId, log, workspaceRoot);
+            await this._archiveCompletedSession(sessionId, log, resolvedWorkspaceRoot);
             await this._refreshRunSheets();
+            return true;
         }
         catch (e) {
             vscode.window.showErrorMessage(`Failed to mark plan complete: ${e}`);
+            return false;
         }
     }
     async _handleClaimPlan(brainSourcePath) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        await this._activateWorkspaceContext(workspaceRoot);
         try {
             const resolvedPath = path.resolve(brainSourcePath);
             const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
@@ -2815,7 +5332,7 @@ class TaskViewerProvider {
                 status: 'active'
             });
             // Trigger mirror to create local artifacts
-            await this._mirrorBrainPlan(resolvedPath);
+            await this._mirrorBrainPlan(resolvedPath, false, workspaceRoot);
             await this._logEvent('plan_management', {
                 operation: 'claim_plan',
                 planId,
@@ -2829,10 +5346,10 @@ class TaskViewerProvider {
         }
     }
     async _handleMergeAllPlans() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        await this._activateWorkspaceContext(workspaceRoot);
         const log = this._getSessionLog(workspaceRoot);
         try {
             const activeSheetsData = await log.getRunSheets();
@@ -3079,100 +5596,56 @@ class TaskViewerProvider {
         }
         return await log.archiveFiles(specs);
     }
-    async _handleArchiveAllCompleted() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+    /**
+     * Sweep orphaned review files that cannot be attributed to any session.
+     * Files older than 10 minutes are moved to .switchboard/archive/reviews/.
+     */
+    async _sweepOrphanedReviews() {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const log = this._getSessionLog(workspaceRoot);
-        const completedSheets = await log.getCompletedRunSheets();
-        if (completedSheets.length === 0) {
-            vscode.window.showInformationMessage('No completed sessions to archive.');
+        const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
+        const archiveReviewsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'reviews');
+        const unscopedReviews = await this._findUnscopedReviewFiles(reviewsDir);
+        if (unscopedReviews.length === 0)
             return;
+        const safeUnscoped = [];
+        const now = Date.now();
+        for (const reviewPath of unscopedReviews) {
+            try {
+                const stat = await fs.promises.stat(reviewPath);
+                const ageMs = now - stat.mtimeMs;
+                if (ageMs < 10 * 60 * 1000)
+                    continue;
+            }
+            catch {
+                continue;
+            }
+            safeUnscoped.push({
+                sourcePath: reviewPath,
+                destPath: path.join(archiveReviewsDir, path.basename(reviewPath))
+            });
         }
-        const answer = await vscode.window.showWarningMessage(`Archive ${completedSheets.length} completed session${completedSheets.length > 1 ? 's' : ''}? This moves files to .switchboard/archive/ and cannot be undone.`, { modal: true }, 'Archive', 'Cancel');
-        if (answer !== 'Archive')
-            return;
-        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Archiving completed sessions...' }, async (progress) => {
-            const allResults = [];
-            for (let i = 0; i < completedSheets.length; i++) {
-                const sheet = completedSheets[i];
-                progress.report({ message: `${i + 1}/${completedSheets.length}`, increment: (100 / completedSheets.length) });
-                // Register in archivedBrainPaths before archiving session files
-                if (sheet.brainSourcePath) {
-                    // brainSourcePath may already point to the completed/ subfolder if the plan was
-                    // previously completed via _handleCompletePlan (which patches brainSourcePath before
-                    // saving the runsheet). Recover the original path so the stablePath hash matches
-                    // what _mirrorBrainPlan would compute from the original brain location.
-                    let originalBrainPath = sheet.brainSourcePath;
-                    if (path.basename(path.dirname(originalBrainPath)) === 'completed') {
-                        originalBrainPath = path.join(path.dirname(path.dirname(originalBrainPath)), path.basename(originalBrainPath));
-                    }
-                    const stablePath = this._getStablePath(this._getBaseBrainPath(originalBrainPath));
-                    const archived = this._context.workspaceState.get('switchboard.archivedBrainPaths', []);
-                    if (!archived.includes(stablePath)) {
-                        await this._context.workspaceState.update('switchboard.archivedBrainPaths', [...archived, stablePath]);
-                    }
-                    const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                    await this._addTombstone(workspaceRoot, pathHash);
-                    // Update plan registry status
-                    await this._updatePlanRegistryStatus(workspaceRoot, pathHash, 'archived');
-                }
-                else if (sheet.sessionId) {
-                    // Local plan: use sessionId as planId
-                    await this._updatePlanRegistryStatus(workspaceRoot, sheet.sessionId, 'archived');
-                }
-                const results = await this._archiveCompletedSession(sheet.sessionId, log, workspaceRoot);
-                allResults.push(...results);
-            }
-            // Archive generic/unscoped review artifacts that cannot be attributed to a specific session.
-            // Safety: if there are active sessions, skip files touched in the last 10 minutes.
-            const activeSheets = (await log.getRunSheets()).filter((s) => s?.completed !== true);
-            const hasActiveSessions = activeSheets.length > 0;
-            const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
-            const archiveReviewsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'reviews');
-            const unscopedReviews = await this._findUnscopedReviewFiles(reviewsDir);
-            const safeUnscoped = [];
-            const now = Date.now();
-            for (const reviewPath of unscopedReviews) {
-                if (hasActiveSessions) {
-                    try {
-                        const stat = await fs.promises.stat(reviewPath);
-                        const ageMs = now - stat.mtimeMs;
-                        if (ageMs < 10 * 60 * 1000)
-                            continue;
-                    }
-                    catch {
-                        continue;
-                    }
-                }
-                safeUnscoped.push({
-                    sourcePath: reviewPath,
-                    destPath: path.join(archiveReviewsDir, path.basename(reviewPath))
-                });
-            }
-            if (safeUnscoped.length > 0) {
-                const genericResults = await log.archiveFiles(safeUnscoped);
-                allResults.push(...genericResults);
-            }
-            const failures = allResults.filter(r => !r.success);
+        if (safeUnscoped.length > 0) {
+            const results = await log.archiveFiles(safeUnscoped);
+            const failures = results.filter((r) => !r.success);
             if (failures.length > 0) {
-                console.warn('[TaskViewerProvider] Archive warnings:', failures);
-                vscode.window.showWarningMessage(`Archived ${completedSheets.length} session${completedSheets.length > 1 ? 's' : ''} with ${failures.length} warning${failures.length > 1 ? 's' : ''}. See Output > Switchboard.`);
+                console.warn('[TaskViewerProvider] Orphaned review sweep warnings:', failures);
             }
             else {
-                vscode.window.showInformationMessage(`Archived ${completedSheets.length} session${completedSheets.length > 1 ? 's' : ''} successfully.`);
+                console.log(`[TaskViewerProvider] Swept ${safeUnscoped.length} orphaned review file(s) to archive.`);
             }
-        });
-        await this._reconcileAntigravityPlanMirrors(workspaceRoot);
-        await this._refreshRunSheets();
+        }
     }
-    async _handleDeletePlan(sessionId) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
-            return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const log = this._getSessionLog(workspaceRoot);
+    async _handleDeletePlan(sessionId, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot)
+            return false;
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const log = this._getSessionLog(resolvedWorkspaceRoot);
         console.log(`[TaskViewerProvider] _handleDeletePlan: sessionId=${sessionId}`);
         try {
             // Resolve mirror/plan path and brainSourcePath from runsheet
@@ -3185,9 +5658,9 @@ class TaskViewerProvider {
                     brainSourcePath = sheet.brainSourcePath;
                 }
                 if (sheet.planFile) {
-                    const abs = path.resolve(workspaceRoot, sheet.planFile);
+                    const abs = path.resolve(resolvedWorkspaceRoot, sheet.planFile);
                     const absNorm = process.platform === 'win32' ? abs.toLowerCase() : abs;
-                    const rootNorm = process.platform === 'win32' ? workspaceRoot.toLowerCase() : workspaceRoot;
+                    const rootNorm = process.platform === 'win32' ? resolvedWorkspaceRoot.toLowerCase() : resolvedWorkspaceRoot;
                     if (absNorm.startsWith(rootNorm + path.sep) || absNorm.startsWith(rootNorm + '/')) {
                         mirrorPath = abs;
                     }
@@ -3208,21 +5681,24 @@ class TaskViewerProvider {
             }
             console.log(`[TaskViewerProvider] _handleDeletePlan: mirrorPath=${mirrorPath}, brainSourcePath=${brainSourcePath}`);
             // Discover associated review files
-            const reviewsDir = path.join(workspaceRoot, '.switchboard', 'reviews');
+            const reviewsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'reviews');
             const reviewFiles = await this._findReviewFilesForSession(sessionId, reviewsDir);
             // AP-3: Two distinct dialog texts — accurate language for each plan type
             const reviewSuffix = reviewFiles.length > 0 ? ` and ${reviewFiles.length} associated review file${reviewFiles.length > 1 ? 's' : ''}` : '';
-            const dialogText = brainSourcePath
+            const baseDialogText = brainSourcePath
                 ? `Delete this plan? This will permanently delete the brain file, plan mirror${reviewSuffix}. This cannot be undone.`
                 : `Delete this plan? The workspace plan file${reviewSuffix} will be removed.`;
+            const dialogText = this._activeDispatchSessions.has(sessionId)
+                ? `This plan is currently being processed. Delete anyway?\n\n${baseDialogText}`
+                : baseDialogText;
             const answer = await vscode.window.showWarningMessage(dialogText, { modal: true }, 'Delete');
             if (answer !== 'Delete')
-                return;
+                return false;
             // Write tombstone BEFORE deletion to prevent resurrection
             if (brainSourcePath) {
                 const stablePath = this._getStablePath(this._getBaseBrainPath(brainSourcePath));
                 const pathHash = crypto.createHash('sha256').update(stablePath).digest('hex');
-                await this._addTombstone(workspaceRoot, pathHash);
+                await this._addTombstone(resolvedWorkspaceRoot, pathHash);
             }
             // AP-1: Atomic deletion — brain first, then mirror, then runsheet; halt on any failure
             if (brainSourcePath && fs.existsSync(brainSourcePath)) {
@@ -3232,7 +5708,7 @@ class TaskViewerProvider {
                 catch (e) {
                     console.error(`[TaskViewerProvider] _handleDeletePlan: failed to delete brain file: ${e}`);
                     vscode.window.showErrorMessage(`Failed to delete brain file: ${brainSourcePath} — ${e?.message || e}`);
-                    return;
+                    return false;
                 }
             }
             if (mirrorPath && fs.existsSync(mirrorPath)) {
@@ -3242,7 +5718,7 @@ class TaskViewerProvider {
                 catch (e) {
                     console.error(`[TaskViewerProvider] _handleDeletePlan: failed to delete mirror file: ${e}`);
                     vscode.window.showErrorMessage(`Failed to delete mirror file: ${mirrorPath} — ${e?.message || e}`);
-                    return;
+                    return false;
                 }
             }
             // Delete associated review files
@@ -3255,38 +5731,45 @@ class TaskViewerProvider {
                 catch (e) {
                     console.error(`[TaskViewerProvider] _handleDeletePlan: failed to delete review file: ${reviewFile} — ${e}`);
                     vscode.window.showErrorMessage(`Failed to delete review file: ${path.basename(reviewFile)} — ${e?.message || e}`);
-                    return;
+                    return false;
                 }
             }
             await log.deleteRunSheet(sessionId);
             await log.deleteDispatchLog(sessionId);
+            this._activeDispatchSessions.delete(sessionId);
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (db) {
+                await db.deletePlan(sessionId);
+            }
             // Update plan registry status to deleted
             if (brainSourcePath) {
                 const stablePath = this._getStablePath(this._getBaseBrainPath(brainSourcePath));
                 const planId = this._getPlanIdFromStableBrainPath(stablePath);
-                await this._updatePlanRegistryStatus(workspaceRoot, planId, 'deleted');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, planId, 'deleted');
             }
             else {
                 // Local plan: use sessionId as planId
-                await this._updatePlanRegistryStatus(workspaceRoot, sessionId, 'deleted');
+                await this._updatePlanRegistryStatus(resolvedWorkspaceRoot, sessionId, 'deleted');
             }
             await this._logEvent('plan_management', {
                 operation: 'delete_plan',
                 sessionId
             });
-            await this._refreshRunSheets();
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
+            return true;
         }
         catch (e) {
             vscode.window.showErrorMessage(`Failed to delete plan: ${e}`);
+            return false;
         }
     }
-    async _handlePlanTitleSync(uri) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+    async _handlePlanTitleSync(uri, workspaceRoot) {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+        if (!resolvedWorkspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        const relPath = path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, '/');
+        await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
+        const relPath = path.relative(resolvedWorkspaceRoot, uri.fsPath).replace(/\\/g, '/');
         try {
             const content = await fs.promises.readFile(uri.fsPath, 'utf8');
             const h1Match = content.match(/^#\s+(.+)$/m);
@@ -3304,7 +5787,7 @@ class TaskViewerProvider {
                     const sheetRelPath = (sheet.planFile || '').replace(/\\/g, '/');
                     if (sheetRelPath === relPath && sheet.topic !== newTopic) {
                         const sessionId = path.basename(file, '.json');
-                        const log = this._getSessionLog(workspaceRoot);
+                        const log = this._getSessionLog(resolvedWorkspaceRoot);
                         await log.updateRunSheet(sessionId, (s) => {
                             s.topic = newTopic;
                             return s;
@@ -3315,10 +5798,14 @@ class TaskViewerProvider {
                             if (entry && entry.topic !== newTopic) {
                                 entry.topic = newTopic;
                                 entry.updatedAt = new Date().toISOString();
-                                await this._savePlanRegistry(workspaceRoot);
+                                await this._savePlanRegistry(resolvedWorkspaceRoot);
                             }
                         }
-                        await this._refreshRunSheets();
+                        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+                        if (db) {
+                            await db.updateTopic(sessionId, newTopic);
+                        }
+                        await this._refreshRunSheets(resolvedWorkspaceRoot);
                         return;
                     }
                 }
@@ -3327,13 +5814,14 @@ class TaskViewerProvider {
         }
         catch { }
     }
-    async _updateSessionRunSheet(sessionId, workflow, outcome, isStop = false) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+    async _updateSessionRunSheet(sessionId, workflow, outcome, isStop = false, workspaceRoot) {
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         try {
-            await this._getSessionLog(workspaceRoot).updateRunSheet(sessionId, (runSheet) => {
+            await this._getSessionLog(resolvedWorkspaceRoot).updateRunSheet(sessionId, (runSheet) => {
                 if (!runSheet.events)
                     runSheet.events = [];
                 // Avoid duplicate events if workflow and action haven't actually changed
@@ -3359,6 +5847,12 @@ class TaskViewerProvider {
                 runSheet.events.push(event);
                 return runSheet;
             });
+            const updatedSheet = await this._getSessionLog(resolvedWorkspaceRoot).getRunSheet(sessionId);
+            if (updatedSheet) {
+                const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
+                await this._syncKanbanDbFromSheetsSnapshot(resolvedWorkspaceRoot, [updatedSheet], customAgents, false);
+                await this._refreshKanbanMetadataFromSheet(resolvedWorkspaceRoot, updatedSheet);
+            }
             console.log(`[TaskViewerProvider] Updated Run Sheet for session ${sessionId} -> ${workflow} (${isStop ? 'stop' : 'start'})`);
             this._refreshRunSheets();
         }
@@ -3366,18 +5860,17 @@ class TaskViewerProvider {
             console.error('[TaskViewerProvider] Failed to update Run Sheet:', e);
         }
     }
-    async _refreshRunSheets() {
+    async _refreshRunSheets(workspaceRoot) {
         if (!this._view)
             return;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : this._resolveWorkspaceRoot();
+        if (!resolvedWorkspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         try {
-            await this._ensureOwnershipRegistryInitialized();
-            await this._ensureTombstonesLoaded(workspaceRoot);
-            await this._reconcileLocalPlansFromRunSheets(workspaceRoot);
-            const allSheets = await this._getSessionLog(workspaceRoot).getRunSheets();
+            await this._activateWorkspaceContext(resolvedWorkspaceRoot);
+            const allSheets = await this._collectAndSyncKanbanSnapshot(resolvedWorkspaceRoot, true);
             const ownedActiveEntries = Object.values(this._planRegistry.entries).filter((entry) => entry.ownerWorkspaceId === this._workspaceId && entry.status === 'active');
             const bestSheetByPlanId = new Map();
             for (const sheet of allSheets) {
@@ -3440,7 +5933,7 @@ class TaskViewerProvider {
                 if (!found && termInfo) {
                     for (const t of activeTerminals) {
                         try {
-                            const tPid = await this._waitWithTimeout(t.processId, 1000, undefined);
+                            const tPid = await this._waitWithTimeout(t.processId, 5000, undefined);
                             if (tPid === termInfo.pid || tPid === termInfo.childPid) {
                                 found = t;
                                 break;
@@ -3462,10 +5955,9 @@ class TaskViewerProvider {
         }
     }
     async _executeRemote(terminalName, command) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         // F-04 SECURITY: Validate agent name before using as path segment
         if (!this._isValidAgentName(terminalName)) {
             console.error(`[TaskViewerProvider] Rejected invalid agent name for inbox write: ${terminalName}`);
@@ -3567,7 +6059,7 @@ class TaskViewerProvider {
         // 1. Gather PIDs
         const terminalData = [];
         for (const terminal of openTerminals) {
-            const pid = await this._waitWithTimeout(terminal.processId, 1000, undefined);
+            const pid = await this._waitWithTimeout(terminal.processId, 5000, undefined);
             terminalData.push({ terminal, pid });
         }
         await this.updateState(async (state) => {
@@ -3591,6 +6083,33 @@ class TaskViewerProvider {
                     // Update existing entry
                     state.terminals[existingName].lastSeen = new Date().toISOString();
                     state.terminals[existingName].friendlyName = rawName;
+                    if (state.terminals[existingName].role === 'none') {
+                        const lowerName = rawName.toLowerCase();
+                        let autoRole = 'none';
+                        const startupCommands = await this.getStartupCommands();
+                        for (const [role, cmd] of Object.entries(startupCommands)) {
+                            if (cmd) {
+                                const cmdBase = cmd.toLowerCase().trim().split(' ')[0];
+                                if (cmdBase && lowerName.includes(cmdBase)) {
+                                    autoRole = role;
+                                    break;
+                                }
+                            }
+                        }
+                        if (autoRole === 'none') {
+                            if (lowerName.includes('lead'))
+                                autoRole = 'lead';
+                            else if (lowerName.includes('reviewer'))
+                                autoRole = 'reviewer';
+                            else if (lowerName.includes('planner'))
+                                autoRole = 'planner';
+                            else if (lowerName.includes('coder'))
+                                autoRole = 'coder';
+                            else if (lowerName.includes('analyst'))
+                                autoRole = 'analyst';
+                        }
+                        state.terminals[existingName].role = autoRole;
+                    }
                     if (this._registeredTerminals) {
                         this._registeredTerminals.set(existingName, terminal);
                     }
@@ -3606,16 +6125,25 @@ class TaskViewerProvider {
                 // Auto-detect role from name
                 const lowerName = rawName.toLowerCase();
                 let autoRole = 'none';
-                if (lowerName.includes('coder'))
-                    autoRole = 'coder';
-                else if (lowerName.includes('reviewer'))
-                    autoRole = 'reviewer';
-                else if (lowerName.includes('planner'))
-                    autoRole = 'planner';
-                else if (lowerName.includes('lead'))
-                    autoRole = 'lead';
-                else if (lowerName.includes('analyst'))
-                    autoRole = 'analyst';
+                const startupCommands = await this.getStartupCommands();
+                for (const [role, cmd] of Object.entries(startupCommands)) {
+                    if (cmd && lowerName.includes(cmd.toLowerCase().trim())) {
+                        autoRole = role;
+                        break;
+                    }
+                }
+                if (autoRole === 'none') {
+                    if (lowerName.includes('coder'))
+                        autoRole = 'coder';
+                    else if (lowerName.includes('reviewer'))
+                        autoRole = 'reviewer';
+                    else if (lowerName.includes('planner'))
+                        autoRole = 'planner';
+                    else if (lowerName.includes('lead'))
+                        autoRole = 'lead';
+                    else if (lowerName.includes('analyst'))
+                        autoRole = 'analyst';
+                }
                 // Register new
                 state.terminals[uniqueName] = {
                     purpose: 'user-registered',
@@ -3648,6 +6176,7 @@ class TaskViewerProvider {
     async handleTerminalClosed(terminal) {
         try {
             const pid = await this._waitWithTimeout(terminal.processId, 1000, undefined);
+            let cleanedTerminalName;
             await this.updateState(async (state) => {
                 const terminals = state.terminals || {};
                 let terminalName;
@@ -3667,9 +6196,11 @@ class TaskViewerProvider {
                 }
                 if (terminalName) {
                     delete state.terminals[terminalName];
+                    cleanedTerminalName = terminalName;
                     console.log(`[TaskViewerProvider] Auto-cleaned state for closed terminal: ${terminalName}`);
                 }
             });
+            await this._removeAutobanTerminalReferences(cleanedTerminalName || terminal.name);
             this._refreshTerminalStatuses();
         }
         catch (e) {
@@ -3786,37 +6317,6 @@ class TaskViewerProvider {
             console.error('Failed to set chat agent role:', e);
         }
     }
-    async _getAgentNameForRole(role) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
-            return undefined;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
-        const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
-        try {
-            if (!fs.existsSync(statePath))
-                return undefined;
-            const content = await fs.promises.readFile(statePath, 'utf8');
-            const state = JSON.parse(content);
-            // Check terminals first
-            if (state.terminals) {
-                for (const [name, info] of Object.entries(state.terminals)) {
-                    if (info.role === role)
-                        return name;
-                }
-            }
-            // Check chat agents
-            if (state.chatAgents) {
-                for (const [name, info] of Object.entries(state.chatAgents)) {
-                    if (info.role === role)
-                        return name;
-                }
-            }
-            return undefined;
-        }
-        catch {
-            return undefined;
-        }
-    }
     _detectPlanBandCoverage(planContent) {
         const splitMatch = planContent.match(/##\s+Task Split([\s\S]*?)(?:\n##\s+|$)/i);
         const taskSplitContent = splitMatch ? splitMatch[1] : '';
@@ -3829,6 +6329,9 @@ class TaskViewerProvider {
     }
     _isAccurateCodingEnabled() {
         return vscode.workspace.getConfiguration('switchboard').get('accurateCoding.enabled', true);
+    }
+    _isLeadInlineChallengeEnabled() {
+        return vscode.workspace.getConfiguration('switchboard').get('leadCoder.inlineChallenge', false);
     }
     _withCoderAccuracyInstruction(basePayload) {
         if (!this._isAccurateCodingEnabled()) {
@@ -3952,10 +6455,10 @@ class TaskViewerProvider {
         await (0, terminalUtils_1.sendRobustText)(terminal, payload, paced);
         return true;
     }
-    async _handleTriggerAgentAction(role, sessionId, instruction) {
-        await this._handleTriggerAgentActionInternal(role, sessionId, instruction);
+    async _handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot) {
+        return this._handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot);
     }
-    async _handleTriggerAgentActionInternal(role, sessionId, instruction) {
+    async _handleTriggerAgentActionInternal(role, sessionId, instruction, workspaceRoot) {
         const dedupeKey = `${role}::${sessionId}::${instruction || ''}`;
         const acquireDispatchLock = () => {
             if (this._recentActionDispatches.has(dedupeKey))
@@ -3971,7 +6474,6 @@ class TaskViewerProvider {
                 this._recentActionDispatches.delete(dedupeKey);
             }
         };
-        const workspaceFolders = vscode.workspace.workspaceFolders;
         if (this._recentActionDispatches.has(dedupeKey)) {
             console.log(`[TaskViewerProvider] Ignoring duplicate triggerAgentAction: ${dedupeKey}`);
             return false;
@@ -3983,24 +6485,28 @@ class TaskViewerProvider {
             role,
             sessionId,
             instruction: instruction || ''
-        }, requestId);
-        if (!workspaceFolders) {
+        }, requestId, workspaceRoot);
+        const resolvedWorkspaceRoot = workspaceRoot
+            ? this._resolveWorkspaceRoot(workspaceRoot)
+            : await this._resolveWorkspaceRootForSession(sessionId);
+        if (!resolvedWorkspaceRoot) {
             clearDispatchLock();
             return false;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         // 1. Get Plan File Path from Session
-        const sessionPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+        const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
         if (!fs.existsSync(sessionPath)) {
             clearDispatchLock();
             vscode.window.showErrorMessage(`Session file not found: ${sessionId}`);
             return false;
         }
         let planFileRelative;
+        let sessionTopic;
         try {
             const sessionContent = await fs.promises.readFile(sessionPath, 'utf8');
             const session = JSON.parse(sessionContent);
             planFileRelative = session.planFile;
+            sessionTopic = session.topic || session.planFile || 'Untitled';
             if (!planFileRelative) {
                 clearDispatchLock();
                 vscode.window.showErrorMessage('No plan file associated with this session.');
@@ -4012,7 +6518,7 @@ class TaskViewerProvider {
             vscode.window.showErrorMessage(`Failed to read session file: ${e}`);
             return false;
         }
-        const planFileAbsolute = path.resolve(workspaceRoot, planFileRelative);
+        const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, planFileRelative);
         // Safety invariant: jules_monitor is monitor-only and cannot receive execute dispatches.
         if (role === 'jules_monitor') {
             clearDispatchLock();
@@ -4021,15 +6527,16 @@ class TaskViewerProvider {
             return false;
         }
         if (role === 'jules') {
-            const pushGuard = await this._isPlanFilePushedToRemote(workspaceRoot, planFileAbsolute);
+            const pushGuard = await this._isPlanFilePushedToRemote(resolvedWorkspaceRoot, planFileAbsolute);
             if (!pushGuard.ok) {
                 clearDispatchLock();
                 vscode.window.showWarningMessage(pushGuard.message);
                 this._view?.webview.postMessage({ type: 'actionTriggered', role: 'jules', success: false });
                 return false;
             }
-            await this._updateSessionRunSheet(sessionId, 'jules');
-            await this._startJulesRemoteSession(workspaceRoot, planFileAbsolute, sessionId);
+            await this._updateSessionRunSheet(sessionId, 'jules', undefined, false, resolvedWorkspaceRoot);
+            await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole('jules'));
+            await this._startJulesRemoteSession(resolvedWorkspaceRoot, planFileAbsolute, sessionId);
             return true;
         }
         // 2. Resolve Target Agent(s)
@@ -4037,10 +6544,10 @@ class TaskViewerProvider {
             try {
                 const planContent = await fs.promises.readFile(planFileAbsolute, 'utf8');
                 const { hasBandA, hasBandB } = this._detectPlanBandCoverage(planContent);
-                const leadAgent = await this._getAgentNameForRole('lead');
-                const coderAgent = await this._getAgentNameForRole('coder');
+                const leadAgent = await this._getAgentNameForRole('lead', resolvedWorkspaceRoot);
+                const coderAgent = await this._getAgentNameForRole('coder', resolvedWorkspaceRoot);
                 const dispatches = [];
-                const focusDirective = `FOCUS DIRECTIVE: You are working on the file at ${planFileAbsolute}. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing. Treat the provided path as the single source of truth.`;
+                const teamPlan = { topic: sessionTopic, absolutePath: planFileAbsolute };
                 if (!hasBandA && !hasBandB) {
                     if (!leadAgent) {
                         vscode.window.showErrorMessage("No agent assigned to role 'lead'. Please assign a terminal first.");
@@ -4051,11 +6558,7 @@ class TaskViewerProvider {
                     dispatches.push({
                         role: 'lead',
                         agent: leadAgent,
-                        payload: `Please execute the plan.
-
-Additional Instructions: only do band b work.
-
-${focusDirective}`,
+                        payload: (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('lead', [teamPlan]) + `\n\nAdditional Instructions: only do band b work.`,
                         metadata: { phase_gate: { enforce_persona: 'lead' } }
                     });
                 }
@@ -4064,11 +6567,7 @@ ${focusDirective}`,
                         dispatches.push({
                             role: 'lead',
                             agent: leadAgent,
-                            payload: `Please execute Band B work from the plan.
-
-Additional Instructions: only do band b work.
-
-${focusDirective}`,
+                            payload: (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('lead', [teamPlan]) + `\n\nAdditional Instructions: only do band b work.`,
                             metadata: { phase_gate: { enforce_persona: 'lead' } }
                         });
                     }
@@ -4076,11 +6575,9 @@ ${focusDirective}`,
                         dispatches.push({
                             role: 'coder',
                             agent: coderAgent,
-                            payload: this._withCoderAccuracyInstruction(`Please execute Band A work from the plan.
-
-Additional Instructions: only do band a.
-
-${focusDirective}`),
+                            payload: (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('coder', [teamPlan], {
+                                accurateCodingEnabled: this._isAccurateCodingEnabled()
+                            }) + `\n\nAdditional Instructions: only do band a.`,
                             metadata: {}
                         });
                     }
@@ -4091,14 +6588,18 @@ ${focusDirective}`),
                     clearDispatchLock();
                     return false;
                 }
-                await this._updateSessionRunSheet(sessionId, 'handoff');
                 for (let i = 0; i < dispatches.length; i++) {
                     const dispatch = dispatches[i];
-                    await this._dispatchExecuteMessage(workspaceRoot, dispatch.agent, dispatch.payload, dispatch.metadata);
+                    await this._dispatchExecuteMessage(resolvedWorkspaceRoot, dispatch.agent, dispatch.payload, dispatch.metadata);
                     if (i === 0) {
                         vscode.commands.executeCommand('switchboard.focusTerminalByName', dispatch.agent);
                     }
                 }
+                // Dispatch succeeded — now update runsheet
+                const dispatchedRoles = dispatches.map(dispatch => dispatch.role);
+                const workflowName = dispatchedRoles.includes('lead') ? 'handoff-lead' : 'handoff';
+                await this._updateSessionRunSheet(sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
+                await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._codedColumnForDispatchRoles(dispatchedRoles));
                 const summary = dispatches.map(d => `${d.role} (${d.agent})`).join(', ');
                 vscode.window.showInformationMessage(`Team coding started: ${summary}`);
                 this._view?.webview.postMessage({ type: 'actionTriggered', role: 'team', success: true });
@@ -4124,7 +6625,7 @@ ${focusDirective}`),
             }
         }
         let targetAgent;
-        targetAgent = await this._getAgentNameForRole(role);
+        targetAgent = await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
         if (!targetAgent) {
             clearDispatchLock();
             vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Please assign a terminal first.`);
@@ -4139,7 +6640,7 @@ ${focusDirective}`),
         // Focus the terminal for immediate feedback
         vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
         // 3. Construct Payload & Side Effects
-        const inboxDir = path.join(workspaceRoot, '.switchboard', 'inbox', targetAgent);
+        const inboxDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'inbox', targetAgent);
         if (!fs.existsSync(inboxDir)) {
             fs.mkdirSync(inboxDir, { recursive: true });
         }
@@ -4148,197 +6649,61 @@ ${focusDirective}`),
         const teamStrictPrompts = vscode.workspace.getConfiguration('switchboard').get('team.strictPrompts');
         const strictPlannerPrompts = teamStrictPrompts ?? vscode.workspace.getConfiguration('switchboard').get('planner.strictPrompts', false);
         const strictReviewPrompts = teamStrictPrompts ?? vscode.workspace.getConfiguration('switchboard').get('review.strictPrompts', false);
-        const focusDirective = `FOCUS DIRECTIVE: Use the Plan File path above as the single source of truth. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
-        const planAnchor = `Plan File: ${planFileAbsolute}`;
-        const grumpyReviewPath = `.switchboard/reviews/grumpy_critique_${sessionId}.md`;
-        const balancedReviewPath = `.switchboard/reviews/balanced_review_${sessionId}.md`;
-        const reviewerFindingsPath = `.switchboard/reviews/grumpy_findings_${sessionId}.md`;
-        const reviewerSynthesisPath = `.switchboard/reviews/balanced_synthesis_${sessionId}.md`;
+        const { baseInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
+        const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
+        const customAgent = (0, agentConfig_1.findCustomAgentByRole)(customAgents, role);
+        // Canonical plan object for shared builder
+        const dispatchPlan = { topic: sessionTopic, absolutePath: planFileAbsolute };
         if (role === 'planner') {
-            if (instruction === 'enhance') {
-                if (strictPlannerPrompts) {
-                    messagePayload = `Please enhance this plan. Break it down into distinct steps grouped by high complexity and low complexity. Add extra detail.
-Do not add net-new product requirements or scope.
-You may add clarifying implementation detail only if strictly implied by existing requirements; label it as "Clarification", not a new requirement.
-
-${planAnchor}
-
-Use the explicit two-stage review process:
-  Stage 1 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
-  Stage 2 — Write a balanced synthesis to ${balancedReviewPath}
-
-Delivery requirement (chat-first UX):
-1. Post Stage 1 (Grumpy) findings directly in chat.
-2. Post Stage 2 (Balanced) synthesis directly in chat.
-3. Only then provide the final enhancement assessment in chat.
-4. Keep file outputs as archival artifacts, not the primary user-facing output.
-
-IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the enhancement findings.
-
-${focusDirective}`;
-                }
-                else {
-                    messagePayload = `Please enhance this plan. Break it down into distinct steps grouped by high complexity and low complexity. Add extra detail.
-Do not add net-new product requirements or scope.
-You may add clarifying implementation detail only if strictly implied by existing requirements; label it as "Clarification", not a new requirement.
-
-${planAnchor}
-
-Light mode rules:
-1. Do NOT write plan/review artifact files for this pass.
-2. Stage 1 (Grumpy): post adversarial critique directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-3. Stage 2 (Balanced): post synthesis directly in chat.
-4. Then update the original plan with the enhancement findings and provide the final assessment in chat.
-
-${focusDirective}`;
-                }
+            const plannerInstruction = (baseInstruction === 'improve-plan' || baseInstruction === 'enhance') ? baseInstruction : undefined;
+            messagePayload = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('planner', [dispatchPlan], { instruction: plannerInstruction });
+            // Append dispatch-specific strict/light mode delivery extensions
+            const grumpyReviewPath = `.switchboard/reviews/grumpy_critique_${sessionId}.md`;
+            const balancedReviewPath = `.switchboard/reviews/balanced_review_${sessionId}.md`;
+            if (strictPlannerPrompts) {
+                messagePayload += `\n\nDispatch delivery (strict mode — COMPLETE ALL IN A SINGLE RESPONSE):
+- Write adversarial critique to ${grumpyReviewPath}
+- Write balanced synthesis to ${balancedReviewPath}
+- Post both in chat first, then update the original plan. Keep file outputs as archival artifacts.`;
             }
             else {
-                const contextLine = instruction ? `
-Context: ${instruction}` : '';
-                if (strictPlannerPrompts) {
-                    messagePayload = `Please review this plan.${contextLine}
-
-${planAnchor}
-
-Use the explicit two-stage review process:
-  Stage 1 — Write an adversarial critique to ${grumpyReviewPath} (dramatic "Grumpy Principal Engineer" voice: incisive, specific, and theatrical, not polite)
-  Stage 2 — Write a balanced synthesis to ${balancedReviewPath}
-
-Delivery requirement (chat-first UX):
-1. Post Stage 1 (Grumpy) findings directly in chat.
-2. Post Stage 2 (Balanced) synthesis directly in chat.
-3. Only then provide the final plan assessment in chat.
-4. Keep file outputs as archival artifacts, not the primary user-facing output.
-
-IMPORTANT: Once the balanced review is complete, you MUST update the original feature plan with the review feedback. This is a mandatory orchestration step, not an implementation fix. Also, ensure you edit the plan to mark items that have been completed (e.g., changing \`[ ]\` to \`[x]\`).
-
-${focusDirective}`;
-                }
-                else {
-                    messagePayload = `Please review this plan.${contextLine}
-
-${planAnchor}
-
-Light mode rules:
-1. Do NOT write plan/review artifact files for this pass.
-2. Stage 1 (Grumpy): post adversarial critique directly in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-3. Stage 2 (Balanced): post synthesis directly in chat.
-4. Then update the original plan with review feedback and completed items, and provide the final assessment in chat.
-
-${focusDirective}`;
-                }
+                messagePayload += `\n\nDispatch delivery (light mode — COMPLETE ALL IN A SINGLE RESPONSE):
+- Do NOT write plan/review artifact files for this pass.
+- Post adversarial critique and balanced synthesis directly in chat, then update the original plan.`;
             }
         }
         else if (role === 'reviewer') {
+            messagePayload = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('reviewer', [dispatchPlan]);
             messageMetadata.phase_gate = {
                 enforce_persona: 'reviewer',
                 review_mode: strictReviewPrompts ? 'direct_execute_strict' : 'direct_execute_light',
                 bypass_workflow_triggers: 'true'
             };
+            // Append dispatch-specific strict/light mode delivery extensions
+            const reviewerFindingsPath = `.switchboard/reviews/grumpy_findings_${sessionId}.md`;
+            const reviewerSynthesisPath = `.switchboard/reviews/balanced_synthesis_${sessionId}.md`;
             if (strictReviewPrompts) {
-                messagePayload = `The implementation for this plan is complete. Execute a direct reviewer pass in-place.
-
-${planAnchor}
-
-Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
-- Assess actual code changes against the plan requirements, then fix valid issues in code, then verify.
-
-Use explicit two-stage analysis:
-- Stage 1 (Grumpy): adversarial findings, severity-tagged (CRITICAL/MAJOR/NIT), minimum 5 findings, delivered in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-  Output: ${reviewerFindingsPath}
-- Stage 2 (Balanced): synthesize Stage 1 into actionable fixes, including what to keep, what to fix now, and what can defer.
-  Output: ${reviewerSynthesisPath}
-
-Required outputs:
-1. Write both review files above.
-2. Apply code fixes for valid findings.
-3. Run verification checks (typecheck/tests as applicable) and include results in the balanced review.
-4. Update the original plan file with what was fixed, files changed, validation results, and any remaining risks.
-
-Delivery requirement (chat-first UX):
-1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.
-2. Post Stage 2 (Balanced) synthesis directly in chat before final verdict.
-3. Then provide final assessment.
-4. Keep file outputs as archival artifacts, not the primary user-facing output.
-
-Strict format for balanced review:
-- Implemented Well
-- Issues Found
-- Fixes Applied
-- Validation Results
-- Remaining Risks
-- Final Verdict: Ready / Not Ready
-  - Use "Not Ready" only when there are unresolved code defects or unmet plan requirements.
-  - Do NOT use "Not Ready" solely because tests/checks were blocked by environment/tooling constraints; report those blockers under "Validation Results" and "Remaining Risks".
-
-${focusDirective}`;
+                messagePayload += `\n\nDispatch delivery (strict mode — COMPLETE ALL IN A SINGLE RESPONSE):
+- Write Stage 1 findings to ${reviewerFindingsPath}
+- Write Stage 2 synthesis to ${reviewerSynthesisPath}
+- Post both in chat first, then apply fixes and update the plan. Keep file outputs as archival artifacts.
+- Strict format: Implemented Well / Issues Found / Fixes Applied / Validation Results / Remaining Risks / Final Verdict (Ready/Not Ready).
+- Use "Not Ready" only for unresolved code defects or unmet plan requirements, not for environment/tooling constraints.`;
             }
             else {
-                messagePayload = `The implementation for this plan is complete. Execute a direct reviewer pass in-place.
-
-${planAnchor}
-
-Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
-- Assess actual code changes against the plan requirements, fix valid material issues, then verify.
-
-Use explicit two-stage analysis:
-- Stage 1 (Grumpy): adversarial findings, severity-tagged (CRITICAL/MAJOR/NIT), posted in chat in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
-- Stage 2 (Balanced): concise action summary (fix now vs defer), posted in chat.
-
-Required outputs:
-1. Do NOT write plan/review artifact files in light mode.
-2. Apply code fixes for valid CRITICAL/MAJOR findings.
-3. Run focused verification checks (typecheck/tests as applicable) and include results in the balanced review.
-4. Update the original plan file with fixed items, files changed, validation results, and remaining risks.
-
-Delivery requirement (chat-first UX):
-1. Post Stage 1 (Grumpy) findings directly in chat before final verdict.
-2. Post Stage 2 (Balanced) synthesis directly in chat before final verdict.
-3. Then provide final assessment.
-4. Keep file outputs as archival artifacts, not the primary user-facing output.
-
-Suggested format for balanced review:
-- Implemented Well
-- Issues Found
-- Fixes Applied
-- Validation Results
-- Remaining Risks
-- Final Verdict: Ready / Not Ready
-  - Use "Not Ready" only when there are unresolved code defects or unmet plan requirements.
-  - Do NOT use "Not Ready" solely because tests/checks were blocked by environment/tooling constraints; report those blockers under "Validation Results" and "Remaining Risks".
-
-${focusDirective}`;
+                messagePayload += `\n\nDispatch delivery (light mode — COMPLETE ALL IN A SINGLE RESPONSE):
+- Do NOT write plan/review artifact files in light mode.
+- Post findings and synthesis directly in chat, then apply fixes and update the plan.
+- Suggested format: Implemented Well / Issues Found / Fixes Applied / Validation Results / Remaining Risks / Final Verdict (Ready/Not Ready).
+- Use "Not Ready" only for unresolved code defects or unmet plan requirements, not for environment/tooling constraints.`;
             }
         }
         else if (role === 'lead') {
-            messagePayload = `Please execute the plan.
-
-${planAnchor}
-
-${focusDirective}`;
+            messagePayload = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('lead', [dispatchPlan], { includeInlineChallenge });
             messageMetadata.phase_gate = { enforce_persona: 'lead' };
         }
         else if (role === 'coder') {
-            if (instruction === 'implement-all') {
-                messagePayload = this._withCoderAccuracyInstruction(`Please execute the ENTIRE plan. Do not stop for confirmation between steps.
-
-${planAnchor}
-
-${focusDirective}`);
-            }
-            else if (instruction === 'low-complexity') {
-                messagePayload = this._withCoderAccuracyInstruction(`Please execute the low complexity steps of the plan.
-
-${planAnchor}
-
-${focusDirective}`);
-            }
-            else if (instruction === 'create-signal-file') {
+            if (baseInstruction === 'create-signal-file') {
                 messagePayload = this._withCoderAccuracyInstruction(`The first implementation phase has passed. As your next step, create a signal file to notify the Reviewer:
 
 Signal file path: .switchboard/inbox/Reviewer/${sessionId}.md
@@ -4347,11 +6712,17 @@ File content: Plan: ${planFileAbsolute}
 Create this file exactly as specified, then continue your work.`);
             }
             else {
-                messagePayload = this._withCoderAccuracyInstruction(`Please execute the plan.
-
-${planAnchor}
-
-${focusDirective}`);
+                messagePayload = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('coder', [dispatchPlan], {
+                    instruction: baseInstruction,
+                    includeInlineChallenge,
+                    accurateCodingEnabled: this._isAccurateCodingEnabled()
+                });
+            }
+        }
+        else if (customAgent) {
+            messagePayload = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)(role, [dispatchPlan]);
+            if (customAgent.promptInstructions) {
+                messagePayload += `\n\nAdditional Instructions: ${customAgent.promptInstructions}`;
             }
         }
         else {
@@ -4361,8 +6732,14 @@ ${focusDirective}`);
         }
         // 3a. Update Run Sheet (Treat tool call as workflow start)
         let workflowName;
-        if (role === 'planner' && instruction === 'enhance') {
-            workflowName = 'Enhanced plan';
+        const plannerWorkflowName = role === 'planner'
+            ? this._plannerWorkflowNameForInstruction(instruction)
+            : undefined;
+        if (plannerWorkflowName) {
+            workflowName = plannerWorkflowName;
+        }
+        else if (customAgent) {
+            workflowName = `custom-agent:${role}`;
         }
         else {
             const workflowMap = {
@@ -4374,12 +6751,15 @@ ${focusDirective}`);
             };
             workflowName = workflowMap[role];
         }
-        if (workflowName) {
-            await this._updateSessionRunSheet(sessionId, workflowName);
-        }
-        // 4. Send Message (Write to Inbox)
+        // 4. Send Message (Write to Inbox) — dispatch FIRST, then update runsheet on success.
+        // This prevents cards from advancing in the kanban when the terminal dispatch fails.
         try {
-            await this._dispatchExecuteMessage(workspaceRoot, targetAgent, messagePayload, messageMetadata);
+            await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, messagePayload, messageMetadata);
+            // Dispatch succeeded — now update runsheet
+            if (workflowName) {
+                await this._updateSessionRunSheet(sessionId, workflowName, undefined, false, resolvedWorkspaceRoot);
+            }
+            await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, this._targetColumnForRole(role));
             this._view?.webview.postMessage({ type: 'actionTriggered', role, success: true });
             await this._logEvent('dispatch', {
                 event: 'dispatch_sent',
@@ -4505,30 +6885,37 @@ ${focusDirective}`);
             return false;
         }
     }
-    async _handleGenerateContextMap(featureDescription) {
-        const description = (featureDescription || '').trim();
-        if (!description) {
-            this._view?.webview.postMessage({ type: 'actionTriggered', role: 'analystMap', success: false });
-            return;
+    async _handleAnalystMapForPlan(planFilePath, planContent) {
+        const content = (planContent || '').trim();
+        if (!content) {
+            return false;
         }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = workspaceFolders?.[0]?.uri.fsPath || '';
-        const outputDir = path.join(workspaceRoot, '.switchboard', 'context-maps');
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19);
-        const outputPath = path.join(outputDir, `context-map_${timestamp}.md`);
         const prompt = [
-            '## Context Map Generation Request',
+            '## Context Map Enhancement Request',
             '',
-            `**Feature Area:** ${description}`,
+            '**Instructions:**',
+            '1. Read the plan content below carefully',
+            '2. If a "## Context Map" section already exists, enhance it',
+            '3. If no context map exists, append a new section at the end',
+            '4. DO NOT modify, delete, or rewrite any existing sections',
+            '5. Preserve all existing content exactly as-is',
             '',
-            'Follow the Context Map Generation Protocol from your persona instructions:',
-            `1. Analyze the feature area described above.`,
-            `2. Identify core files, logic flow, key dependencies, and open questions.`,
-            `3. Write the context map as a markdown file to: ${outputPath}`,
-            `4. After writing the file, call handoff_clipboard(file: "${outputPath}", copyPathOnly: true) to copy the path to clipboard.`,
-            `5. Report completion status.`,
+            `**Plan File:** ${planFilePath}`,
+            '',
+            '**Required Context Map Contents:**',
+            '- Core files with absolute paths and line numbers',
+            '- Key functions/classes and their purposes',
+            '- Logic flow and dependencies',
+            '- Integration points and data flow',
+            '',
+            '**Existing Plan Content:**',
+            '```',
+            content,
+            '```',
+            '',
+            '**Action:** Append or enhance the "## Context Map" section only. Do not modify any other part of the plan.',
         ].join('\n');
-        await this._handleSendAnalystMessage(prompt, 'analystMap');
+        return this._handleSendAnalystMessage(prompt, 'analystMap');
     }
     _toPlanSlug(value) {
         const cleaned = value
@@ -4541,16 +6928,76 @@ ${focusDirective}`);
         const pad = (n) => String(n).padStart(2, '0');
         return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
     }
-    _buildInitiatedPlanPrompt(planPath) {
-        const focusDirective = `FOCUS DIRECTIVE: You are working on the file at ${planPath}. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing. Treat the provided path as the single source of truth.`;
-        return `@[/enhance] Please review and expand the initial plan.\n\n${focusDirective}`;
+    _buildDraftPlanContent(title) {
+        return [
+            `# ${title}`,
+            '',
+            '## Goal',
+            '- TODO',
+            '',
+            '## Proposed Changes',
+            '- TODO',
+            '',
+            '## Verification Plan',
+            '- TODO',
+            '',
+            '## Open Questions',
+            '- TODO',
+            ''
+        ].join('\n');
     }
-    async _createInitiatedPlan(title, idea) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+    async _openPlanInReviewPanel(sessionId, planFileAbsolute, topic) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        await vscode.commands.executeCommand('switchboard.reviewPlan', {
+            sessionId,
+            planFileAbsolute,
+            topic,
+            workspaceRoot: workspaceRoot || undefined,
+            initialMode: 'edit'
+        });
+    }
+    async createDraftPlanTicket() {
+        const title = 'Untitled Plan';
+        const idea = this._buildDraftPlanContent(title);
+        try {
+            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(title, idea, false);
+            await this._openPlanInReviewPanel(sessionId, planFileAbsolute, title);
+        }
+        catch (err) {
+            const msg = err?.message || String(err);
+            vscode.window.showErrorMessage(`Plan creation failed: ${msg}`);
+        }
+    }
+    async importPlanFromClipboard() {
+        const text = await vscode.env.clipboard.readText();
+        if (!text || !text.trim()) {
+            vscode.window.showWarningMessage('Clipboard is empty. Copy a Markdown plan first.');
+            return;
+        }
+        if (text.length > 200_000) {
+            vscode.window.showWarningMessage('Clipboard content is too large (>200 KB). Aborting import.');
+            return;
+        }
+        const h1Match = text.match(/^#\s+(.+)$/m);
+        const title = h1Match ? h1Match[1].trim() : 'Imported Plan';
+        if (!h1Match) {
+            vscode.window.showWarningMessage('No "# Title" found in clipboard. Importing with default title.');
+        }
+        try {
+            const { sessionId } = await this._createInitiatedPlan(title, text, false);
+            await this._refreshRunSheets();
+            vscode.window.showInformationMessage(`Imported plan: ${title}`);
+        }
+        catch (err) {
+            const msg = err?.message || String(err);
+            vscode.window.showErrorMessage(`Clipboard import failed: ${msg}`);
+        }
+    }
+    async _createInitiatedPlan(title, idea, isAirlock) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             throw new Error('No workspace folder found.');
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const plansDir = path.join(workspaceRoot, '.switchboard', 'plans');
         const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         fs.mkdirSync(plansDir, { recursive: true });
@@ -4565,9 +7012,10 @@ ${focusDirective}`);
         this._pendingPlanCreations.add(stablePlanPath);
         try {
             const isFullPlan = idea.includes('## Proposed Changes') || idea.includes('## Goal');
+            const headerText = isAirlock ? '## Notebook Plan\n\n' : '';
             const content = isFullPlan
                 ? idea
-                : `# ${title}\n\n## Notebook Plan\n\n${idea}\n\n## Goal\n- Clarify expected outcome and scope.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
+                : `# ${title}\n\n${headerText}${idea}\n\n## Goal\n- Clarify expected outcome and scope.\n\n## Proposed Changes\n- TODO\n\n## Verification Plan\n- TODO\n\n## Open Questions\n- TODO\n`;
             await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
             const sessionId = `sess_${Date.now()}`;
             const runSheetPath = path.join(sessionsDir, `${sessionId}.json`);
@@ -4635,41 +7083,6 @@ ${focusDirective}`);
         await fs.promises.copyFile(planFileAbsolute, destPath);
         console.log(`[TaskViewerProvider] Auto-promoted plan to brain: ${fileName}`);
     }
-    async _handleInitiatePlan(title, idea, mode) {
-        const trimmedTitle = title.trim();
-        const trimmedIdea = idea.trim();
-        if (!trimmedTitle || !trimmedIdea) {
-            vscode.window.showWarningMessage('Plan title and feature idea/bug are required.');
-            return;
-        }
-        try {
-            const { sessionId, planFileAbsolute } = await this._createInitiatedPlan(trimmedTitle, trimmedIdea);
-            if (mode === 'local') {
-                this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                vscode.window.showInformationMessage('Airlock: Plan saved.');
-                return;
-            }
-            if (mode === 'review') {
-                this._view?.webview.postMessage({ type: 'airlock_planSaved' });
-                await this._handleTriggerAgentAction('planner', sessionId, 'enhance');
-                return;
-            }
-            if (mode === 'send') {
-                await this._handleTriggerAgentAction('planner', sessionId, 'enhance');
-                return;
-            }
-            const prompt = this._buildInitiatedPlanPrompt(planFileAbsolute);
-            await vscode.env.clipboard.writeText(prompt);
-            vscode.window.showInformationMessage('Plan created and prompt copied to clipboard.');
-        }
-        catch (err) {
-            const msg = err?.message || String(err);
-            if (mode === 'local' || mode === 'review') {
-                this._view?.webview.postMessage({ type: 'airlock_planError', message: msg });
-            }
-            vscode.window.showErrorMessage(`Plan creation failed: ${msg}`);
-        }
-    }
     // --- Persona Injection System ---
     static ROLE_TO_PERSONA_FILE = {
         'lead': 'lead.md',
@@ -4684,10 +7097,9 @@ ${focusDirective}`);
         'execution': 'task_runner.md' // Backwards compatibility
     };
     async _getRoleForAgent(agentName) {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return undefined;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
         try {
             if (!fs.existsSync(statePath))
@@ -4706,10 +7118,9 @@ ${focusDirective}`);
         const personaFile = TaskViewerProvider.ROLE_TO_PERSONA_FILE[role];
         if (!personaFile)
             return undefined;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return undefined;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const personaPath = path.join(workspaceRoot, '.agent', 'personas', 'roles', personaFile);
         try {
             if (!fs.existsSync(personaPath))
@@ -4764,32 +7175,6 @@ ${focusDirective}`);
         }
     }
     /**
-     * Sidebar onboarding: batch-save CLI agent commands from the onboarding form.
-     */
-    async _handleSaveCliAgents(agents) {
-        try {
-            const config = vscode.workspace.getConfiguration('switchboard');
-            const sanitized = {};
-            const basicCommandPattern = /^[A-Za-z0-9._:/\\\- ]+$/;
-            for (const [role, cmd] of Object.entries(agents)) {
-                const trimmed = (cmd || '').trim();
-                if (!trimmed)
-                    continue;
-                if (!basicCommandPattern.test(trimmed) || /(^|[\\/])\.\.([\\/]|$)/.test(trimmed) || /[\r\n\t]/.test(trimmed)) {
-                    this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'error', message: `Invalid command for ${role}` });
-                    return;
-                }
-                sanitized[role] = trimmed;
-            }
-            await config.update('cliAgents', sanitized, vscode.ConfigurationTarget.Workspace);
-            this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
-        }
-        catch (e) {
-            console.error('[TaskViewerProvider] saveCliAgents failed:', e);
-            this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'error', message: String(e) });
-        }
-    }
-    /**
      * Sidebar onboarding: re-check setup status and switch to normal UI.
      */
     async _handleFinishOnboarding() {
@@ -4820,10 +7205,11 @@ ${focusDirective}`);
         });
     }
     async _refreshSessionStatus() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || !this._view)
+        if (!this._view)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
+            return;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
         try {
             if (fs.existsSync(statePath)) {
@@ -4901,10 +7287,9 @@ ${focusDirective}`);
             return;
         this._isRefreshingJules = true;
         try {
-            const workspaceFolders = vscode.workspace.workspaceFolders;
-            if (!workspaceFolders)
+            const workspaceRoot = this._resolveWorkspaceRoot();
+            if (!workspaceRoot)
                 return;
-            const workspaceRoot = workspaceFolders[0].uri.fsPath;
             const tracked = await this._getTrackedJulesSessions();
             let listedSessions = [];
             let degradedMode = false;
@@ -5219,10 +7604,9 @@ ${focusDirective}`);
         }));
     }
     async _getTrackedJulesSessions() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders)
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
             return [];
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
         if (!fs.existsSync(statePath))
             return [];
@@ -5539,16 +7923,18 @@ ${focusDirective}`);
         }
     }
     async _refreshTerminalStatuses() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || !this._view)
+        if (!this._view)
             return;
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot)
+            return;
         const statePath = path.join(workspaceRoot, '.switchboard', 'state.json');
         try {
             if (fs.existsSync(statePath)) {
                 const content = await fs.promises.readFile(statePath, 'utf8');
                 const state = JSON.parse(content);
                 const terminalsMap = state.terminals || {};
+                const customAgents = (0, agentConfig_1.parseCustomAgents)(state.customAgents);
                 // Build local PID + name sets for ownership detection
                 const activeTerminals = vscode.window.terminals;
                 const activeNames = new Set();
@@ -5568,6 +7954,30 @@ ${focusDirective}`);
                         }
                     }
                     catch { /* terminal may be closing */ }
+                }
+                // Re-resolve PIDs for terminals that have missing or null PIDs
+                for (const [key, termInfo] of Object.entries(terminalsMap)) {
+                    const ti = termInfo;
+                    if (!ti.pid && !ti.childPid) {
+                        const matchingTerminal = activeTerminals.find(t => t.name === key || t.name === (ti.friendlyName || key));
+                        if (matchingTerminal) {
+                            try {
+                                const resolvedPid = await this._waitWithTimeout(matchingTerminal.processId, 1000, undefined);
+                                if (resolvedPid) {
+                                    await this.updateState(async (state) => {
+                                        if (state.terminals?.[key]) {
+                                            state.terminals[key].pid = resolvedPid;
+                                            state.terminals[key].childPid = resolvedPid;
+                                        }
+                                    });
+                                    ti.pid = resolvedPid;
+                                    ti.childPid = resolvedPid;
+                                    activePids.add(resolvedPid);
+                                }
+                            }
+                            catch { /* PID resolution failed, terminal may be closing */ }
+                        }
+                    }
                 }
                 // Send ALL terminals, annotated with _isLocal
                 const enrichedTerminals = {};
@@ -5625,7 +8035,9 @@ ${focusDirective}`);
                 const leadAgent = Object.values(enrichedTerminals).find((t) => t.role === 'lead' && t.type === 'terminal');
                 const coderAgent = Object.values(enrichedTerminals).find((t) => t.role === 'coder' && t.type === 'terminal');
                 const teamReady = !!(leadAgent && leadAgent.alive && coderAgent && coderAgent.alive);
-                const dispatchReadiness = this._computeDispatchReadiness(enrichedTerminals, terminalsMap, activeTerminals);
+                const roles = ['lead', 'coder', 'reviewer', 'planner', 'analyst', ...customAgents.map(agent => agent.role)];
+                const roleCandidates = Object.fromEntries(customAgents.map(agent => [agent.role, [agent.name, agent.role]]));
+                const dispatchReadiness = this._computeDispatchReadiness(enrichedTerminals, terminalsMap, activeTerminals, roles, roleCandidates);
                 this._view.webview.postMessage({ type: 'terminalStatuses', terminals: enrichedTerminals, teamReady, dispatchReadiness });
                 // Send ALL open terminals for the dropdown, with alias/friendlyName prioritized as displayName
                 const pidAliasMap = new Map();
@@ -5643,7 +8055,7 @@ ${focusDirective}`);
                 }
                 const allOpenTerminals = await Promise.all(activeTerminals.map(async (t) => {
                     try {
-                        const pid = await this._waitWithTimeout(t.processId, 1000, undefined);
+                        const pid = await this._waitWithTimeout(t.processId, 5000, undefined);
                         const displayName = (pid && pidAliasMap.get(pid)) || nameAliasMap.get(t.name) || t.name;
                         return { name: t.name, pid: pid || null, displayName };
                     }
@@ -5715,110 +8127,13 @@ ${focusDirective}`);
             return `<html><body>Error loading HTML: ${e}</body></html>`;
         }
     }
-    _stopCoderReviewerWorkflow(sessionId, phase = 'idle') {
-        const timers = this._coderReviewerSessions.get(sessionId);
-        if (timers) {
-            timers.forEach(t => {
-                clearTimeout(t);
-                clearInterval(t);
-            });
-            this._coderReviewerSessions.delete(sessionId);
-        }
-        this._view?.webview.postMessage({ type: 'coderReviewerPhase', sessionId, phase });
-    }
-    async _handleStartCoderReviewerWorkflow(sessionId) {
-        if (this._coderReviewerSessions.has(sessionId)) {
-            vscode.window.showErrorMessage('Coder → Reviewer workflow is already running for this session.');
-            return;
-        }
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-        if (!workspaceRoot) {
-            return;
-        }
-        const timers = [];
-        this._coderReviewerSessions.set(sessionId, timers);
-        const stopWorkflow = (phase = 'idle') => this._stopCoderReviewerWorkflow(sessionId, phase);
-        const postPhase = (phase, timestamp) => this._view?.webview.postMessage({ type: 'coderReviewerPhase', sessionId, phase, timestamp });
-        // Phase 1: dispatch coder immediately
-        const coderDispatched = await this._handleTriggerAgentActionInternal('coder', sessionId);
-        if (!coderDispatched) {
-            stopWorkflow('idle');
-            return;
-        }
-        const coderDispatchTs = Date.now();
-        postPhase('coder_dispatched', coderDispatchTs);
-        const MAX_POLL_MS = 30 * 60 * 1000;
-        const FIRST_SIGNAL_DELAY_MS = 2 * 60 * 1000;
-        let workflowStartTs = 0;
-        const signalFilePath = path.join(workspaceRoot, '.switchboard', 'inbox', 'Reviewer', `${sessionId}.md`);
-        // Phase 2: after 2 minutes, send signal-file instruction then begin polling
-        const delayTimer = setTimeout(async () => {
-            if (!this._coderReviewerSessions.has(sessionId)) {
-                return;
-            }
-            try {
-                workflowStartTs = Date.now();
-                const signalPromptDispatched = await this._handleTriggerAgentActionInternal('coder', sessionId, 'create-signal-file');
-                if (!signalPromptDispatched) {
-                    stopWorkflow('idle');
-                    return;
-                }
-                postPhase('polling');
-                // Phase 3: poll every 5 seconds for the signal file
-                const pollTimer = setInterval(async () => {
-                    if (!this._coderReviewerSessions.has(sessionId)) {
-                        return;
-                    }
-                    try {
-                        if (Date.now() - workflowStartTs > MAX_POLL_MS) {
-                            stopWorkflow('timeout');
-                            vscode.window.showErrorMessage('Coder → Reviewer: Timed out waiting for signal file.');
-                            return;
-                        }
-                        if (!fs.existsSync(signalFilePath)) {
-                            return;
-                        }
-                        const stat = await fs.promises.stat(signalFilePath);
-                        if (stat.mtimeMs < workflowStartTs) {
-                            return;
-                        }
-                        clearInterval(pollTimer);
-                        postPhase('reviewer_dispatched');
-                        const reviewerDispatched = await this._handleTriggerAgentActionInternal('reviewer', sessionId);
-                        if (!reviewerDispatched) {
-                            stopWorkflow('idle');
-                            return;
-                        }
-                        try {
-                            await fs.promises.unlink(signalFilePath);
-                        }
-                        catch {
-                            // Keep workflow completion resilient if signal cleanup races.
-                        }
-                        stopWorkflow('done');
-                    }
-                    catch (error) {
-                        console.error('[TaskViewerProvider] Coder→Reviewer poller failed:', error);
-                        stopWorkflow('idle');
-                    }
-                }, 5000);
-                timers.push(pollTimer);
-            }
-            catch (error) {
-                console.error('[TaskViewerProvider] Failed to dispatch coder signal prompt:', error);
-                stopWorkflow('idle');
-            }
-        }, FIRST_SIGNAL_DELAY_MS);
-        timers.push(delayTimer);
-    }
     // ── Web AI Airlock ──────────────────────────────────────────────────
     async _handleAirlockExport() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_exportError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         try {
             // 1. Scaffold airlock directory
             const baseAirlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
@@ -5827,99 +8142,31 @@ ${focusDirective}`);
             const { outputDir: airlockDir, timestamp } = await (0, ContextBundler_1.bundleWorkspaceContext)(workspaceRoot);
             // 3. Write timestamped how_to_plan.md
             const howToPlanPath = path.join(airlockDir, `${timestamp}-how_to_plan.md`);
-            await fs.promises.writeFile(howToPlanPath, [
-                '# How to Plan',
-                '',
-                'Follow these five steps strictly and in order. Each step builds on the last.',
-                '',
-                '## 1. Context Loading',
-                `Open \`${timestamp}-manifest.md\` in this folder to get the complete workspace file listing and understand the project structure.`,
-                `Then open the relevant segmented bundle files (e.g., \`${timestamp}-bundle-part-1.docx\`) to read file contents.`,
-                'Use these as the sole source of truth for the current codebase state. Do not rely on prior knowledge.',
-                '',
-                '## 2. Strategy Formulation',
-                'Identify the high-level problem space and define the proposed approach. Cover:',
-                '- What the core problem or goal is',
-                '- Which modules or layers are affected',
-                '- The sequence of changes required at a high level',
-                '- Any assumptions being made',
-                '',
-                '## 3. Structural Enhancement (`/improve-plan`)',
-                'Audit the strategy for structural completeness:',
-                '- Identify missing pieces, implicit dependencies, or assumptions that need hardening',
-                '- Flag any cross-module impact or architectural concerns',
-                '- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks',
-                '- Expand the plan with concrete file paths, function signatures, and data flow',
-                '',
-                '## 4. Adversarial Review (`/improve-plan`)',
-                'Stress-test the plan using two personas:',
-                '- **Grumpy**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.',
-                '- **Balanced**: Synthesize the critique. Confirm which concerns are real blockers vs. noise. Finalize the plan.',
-                '',
-                '## 5. Exhaustive Implementation Spec',
-                'Produce a complete, copy-paste-ready implementation spec. You must create plans in raw markdown formatting in a single block. Use your full context window. Include:',
-                '- Exact search/replace blocks or unified diffs for every file change',
-                '- New file contents in full where applicable',
-                '- Inline comments explaining non-obvious logic',
-                '- A short verification checklist (manual steps to confirm the change works)',
-                '',
-                '---',
-                '',
-                '## Plan Template',
-                '',
-                'Use this template when producing the plan in Step 5. Fill in every section — do not omit or abbreviate.',
-                '',
-                '```markdown',
-                '# [Highly Descriptive Title: What Is Being Changed and Why]',
-                '',
-                '## Goal',
-                '',
-                '[One to two sentences describing the desired outcome and why it matters to the user or system.]',
-                '',
-                '## User Review Required',
-                '',
-                '> [!NOTE]',
-                '> [State any assumptions or decisions that need user confirmation before implementation begins.]',
-                '',
-                '> [!WARNING]',
-                '> [Call out any irreversible actions, data migrations, schema changes, or breaking API changes.]',
-                '',
-                '## Complexity Audit',
-                '',
-                '### Band A — Routine',
-                '- [List straightforward, low-risk, mechanical changes here (e.g., rename, add field, update copy).]',
-                '',
-                '### Band B — Complex / Risky',
-                '- [List changes that involve architectural decisions, cross-module coupling, concurrency, or significant risk.]',
-                '',
-                '## Edge-Case Audit',
-                '',
-                '- **Race Conditions**: [Describe any concurrency or ordering concerns (e.g., async writes, shared state).]',
-                '- **Security**: [Describe any auth gaps, injection vectors, or data exposure risks.]',
-                '- **Side Effects**: [Describe unintended state mutations, file system changes, or downstream service calls.]',
-                '',
-                '## Proposed Changes',
-                '',
-                '### [Component Name]',
-                '',
-                '#### [MODIFY] [filename.ts](path/to/filename.ts)',
-                '- [Describe each change with specifics: which function, what logic changes, new behavior vs. old.]',
-                '',
-                '#### [ADD] [filename.ts](path/to/filename.ts)',
-                '- [Describe the new file, its exported interface, and its purpose within the system.]',
-                '',
-                '## Verification Plan',
-                '',
-                '### Automated Tests',
-                '- [List test files or suites to add/update and what invariants they must assert.]',
-                '',
-                '### Manual Verification',
-                '1. [Step-by-step instructions to confirm the feature works end-to-end in the running application.]',
-                '',
-                '## Appendix: Implementation Patch',
-                '[Provide the complete generated code, unified diff, or exact file replacements needed to implement the proposed changes above in a single code block. Use `N/A` only when no code change is required.]',
-                '```',
-            ].join('\n'), 'utf8');
+            const rulePath = path.join(workspaceRoot, '.agent', 'rules', 'how_to_plan.md');
+            let howToPlanContent;
+            try {
+                howToPlanContent = await fs.promises.readFile(rulePath, 'utf8');
+            }
+            catch (e) {
+                // Fallback if the file is missing
+                howToPlanContent = '# How to Plan\n\nRefer to the project guidelines for planning.';
+            }
+            await fs.promises.writeFile(howToPlanPath, howToPlanContent, 'utf8');
+            // 4. Export list of plans in NEW column for sprint planning
+            const kanbanDb = await this._getKanbanDb(workspaceRoot);
+            if (kanbanDb) {
+                const workspaceId = await this._getOrCreateWorkspaceId(workspaceRoot);
+                if (workspaceId) {
+                    const allPlans = await kanbanDb.getBoard(workspaceId);
+                    const newColumnPlans = allPlans.filter(p => p.kanbanColumn === 'CREATED');
+                    if (newColumnPlans.length > 0) {
+                        const plansList = newColumnPlans.map((p, idx) => `${idx + 1}. **${p.topic}** (${p.complexity || 'unspecified'})\n   - Session: ${p.sessionId}\n   - Created: ${new Date(p.createdAt).toLocaleDateString()}`).join('\n\n');
+                        const plansListPath = path.join(airlockDir, `${timestamp}-new_column_plans.md`);
+                        const plansContent = `# Plans in NEW Column\n\nTotal: ${newColumnPlans.length} plans\n\n${plansList}`;
+                        await fs.promises.writeFile(plansListPath, plansContent, 'utf8');
+                    }
+                }
+            }
             this._view?.webview.postMessage({ type: 'airlock_exportComplete' });
             vscode.window.showInformationMessage('Airlock: Bundle exported → .switchboard/airlock/');
         }
@@ -5931,7 +8178,7 @@ ${focusDirective}`);
     }
     static MAX_AIRLOCK_TEXT_BYTES = 2 * 1024 * 1024; // 2MB
     async _handleKanbanWorkflowEvent(workflow, sessionId) {
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot)
             return;
         try {
@@ -5967,12 +8214,11 @@ ${focusDirective}`);
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'Text exceeds 2MB limit. Please reduce the size.' });
             return;
         }
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_coderError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         try {
             // Save the patch as a markdown file
             const airlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
@@ -6002,12 +8248,11 @@ ${focusDirective}`);
         }
     }
     async _handleAirlockSyncRepo() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             this._view?.webview.postMessage({ type: 'airlock_syncError', message: 'No workspace open' });
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri.fsPath;
         try {
             const gitExtension = vscode.extensions.getExtension('vscode.git');
             if (!gitExtension) {
@@ -6047,12 +8292,12 @@ ${focusDirective}`);
         await vscode.env.openExternal(vscode.Uri.parse('https://notebooklm.google.com/'));
     }
     async _handleAirlockOpenFolder() {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
             vscode.window.showWarningMessage('Airlock: No workspace open.');
             return;
         }
-        const airlockDir = path.join(workspaceFolders[0].uri.fsPath, '.switchboard', 'airlock');
+        const airlockDir = path.join(workspaceRoot, '.switchboard', 'airlock');
         if (!fs.existsSync(airlockDir)) {
             vscode.window.showWarningMessage('Airlock: Folder does not exist yet. Click BUNDLE CODE first.');
             return;
@@ -6064,11 +8309,11 @@ ${focusDirective}`);
         await vscode.commands.executeCommand('revealFileInOS', uri);
     }
     dispose() {
-        this._coderReviewerSessions.forEach((_, sessionId) => this._stopCoderReviewerWorkflow(sessionId));
-        this._orchestrator.dispose();
+        this._stopAutobanEngine();
         this._pipeline.dispose();
         this._stateWatcher?.dispose();
         this._planWatcher?.dispose();
+        this._sessionWatcher?.dispose();
         try {
             this._fsStateWatcher?.close();
         }
@@ -6078,6 +8323,14 @@ ${focusDirective}`);
         }
         catch { }
         try {
+            this._fsSessionWatcher?.close();
+        }
+        catch { }
+        if (this._sessionSyncTimer) {
+            clearTimeout(this._sessionSyncTimer);
+            this._sessionSyncTimer = undefined;
+        }
+        try {
             this._brainWatcher?.dispose();
         }
         catch { }
@@ -6085,6 +8338,7 @@ ${focusDirective}`);
             this._stagingWatcher?.close();
         }
         catch { }
+        this._disposeConfiguredPlanWatcher();
         this._gitCommitDisposable?.dispose();
         if (this._julesStatusPollTimer) {
             clearInterval(this._julesStatusPollTimer);

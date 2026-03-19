@@ -33,3 +33,32 @@ Instead of just adding a weak instruction to the prompt, we should take the high
 
 ## Open Questions
 - None
+
+## Reviewer Pass — 2026-03-19
+
+### Implementation Status: ✅ COMPLETE — All 3 changes implemented
+
+| Step | Status | Files |
+|------|--------|-------|
+| Step 1: Extract How To Plan guide | ✅ | `.agent/rules/how_to_plan.md` — 81-line comprehensive guide with Step 1–5 structure, Plan Template, adversarial synthesis, and exhaustive implementation spec requirements |
+| Step 2a: Update airlock export | ✅ | `src/services/TaskViewerProvider.ts` (lines 8881–8891: reads from `.agent/rules/how_to_plan.md` with graceful fallback) |
+| Step 2b: Update planner prompt | ✅ | `src/services/agentPromptBuilder.ts` (line 80: `MANDATORY: You MUST read and strictly adhere to .agent/rules/how_to_plan.md`) |
+
+### Grumpy Findings
+- **NIT:** Airlock fallback content (`TaskViewerProvider.ts:8889`) is a vague placeholder: `'# How to Plan\n\nRefer to the project guidelines for planning.'` — if the file is missing, NotebookLM gets nothing useful.
+- **NIT:** Planner prompt references `how_to_plan.md` but doesn't verify the file exists at dispatch time. If deleted after extension loads, agents get told to read a nonexistent file.
+
+### Balanced Synthesis
+All findings are NIT. No code fixes required.
+- The file is committed to the repo — deletion is a user error, not a runtime scenario.
+- The fallback only fires for airlock exports when the file is missing — edge case.
+- The `MANDATORY` directive in `agentPromptBuilder.ts` line 80 is correctly placed within the planner prompt, immediately after "Add extra detail." and before the batch execution rules.
+
+### Validation
+- `npx tsc --noEmit` — ✅ Clean (0 errors)
+- `.agent/rules/how_to_plan.md` verified present (81 lines)
+- `agentPromptBuilder.ts` planner prompt confirmed to include the MANDATORY directive
+- `TaskViewerProvider.ts` airlock export confirmed to read from `.agent/rules/how_to_plan.md`
+
+### Remaining Risks
+- None material. This is a clean Band A execution with no complex logic or state mutations.

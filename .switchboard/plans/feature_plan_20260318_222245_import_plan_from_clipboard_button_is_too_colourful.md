@@ -82,3 +82,52 @@ The recommended replacement `[⋯]` (ellipsis in brackets) matches the minimalis
 - Maintains the monospace, industrial design language of the kanban board
 
 This is a trivial cosmetic change with zero functional impact.
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer
+
+**[MAJOR]** *The plan said text, you shipped an image — without a CSS filter.* The plan explicitly recommended `[⋯]` text replacement (Option A). The implementation instead uses `<img src="${ICON_IMPORT_CLIPBOARD}" ...>` — a PNG icon (`25-101-150 Sci-Fi Flat icons-121.png`) injected via the `KanbanProvider.ts` icon map at line 1452. Here's the problem: the `btn-add-plan` CSS class (line 172) has **no `img` filter rule**. The column action buttons below use `column-icon-btn img` with a `sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9)` filter to make icons monochromatic teal. But `btn-add-plan img`? Nothing. The sci-fi flat icon pack is **colorful by design**. So you've replaced a colorful emoji with a colorful PNG. The goal was "less colorful." *You had one job.*
+
+**[NIT]** *The `+` button uses text, the import button uses an image.* Both share the `btn-add-plan` class and sit side by side in the column header. The `+` is a text character, the import is a 16x16 PNG. Visually inconsistent — one is rendered by the font engine, the other by the image renderer. Different anti-aliasing, different sizing behavior, different weight. Not catastrophic, but the plan's `[⋯]` recommendation would have maintained text-text consistency.
+
+**Verdict**: One MAJOR (icon may render in full color without a CSS filter, potentially not solving the original "too colourful" complaint), one NIT (text/image inconsistency in header). The functional import behavior is unaffected.
+
+### Stage 2: Balanced Synthesis
+
+- **Keep**: The `ICON_IMPORT_CLIPBOARD` template variable injection in `KanbanProvider.ts` line 1452 — it's a clean pattern consistent with other icons.
+- **Fix now**: Add a CSS filter rule for `.btn-add-plan img` to make the icon monochromatic teal, matching the column-icon-btn treatment. This is a one-line CSS addition that ensures the icon blends with the kanban aesthetic regardless of the source PNG's colors.
+- **Defer**: Consider whether to revert to the plan's text-based `[⋯]` approach in a future iteration for perfect consistency with the `+` button. The CSS filter fix is sufficient for now.
+
+### Code Fixes Applied
+Added CSS filter rule for `.btn-add-plan img` to ensure the import clipboard icon renders in monochromatic teal, matching the overall kanban aesthetic. This addresses the MAJOR finding that the PNG icon could render in its original colors.
+
+**Fix applied** in `src/webview/kanban.html` (after line 194):
+```css
+.btn-add-plan img {
+    filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9);
+    transition: filter 0.15s;
+}
+
+.btn-add-plan:hover img {
+    filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.2);
+}
+```
+
+This reuses the exact same filter chain from `.column-icon-btn img` (lines 561-566), ensuring visual consistency across all icon buttons in the kanban board.
+
+### Verification Results
+- **TypeScript compile**: `npx tsc --noEmit` → **PASS** (exit code 0, zero errors) — both before and after CSS fix
+- **CSS filter**: `.btn-add-plan img` now applies `sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9)` — identical to `.column-icon-btn img` ✓
+- **Hover state**: `.btn-add-plan:hover img` brightens to `brightness(1.2)` — matches `.column-icon-btn:hover img` pattern ✓
+- **Functional**: Button still uses `id="btn-import-clipboard"` with `postKanbanMessage({ type: 'importFromClipboard' })` handler — unchanged ✓
+
+### Files Changed
+- `src/webview/kanban.html` (line 857: `<img>` tag replacing emoji — original implementation)
+- `src/webview/kanban.html` (lines 196-203: new `.btn-add-plan img` and `.btn-add-plan:hover img` CSS rules — reviewer fix)
+- `src/services/KanbanProvider.ts` (line 1452: `ICON_IMPORT_CLIPBOARD` template variable mapping — original implementation)
+
+### Remaining Risks
+- The `btn-add-plan` button is 18x18px; the `<img>` inside is 16x16px. This leaves 1px padding on each side, which is fine. But if a different icon with transparent edges is used in the future, it might appear smaller than the `+` text button. Minor cosmetic concern only.
+
+### Status: ✅ APPROVED (with fix applied)

@@ -202,3 +202,45 @@ Remove `.autoban-status-bar` from column headers since column button area replac
 
 ## Agent Recommendation
 **Lead Coder** — This is a major UI overhaul touching the controls strip, column headers, card interaction model, and backend message handlers. Requires careful coordination to avoid breaking existing prompt/advance functionality.
+
+## Reviewer Pass — 2026-03-19
+
+### Implementation Status: ✅ COMPLETE — All 8 steps implemented
+
+| Step | Status | Files |
+|------|--------|-------|
+| Step 1: Card selection toggle | ✅ | `src/webview/kanban.html` (selectedCards Set, click handler lines 1081–1091, re-apply lines 1093–1096, CSS `.kanban-card.selected` line 508) |
+| Step 2: Controls strip restructure | ✅ | `src/webview/kanban.html` (lines 676–689: AUTOBAN, inline timers, spacer, TRIGGERS OFF badge, CLI toggle, SYNC) |
+| Step 3: Column button areas | ✅ | `src/webview/kanban.html` (lines 857–887: 4 icons per column, Jules + Analyst Map for PLAN REVIEWED, empty strip for last column) |
+| Step 4: Flash animation | ✅ | `src/webview/kanban.html` (CSS `@keyframes iconFlash` line 564, `flashIconBtn()` line 775) |
+| Step 5: Message handlers | ✅ | `src/services/KanbanProvider.ts` (moveSelected line 1154, moveAll line 1198, promptSelected line 1250, promptAll line 1287, julesSelected line 1329, analystMapSelected line 1371) |
+| Step 6: Remove old batch buttons | ✅ | Verified: no `btn-batch-planner`, `btn-copy-low`, `btn-jules-low`, or `btn-batch-low` remain in kanban.html |
+| Step 7: CLI toggle switch | ✅ | `src/webview/kanban.html` (CSS toggle switch lines 572–616, inline layout lines 681–687) |
+| Step 8: Autoban timers inline | ✅ | `src/webview/kanban.html` (`autoban-timers-inline` div line 678, `updateAutobanIndicators()` lines 1400–1427, timer badges with column abbreviations) |
+
+### Additional implementations beyond plan
+- `analystMapSelected` button + handler (icon 42) — generates context maps for selected plans
+- `ICON_IMPORT_CLIPBOARD` button for plan importing
+- `triggers-off-badge` warning when CLI triggers are disabled
+- PLAN REVIEWED column uses dynamic complexity routing via `_partitionByComplexityRoute()`
+- Icon URIs injected via KanbanProvider `_getHtml()` with webview URI conversion (lines 1443–1455)
+
+### Grumpy Findings
+- **NIT:** `julesSelected` no longer complexity-locked — adversarial review recommended confirmation dialog for high-complexity plans. Not implemented (deliberate design choice per plan).
+- **NIT:** `analystMapSelected` is undocumented scope creep relative to the original plan.
+- **NIT:** Selection cleared on all action clicks, including actions that may fail (julesSelected with no Jules agent). Minor UX gap.
+
+### Balanced Synthesis
+All findings are NIT. No code fixes required. The implementation is a comprehensive, well-structured execution of a complex UI overhaul:
+- Card selection survives re-renders (re-applied in renderBoard)
+- All 8 icon assets verified present in `icons/` directory
+- Backend handlers have proper workspace scoping, complexity routing, and CLI trigger gating
+- Old batch buttons completely removed with no orphaned event handlers
+
+### Validation
+- `npx tsc --noEmit` — ✅ Clean (0 errors)
+- All icon files verified: 22, 28, 42, 53, 54, 115 present in `icons/`
+
+### Remaining Risks
+- No confirmation dialog for high-complexity Jules sends (low — user can review complexity badge on card before selecting).
+- Selection state is DOM-coupled — if a board refresh races with a click, selection could briefly desync (theoretical, mitigated by re-apply in renderBoard).

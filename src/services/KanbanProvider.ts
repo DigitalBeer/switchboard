@@ -39,6 +39,8 @@ export class KanbanProvider implements vscode.Disposable {
     private _fsSessionWatcher?: fs.FSWatcher;
     private _fsStateWatcher?: fs.FSWatcher;
     private _refreshDebounceTimer?: NodeJS.Timeout;
+    private _isRefreshing: boolean = false;
+    private _refreshPending: boolean = false;
     private _cliTriggersEnabled: boolean;
     private _lastColumnsSignature: string | null = null;
     private _autobanState?: AutobanConfigState;
@@ -141,7 +143,7 @@ export class KanbanProvider implements vscode.Disposable {
         }
 
         // Initial data push after a short delay for webview mount
-        setTimeout(() => this._refreshBoard(), 150);
+        setTimeout(() => { void this._refreshBoard().catch(() => {}); }, 150);
 
         this._setupSessionWatcher();
     }
@@ -158,7 +160,7 @@ export class KanbanProvider implements vscode.Disposable {
 
         const debouncedRefresh = () => {
             if (this._refreshDebounceTimer) clearTimeout(this._refreshDebounceTimer);
-            this._refreshDebounceTimer = setTimeout(() => this._refreshBoard(), 300);
+            this._refreshDebounceTimer = setTimeout(() => { void this._refreshBoard().catch(() => {}); }, 300);
         };
 
         // VS Code file system watchers
@@ -260,6 +262,24 @@ export class KanbanProvider implements vscode.Disposable {
     }
 
     private async _refreshBoard(workspaceRoot?: string) {
+        if (!this._panel) return;
+        if (this._isRefreshing) {
+            this._refreshPending = true;
+            return;
+        }
+        this._isRefreshing = true;
+        try {
+            await this._refreshBoardImpl(workspaceRoot);
+        } finally {
+            this._isRefreshing = false;
+            if (this._refreshPending) {
+                this._refreshPending = false;
+                void this._refreshBoard(workspaceRoot);
+            }
+        }
+    }
+
+    private async _refreshBoardImpl(workspaceRoot?: string) {
         if (!this._panel) return;
         const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
         if (!resolvedWorkspaceRoot) return;
@@ -788,6 +808,7 @@ export class KanbanProvider implements vscode.Disposable {
                     .replace(/^[\s>*\-+\u2013\u2014:]+/, '')
                     .replace(/[*_`~]/g, '')
                     .trim()
+                    .replace(/\((?:complex(?:\s*[\/&]\s*|\s+)risky|complex|risky|high complexity)\)/gi, '')
                     .replace(/^\((.*)\)$/, '$1')
                     .replace(/[\s:\u2013\u2014-]+$/g, '')
                     .replace(/\s+/g, ' ')
@@ -1159,6 +1180,7 @@ export class KanbanProvider implements vscode.Disposable {
                 // PLAN REVIEWED uses dynamic complexity routing per-session
                 if (column === 'PLAN REVIEWED') {
                     const groups = await this._partitionByComplexityRoute(workspaceRoot, msg.sessionIds);
+                    const movedParts: string[] = [];
                     for (const [role, sids] of groups) {
                         if (sids.length === 0) { continue; }
                         const targetCol = this._targetColumnForDispatchRole(role);
@@ -1171,6 +1193,10 @@ export class KanbanProvider implements vscode.Disposable {
                         } else {
                             await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sids, targetCol, workspaceRoot);
                         }
+                        movedParts.push(`${sids.length} → ${targetCol}`);
+                    }
+                    if (movedParts.length > 0) {
+                        vscode.window.showInformationMessage(`Moved ${msg.sessionIds.length} plans from ${column}: ${movedParts.join(', ')}.`);
                     }
                 } else {
                     const nextCol = await this._getNextColumnId(column, workspaceRoot);

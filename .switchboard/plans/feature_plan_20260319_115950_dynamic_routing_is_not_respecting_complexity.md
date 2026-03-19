@@ -139,3 +139,35 @@ This is a straightforward bug fix that:
 - Reuses all existing infrastructure (complexity detection, prompt generation)
 - Requires no architectural changes
 - Has clear test cases and verification steps
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer (Adversarial)
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | `_generateBatchExecutionPrompt()` checks `hasHighComplexity` across the entire card batch — if ONE card is high-complexity, ALL cards get a `lead` prompt. By design, but batch semantics could surprise users. |
+| 2 | NIT | `_handleCopyPlanLink` null-guards `this._kanbanProvider` before complexity check. If null, falls through to `columnToPromptRole('PLAN REVIEWED')` → `'lead'`. Safe but suboptimal for low-complexity plans in an edge case that shouldn't occur in practice. |
+| 3 | NIT | `columnToPromptRole()` correctly left unmodified — its static mapping is used by autoban and other contexts. |
+
+**No CRITICAL or MAJOR findings.**
+
+### Stage 2: Balanced Synthesis
+
+- **Keep all changes**: `_generatePromptForColumn` PLAN REVIEWED intercept, `_handleCopyPlanLink` complexity-based role selection, `columnToPromptRole` untouched.
+- **No code fixes needed.**
+- **Defer**: Mixed-complexity batch behavior is documented in `_generateBatchExecutionPrompt` (by design).
+
+### Files Changed
+- `src/services/KanbanProvider.ts` — `_generatePromptForColumn()` (lines 439-454): Added PLAN REVIEWED early return to `_generateBatchExecutionPrompt()`
+- `src/services/TaskViewerProvider.ts` — `_handleCopyPlanLink()` (lines 5682-5698): Added complexity-based role selection for PLAN REVIEWED column
+- `src/services/agentPromptBuilder.ts` — `columnToPromptRole()`: **Not modified** (intentional)
+
+### Validation Results
+- **TypeScript compilation**: ✅ Clean (`npx tsc --noEmit` exit 0)
+- **Code review**: ✅ All 3 proposed changes correctly implemented
+
+### Remaining Risks
+- None identified. Low-risk conditional branching on existing code paths.

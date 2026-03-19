@@ -152,3 +152,47 @@ reloadTicketButtonEl.disabled = disabled;
 - No logic changes or architectural modifications
 - Low risk of breaking existing functionality
 - Straightforward verification steps
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer Review
+
+*Well, well, well. Someone actually managed to delete a button without burning down the entire extension. I'm genuinely impressed. Let me look harder for something to complain about.*
+
+**NIT — The `'ready'` Message Handler Still Exists in the Backend** (Severity: NIT)
+The `'ready'` message type handler in `TaskViewerProvider.ts` still exists (it's used for initial webview load). The plan correctly identified this is NOT a problem — the handler is needed for initial load. But zero documentation was added to clarify that `'ready'` is now ONLY for initial load, not for manual reload. Future devs might wonder why the handler exists if there's no reload button.
+
+**NIT — Open Questions Left Unanswered** (Severity: NIT)
+Questions 1-3 (FileSystemWatcher, mtime message improvement, workflows relying on reload) remain open. None are blocking, but they represent genuine UX gaps. A FileSystemWatcher for auto-refresh would be a proper replacement for the reload button — without it, users editing plan files externally must close and reopen tickets.
+
+*That's it. That's all I've got. I hate it when the implementation is this clean. It gives me nothing to dramatically gesture about.*
+
+### Stage 2: Balanced Synthesis
+
+| Finding | Verdict | Action |
+|---|---|---|
+| `'ready'` handler documentation | **Defer** | Cosmetic — not a code defect |
+| Open questions (FileSystemWatcher) | **Defer** | Separate feature request, not part of this removal |
+
+### Code Fix Applied
+
+**None required.** Implementation is clean and complete.
+
+### Validation Results
+
+- **Grep verification**: `reload-ticket`, `reloadTicket`, `reload` — **zero hits** in `review.html`
+- **TypeScript compilation**: `npx tsc --noEmit` — **PASS** (zero errors)
+- **Backend handler**: `'ready'` message type still handled correctly for initial webview load
+- **No orphaned references**: No dangling JS variables or event listeners
+
+### Files Changed
+
+| File | Change |
+|---|---|
+| `src/webview/review.html` | Removed button element, element reference, click handler, disabled state management |
+
+### Remaining Risks
+
+None. This is a clean, single-file removal with no side effects.

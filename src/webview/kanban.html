@@ -193,6 +193,15 @@
             box-shadow: 0 0 15px var(--accent-teal);
         }
 
+        .btn-add-plan img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9);
+            transition: filter 0.15s;
+        }
+
+        .btn-add-plan:hover img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.2);
+        }
+
         .btn-batch {
             background: color-mix(in srgb, var(--accent-teal) 12%, transparent);
             border: 1px solid color-mix(in srgb, var(--accent-teal) 28%, transparent);

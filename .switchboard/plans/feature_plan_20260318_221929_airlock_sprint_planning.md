@@ -159,3 +159,44 @@ Valid concerns about format and destination. Implementation clarifies:
 4. **Step 4 update**: Change description text from "use CREATE to open a new ticket" to "click the 📋 Import plan from clipboard button in the NEW column header"
 
 The kanban import button already exists (confirmed at `kanban.html:840`), so Step 4 only needs a description update to guide users to that existing button. This is purely additive—no breaking changes to existing workflows.
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer
+
+**[NIT]** *Plan line numbers are stale.* The plan references "Lines 9040-9068" for `_handleAirlockExport` and "Lines 2793-2804" for the UI steps. Actual locations: export logic at lines 8866-8920 in `TaskViewerProvider.ts`, UI steps at lines 2781-2816 in `implementation.html`. Expected drift, but the plan now lies to you about where to find things.
+
+**[NIT]** *The plan's Step 4 ("Add message handler for sprint prompt copy") is dead code in the plan.* The plan proposed a `case 'airlock_copySprintPrompt'` handler with a comment "Prompt is generated client-side, no backend action needed." The implementation correctly omitted this — there's no point adding a no-op case handler. But the plan step still exists, suggesting work that was correctly not done. Slightly confusing for plan traceability, but harmless.
+
+**[NIT]** *Property name mismatch between plan pseudocode and actual types.* The plan's Step 1 pseudocode uses `p.kanban_column`, `p.session_id`, `p.created_at` (snake_case). The actual `KanbanPlanRecord` interface uses `kanbanColumn`, `sessionId`, `createdAt` (camelCase). The implementation correctly uses camelCase. The plan pseudocode was aspirational, not copy-pasteable. *A plan that writes code for a different type system. How avant-garde.*
+
+**[NIT]** *Step 4 description references `[⋯]` button.* The description at line 2813 says `click the [⋯] "Import plan from clipboard" button`. This references the icon change from Plan 5. If Plan 5's implementation changes (e.g., back to text), this description becomes stale. Tight coupling between plan descriptions, but acceptable since they ship together.
+
+**Verdict**: Four NITs, zero functional issues. The three-part implementation (export, sprint prompt button, renumbered Step 4) is clean, additive, and correctly uses the existing patterns.
+
+### Stage 2: Balanced Synthesis
+
+- **Keep**: All three implementation components:
+  - NEW column plans export in `_handleAirlockExport` (lines 8893-8911) — correctly uses `KanbanPlanRecord` camelCase properties, filters by `kanbanColumn === 'CREATED'`, outputs well-formatted markdown
+  - Sprint planning prompt button as Step 3 (lines 2781-2803) — client-side clipboard copy, prompt text matches plan spec exactly
+  - Step 4 renumbered with updated description (lines 2805-2814) — references the kanban import button correctly
+- **Fix now**: Nothing. All findings are documentation-level NITs.
+- **Defer**: Clean up plan pseudocode property names if this plan is referenced as a template for future DB access patterns.
+
+### Code Fixes Applied
+None required — no CRITICAL or MAJOR findings.
+
+### Verification Results
+- **TypeScript compile**: `npx tsc --noEmit` → **PASS** (exit code 0, zero errors)
+- **Code trace (export)**: `_handleAirlockExport` → `kanbanDb.getBoard(workspaceId)` → filters `kanbanColumn === 'CREATED'` → writes `*-new_column_plans.md` with topic, complexity, sessionId, createdAt ✓
+- **Code trace (UI)**: Steps numbered 1→2→3→4, sprint prompt button copies hardcoded prompt referencing `new_column_plans.md` and `how_to_plan.md` ✓
+- **Type safety**: `KanbanPlanRecord` interface confirms `kanbanColumn`, `sessionId`, `createdAt` are valid camelCase properties ✓
+
+### Files Changed
+- `src/services/TaskViewerProvider.ts` (lines 8893-8911: NEW column plans export in `_handleAirlockExport`)
+- `src/webview/implementation.html` (lines 2781-2816: Step 3 sprint prompt button + Step 4 renumbered)
+
+### Remaining Risks
+- If the kanban DB has zero plans in CREATED column, the `new_column_plans.md` file is not exported (by design — line 8901 checks `newColumnPlans.length > 0`). The sprint prompt in NotebookLM would reference a missing file. This is acceptable — the prompt is advisory, and NotebookLM will simply note the missing source.
+
+### Status: ✅ APPROVED

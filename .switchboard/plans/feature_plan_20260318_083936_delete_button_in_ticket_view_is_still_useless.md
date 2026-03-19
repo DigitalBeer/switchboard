@@ -115,3 +115,57 @@ The ticket view must follow the exact same path. If it uses a different provider
 
 ## Agent Recommendation
 **Coder** — Simple message handler bug. Should be debugged and fixed in a single session.
+
+---
+
+## Implementation Review
+
+### Stage 1 — Grumpy Principal Engineer
+
+*slams coffee mug down, glares at the third delete-button plan*
+
+**Finding 1 — VERIFIED: Full message chain is wired end-to-end**
+Let me trace this like the plan SHOULD have done from the start:
+
+1. **review.html line 471:** `<button id="delete-plan" class="danger">Delete</button>` — button exists.
+2. **review.html line 979–982:** Click handler sends `{ type: 'deletePlan', sessionId: state.sessionId }` via `vscode.postMessage`.
+3. **ReviewProvider.ts line 278–299:** `_handleMessage` case `'deletePlan'` — validates `sessionId`, calls `vscode.commands.executeCommand('switchboard.deletePlanFromReview', sessionId, workspaceRoot)`.
+4. **extension.ts line 844–847:** Command registered: `'switchboard.deletePlanFromReview'` → `taskViewerProvider.handleDeletePlanFromReview(sessionId, workspaceRoot)`.
+5. **TaskViewerProvider.ts line 1259–1261:** `handleDeletePlanFromReview` → `_handleDeletePlan(sessionId, workspaceRoot)`.
+
+The chain is COMPLETE. Every link is present. The delete button in the ticket view now follows the exact same `_handleDeletePlan` logic as the sidebar.
+
+**Finding 2 — VERIFIED: Success/failure handling**
+- **Success (line 288–290):** Panel is disposed. User sees "Plan deleted." info message. Clean exit.
+- **User cancellation (line 291–294):** `_handleDeletePlan` returns `false` (user rejected confirmation dialog). ReviewProvider sends `{ type: 'ticketActionResult', ok: true, message: '' }` to reset UI. `setBusy(false)` fires in the webview. Correct.
+- **Error (line 295–298):** Error message sent to webview. `ticketActionResult` handler at review.html line 1086 shows error and calls `setBusy(false)`. Correct.
+
+**Finding 3 — NIT: `setBusy(true)` timing on cancellation**
+When the user clicks Delete (line 980: `setBusy(true)`), then cancels the confirmation dialog, the ReviewProvider sends back a `ticketActionResult` with `ok: true` and empty message. The webview resets busy state. This works, but sending `ok: true` for a cancellation is semantically odd. It could be `ok: true, message: 'Cancelled.'` for clarity. Pure cosmetics.
+
+**Finding 4 — VERIFIED: Button disabled state**
+Line 651: `deletePlanButtonEl.disabled = !hasSession || disabled || isCompleted`. The button is disabled when there's no session, when the ticket is in a disabled state, or when marked completed. This prevents accidental deletes on completed plans. Reasonable guard.
+
+**Severity summary:** Zero CRITICAL, zero MAJOR, one cosmetic NIT.
+
+### Stage 2 — Balanced Synthesis
+
+- **Keep:** The full 5-step message chain from review.html through ReviewProvider, extension command registration, to TaskViewerProvider._handleDeletePlan. Success/failure/cancellation handling is complete.
+- **Fix now:** Nothing.
+- **Defer:** Optionally improve cancellation semantics (send a distinct message or `ok: true, message: 'Cancelled.'`). Non-blocking.
+
+### Code Fixes Applied
+None required.
+
+### Verification Results
+- **TypeScript compilation:** ✅ `npx tsc --noEmit` exits 0, no errors.
+- **Message chain trace:** review.html → ReviewProvider._handleMessage → `switchboard.deletePlanFromReview` command → TaskViewerProvider.handleDeletePlanFromReview → _handleDeletePlan. ✅ Complete.
+- **Panel disposal on success:** Line 290 `this._panel.dispose()`. ✅
+- **Error feedback:** Line 295–298 sends error to webview. ✅
+- **UI reset on cancel:** Line 293 sends ticketActionResult to reset busy state. ✅
+
+### Files Changed During Review
+None — implementation was already correct.
+
+### Remaining Risks
+- **NIT:** Cancellation sends `ok: true` with empty message — semantically imprecise but functionally correct.

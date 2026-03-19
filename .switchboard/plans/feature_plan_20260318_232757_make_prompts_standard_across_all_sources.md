@@ -141,7 +141,7 @@ private _buildCanonicalPrompt(
 - Integrating with `handleKanbanTrigger()` dispatch logic (touches critical agent routing)
 - Cross-file coordination between KanbanProvider and TaskViewerProvider (architectural coupling)
 - Preserving phase gate metadata and strict/light mode variants (multiple code paths to verify)
-- Risk of breaking autoban, CLI triggers, or custom agent dispatch (high test surface area)
+- Risk of breaking autoban, CLI triggers, or custom agent workflows (high test surface area)
 - Column-to-role mapping must stay consistent across all paths (single point of failure if wrong)
 
 ## Dependencies
@@ -199,3 +199,54 @@ private _buildCanonicalPrompt(
 - High risk of breaking autoban, CLI triggers, or custom agent workflows
 - Requires careful preservation of phase gate metadata and mode variants
 - Architectural refactoring with significant test surface area
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer Review
+
+**CRITICAL — Card Copy Path STILL Produces Different Prompts** (Severity: CRITICAL)
+*You know what's worse than 8 inconsistent prompt paths? Having a shiny new centralized `buildKanbanBatchPrompt` function that 7 out of 8 paths call correctly, while the 8th path — the one the USER literally clicks on the card — calls it with MISSING OPTIONS.* The `_handleCopyPlanLink` method (TaskViewerProvider line 5692) was calling `buildKanbanBatchPrompt` without `instruction: 'low-complexity'` for coder role and without `includeInlineChallenge` for lead role. The batch paths in KanbanProvider (`_generateBatchExecutionPrompt`) correctly pass these. So "Copy Prompt" on a low-complexity card says `"Please execute the following 1 plans."` while "Prompt Selected" says `"Please execute the following 1 low-complexity plans from PLAN REVIEWED."` *You had ONE JOB.*
+
+**MAJOR — Plan Proposed `_buildCanonicalPrompt` But Implementation Used Different Architecture** (Severity: MAJOR)
+The plan proposed a `_buildCanonicalPrompt` method in TaskViewerProvider. The actual implementation created `agentPromptBuilder.ts` with `buildKanbanBatchPrompt` — a standalone module imported by both providers. This is actually a *better* architecture (shared utility vs. cross-provider method calls), but the plan's proposed implementation doesn't match reality. Not a code defect — the implementation is superior to the plan — but the plan document is misleading.
+
+**NIT — Open Questions Left Unresolved** (Severity: NIT)
+Questions 1-4 in the plan are answered by the implementation (shared utility, not `_buildCanonicalPrompt`; no special custom agent handling; batch prompts always include file hints). Should be marked resolved.
+
+### Stage 2: Balanced Synthesis
+
+| Finding | Verdict | Action |
+|---|---|---|
+| Card copy missing options | **Fix now** | Same fix as Plan 1 — pass `instruction` and `includeInlineChallenge` in `_handleCopyPlanLink` |
+| Architecture divergence from plan | **Accept** | `agentPromptBuilder.ts` is better than proposed `_buildCanonicalPrompt` approach |
+| Open questions | **Defer** | Cosmetic plan cleanup, not a code issue |
+
+### Code Fix Applied
+
+**Shared fix with Plan 1** — same `_handleCopyPlanLink` change in `src/services/TaskViewerProvider.ts` (lines 5691-5698). See Plan 1 reviewer pass for exact diff.
+
+### Verification of All 8 Paths
+
+| # | Path | Calls `buildKanbanBatchPrompt`? | Correct Options? |
+|---|---|---|---|
+| 1 | Card "Copy Prompt" | Yes (line 5694) | Yes — **FIXED** — now passes instruction + includeInlineChallenge |
+| 2 | Kanban "Prompt Selected" | Yes via `_generatePromptForColumn` | Yes |
+| 3 | Kanban "Prompt All" | Yes via `_generatePromptForColumn` | Yes |
+| 4 | Ticket "Send to Agent" | Yes via `handleKanbanTrigger` line 7321 | Yes |
+| 5 | Autoban routing | Yes via `handleKanbanTrigger` path | Yes |
+| 6 | Batch planner | Yes via `_generateBatchPlannerPrompt` | Yes |
+| 7 | Batch execution | Yes via `_generateBatchExecutionPrompt` | Yes |
+| 8 | Move operations (CLI) | Yes via `triggerFromKanban`/`triggerBatchAgentFromKanban` | Yes |
+
+### Validation Results
+
+- **TypeScript compilation**: `npx tsc --noEmit` — **PASS** (zero errors)
+- **All 8 paths** now route through `buildKanbanBatchPrompt` from `agentPromptBuilder.ts`
+- **Card copy** now produces identical text to batch prompt for same role
+
+### Remaining Risks
+
+1. **Dispatch paths 4, 5, 8** don't receive `'low-complexity'` instruction from their callers for coder role. The instruction parameter flows from `KanbanProvider._columnToRole` which passes `undefined` for non-planner roles. This is a minor wording inconsistency (`"plans"` vs `"low-complexity plans"`) in the dispatch-only paths. Could be addressed by having the dispatch callers determine and pass `'low-complexity'` based on card complexity, but this is outside the immediate scope.
+2. Open questions 1-4 should be marked resolved in a future plan cleanup pass.

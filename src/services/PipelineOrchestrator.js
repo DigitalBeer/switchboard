@@ -11,9 +11,9 @@ function getNextStage(sheet) {
         ? startEvents[startEvents.length - 1].workflow
         : undefined;
     if (!lastWorkflow) {
-        return { role: 'planner', instruction: 'enhance', label: 'Planner' };
+        return { role: 'planner', instruction: 'improve-plan', label: 'Planner' };
     }
-    else if (lastWorkflow === 'sidebar-review' || lastWorkflow === 'Enhanced plan') {
+    else if (lastWorkflow === 'sidebar-review' || lastWorkflow === 'Enhanced plan' || lastWorkflow === 'Improved plan') {
         return { role: 'lead', label: 'Lead Coder' };
     }
     else if (lastWorkflow === 'handoff-lead' || lastWorkflow === 'handoff') {
@@ -24,7 +24,7 @@ function getNextStage(sheet) {
     }
     else {
         // Unknown last workflow — fall back to planner
-        return { role: 'planner', instruction: 'enhance', label: 'Planner' };
+        return { role: 'planner', instruction: 'improve-plan', label: 'Planner' };
     }
 }
 class PipelineOrchestrator {

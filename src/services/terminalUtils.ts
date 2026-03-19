@@ -2,6 +2,14 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as crypto from 'crypto';
 
+// Clipboard mutex: serialize paste operations to prevent user clipboard data loss
+let _clipboardLock: Promise<void> = Promise.resolve();
+function withClipboardLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = _clipboardLock.then(fn, fn);
+    _clipboardLock = next.then(() => {}, () => {});
+    return next;
+}
+
 /**
  * Normalize a filesystem path for consistent cross-platform hashing.
  * On Windows, lowercases the path for case-insensitive comparison.
@@ -46,23 +54,29 @@ export async function sendRobustText(
     const CLIPBOARD_PASTE_THRESHOLD = 100;
     if (text.length > CLIPBOARD_PASTE_THRESHOLD) {
         _log(`Large payload (${text.length} chars) for '${terminal.name}', using clipboard paste delivery.`);
-        let previousClipboard = '';
-        try { previousClipboard = await vscode.env.clipboard.readText(); } catch { /* ignore */ }
+        try {
+            await withClipboardLock(async () => {
+                let previousClipboard = '';
+                try { previousClipboard = await vscode.env.clipboard.readText(); } catch { /* ignore */ }
 
-        await vscode.env.clipboard.writeText(text);
-        terminal.show(false);
-        await new Promise(r => setTimeout(r, 200));
-        await vscode.commands.executeCommand('workbench.action.terminal.paste');
+                await vscode.env.clipboard.writeText(text);
+                terminal.show(false);
+                await new Promise(r => setTimeout(r, 200));
+                await vscode.commands.executeCommand('workbench.action.terminal.paste');
 
-        // Wait for paste to settle, then restore clipboard
-        await new Promise(r => setTimeout(r, 800));
-        try { await vscode.env.clipboard.writeText(previousClipboard); } catch { /* ignore */ }
+                // Wait for paste to settle, then restore clipboard
+                await new Promise(r => setTimeout(r, 800));
+                try { await vscode.env.clipboard.writeText(previousClipboard); } catch { /* ignore */ }
+            });
 
-        // Submit the pasted content
-        await new Promise(r => setTimeout(r, NEWLINE_DELAY));
-        terminal.sendText('', true);
-        _log(`Clipboard paste complete for '${terminal.name}', Enter sent.`);
-        return;
+            // Submit the pasted content (clipboard paste doesn't need CLI confirmation Enter)
+            await new Promise(r => setTimeout(r, NEWLINE_DELAY));
+            terminal.sendText('', true);
+            _log(`Clipboard paste complete for '${terminal.name}', Enter sent.`);
+            return;
+        } catch (clipErr) {
+            _log(`Clipboard paste failed for '${terminal.name}', falling back to chunked send: ${clipErr}`);
+        }
     }
 
     // Flatten newlines for CLI agents to prevent premature submission

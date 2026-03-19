@@ -122,3 +122,52 @@ private async _stopAutobanIfNoValidTicketsRemain(workspaceRoot: string): Promise
 
 ## Agent Recommendation
 **Coder** — The fixes are well-scoped additions to existing autoban lifecycle methods. No architectural changes needed.
+
+---
+
+## Implementation Review
+
+### Stage 1 — Grumpy Principal Engineer
+
+*leans back, crosses arms, surveys the autoban engine*
+
+**Finding 1 — VERIFIED: Post-dispatch no-tickets check (Step 1)**
+`_stopAutobanIfNoValidTicketsRemain(workspaceRoot)` is called at FIVE post-dispatch sites: lines 2499, 2505, 2557, 2570, 2597. These cover: empty column (no cards), no eligible cards, post-dispatch exhaustion check, zero selected cards in PLAN REVIEWED, and zero batch cards. This is *thorough* — every exit path from the dispatch logic checks for empty source columns. The plan asked for "after each dispatch cycle completes" and the implementation goes further by checking at every decision point within a tick. No complaint.
+
+**Finding 2 — VERIFIED: 60-second sweep timer (Step 3)**
+`_autobanEmptyColumnSweepTimer` declared at line 144. Started in `_startAutobanEngine()` at lines 2441–2448 with `setInterval(60_000)`. The callback checks `this._autobanState.enabled` before doing work — good guard. Cleaned up in `_stopAutobanEngine()` at lines 2460–2462 with `clearInterval` + `undefined` assignment. Timer lifecycle is complete and leak-free.
+
+**Finding 3 — VERIFIED: Dispatch session cleanup (Step 2)**
+`_activeDispatchSessions.clear()` is called at line 2466 in `_stopAutobanEngine()`. Additionally, `_releaseSettledDispatchLocks()` is called inside `_autobanHasEligibleCardsInEnabledColumns()` which is invoked by the sweep timer and every post-dispatch check. So settled locks are released before each eligibility assessment. Clean.
+
+**Finding 4 — VERIFIED: Logging (Step 4)**
+`_stopAutobanIfNoValidTicketsRemain()` at line 1991: `console.log(\`[Autoban] Empty-column check: eligible=${hasEligible}\`)`. Present and functional.
+
+**Finding 5 — NIT: `console.log` vs output channel**
+Same as Plan 2 — the plan proposed `this._outputChannel?.appendLine(...)` but implementation uses `console.log`. User won't see this in the Output panel. Cosmetic only.
+
+**Finding 6 — NIT: Sweep timer could fire one last time after engine stop**
+If the sweep timer fires at the exact same tick as `_stopAutobanEngine()`, the `enabled` guard (line 2442) will short-circuit it. The `clearInterval` in `_stopAutobanEngine` prevents further fires. Double-guarded — no race condition.
+
+**Severity summary:** Zero CRITICAL, zero MAJOR, two cosmetic NITs.
+
+### Stage 2 — Balanced Synthesis
+
+- **Keep:** All four implementation steps are present and correctly wired. The post-dispatch checks are more comprehensive than the plan required.
+- **Fix now:** Nothing — both NITs are cosmetic.
+- **Defer:** Optionally unify logging to output channel in a future pass.
+
+### Code Fixes Applied
+None required.
+
+### Verification Results
+- **TypeScript compilation:** ✅ `npx tsc --noEmit` exits 0, no errors.
+- **Sweep timer lifecycle:** Created in `_startAutobanEngine()` → cleared in `_stopAutobanEngine()`. Guarded by `enabled` check. ✅
+- **Post-dispatch checks:** 5 call sites covering all exit paths from tick/dispatch methods. ✅
+- **Dispatch lock cleanup:** `_activeDispatchSessions.clear()` on engine stop + `_releaseSettledDispatchLocks()` on each eligibility check. ✅
+
+### Files Changed During Review
+None — implementation was already correct.
+
+### Remaining Risks
+- **NIT:** `console.log` instead of output channel. Non-blocking.

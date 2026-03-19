@@ -130,3 +130,30 @@ actionLog: this._getReviewLogEntries(mergedEvents),
 
 ## Agent Recommendation
 **Coder** — Straightforward formatting change in a single function. Low risk, well-scoped.
+
+## Reviewer Pass (2026-03-19)
+
+### Implementation Status: ✅ COMPLETE — No fixes required
+
+### Files Changed by Implementation
+- `src/services/TaskViewerProvider.ts` (lines 5225–5264): `_getReviewLogEntries()` rewritten with `columnRoleMap` constant and action-to-label mapping producing human-readable messages like "SENT TO Lead Coder", "COMPLETED — Coder", "FAILED — Reviewer".
+- `src/webview/review.html` (line 725): `renderActionLog()` displays `entry.details` as the primary label in `.log-workflow` span — human-readable format flows through automatically.
+
+### Grumpy Findings
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | `columnRoleMap` is missing custom agent columns (e.g., "QA_TESTED"). Events from custom kanban agents fall through to the generic `Dispatched (workflow)` label. However, custom agent awareness was explicitly out of scope (Step 3 marked optional). |
+| 2 | NIT | `columnRoleMap` is local to `_getReviewLogEntries()` rather than shared with `agentConfig.ts`. Plan's adversarial review suggested a shared constant. Acceptable for now — single consumer. |
+
+### Balanced Synthesis
+- `_getReviewLogEntries` correctly maps `execute`/`delegate_task` → "SENT TO {role}", `submit_result` → "COMPLETED — {role}", and failed outcomes → "FAILED — {role}".
+- `columnRoleMap` uses exact column name keys (cleaner than the plan's original `includes()` suggestion — addresses the adversarial critique).
+- Fallback for unrecognized events preserves raw data with `action=X · outcome=Y · target=Z` format.
+- No code fixes needed.
+
+### Validation Results
+- `npm run compile`: ✅ PASSED (webpack compiled successfully)
+
+### Remaining Risks
+- Custom agent columns not mapped in `columnRoleMap` (out of scope — follow-up enhancement).
+- Step 3 (merging `activity.jsonl` events into ticket log) explicitly deferred per plan.

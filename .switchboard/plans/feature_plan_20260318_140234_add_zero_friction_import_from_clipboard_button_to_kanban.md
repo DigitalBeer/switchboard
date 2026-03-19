@@ -320,3 +320,44 @@ npm run compile
          // ... existing code ...
      }
 ```
+
+---
+
+## Code Review (2026-03-19)
+
+### Stage 1 — Grumpy Principal Engineer
+
+> *A clipboard import button. How delightfully pedestrian. Let me see if this masterpiece of UX innovation was implemented without burning down the session registry.*
+
+- **NIT — Emoji replaced with icon image.** The plan spec says use `📋` emoji (line 92), but the implementation uses `<img src="${ICON_IMPORT_CLIPBOARD}">` with a proper sci-fi icon (`25-101-150 Sci-Fi Flat icons-121.png`). This is actually BETTER than the plan — consistent with the icon system used by every other button. But the plan-to-implementation delta should be documented. Someone reading only the plan would expect an emoji.
+- **NIT — `_refreshRunSheets()` call might be redundant.** `_createInitiatedPlan` already calls `_refreshRunSheets()` internally (after plan registration and event logging). The explicit second call in `importPlanFromClipboard()` (line 7617) is harmless (runsheet refresh is idempotent) but unnecessary. Not a bug — just noise.
+- **NIT — H1 regex anchoring.** The regex `/^#\s+(.+)$/m` will match the FIRST `# Heading` in the clipboard. If some psychopath has a clipboard with `## Subheading` before `# Title`, it still works because `^#\s+` only matches a single `#`. Correct behavior, but would be nice to document this is intentional.
+
+**Severity summary:** 0 CRITICAL, 0 MAJOR, 3 NIT.
+
+### Stage 2 — Balanced Synthesis
+
+**Keep — everything.** This is a clean, minimal implementation that follows every existing pattern:
+- **UI button:** `kanban.html` line 848 — proper icon, reuses `.btn-add-plan` class. ✅
+- **Event listener:** `kanban.html` line 906-908 — posts `importFromClipboard` message. ✅
+- **Message router:** `KanbanProvider.ts` line 1368-1370 — delegates to VS Code command. ✅
+- **Command registration:** `extension.ts` line 780-783 — follows `initiatePlan` pattern exactly. ✅
+- **Backend method:** `TaskViewerProvider.ts` line 7596-7623 — validates empty, oversized, and missing-header cases. Error handling with try/catch. Delegates to `_createInitiatedPlan`. ✅
+- **Icon injection:** `KanbanProvider.ts` line 1452 — `ICON_IMPORT_CLIPBOARD` placeholder mapped to icon file. ✅
+- **Icon file:** `icons/25-101-150 Sci-Fi Flat icons-121.png` — exists. ✅
+
+**Fix now:** Nothing. All NITs are cosmetic or documentation-level.
+
+**Defer:** Consider removing the redundant `_refreshRunSheets()` call in a future cleanup pass. Zero risk leaving it.
+
+### Validation Results
+- `npm run compile` — **PASS** (exit 0)
+- All kanban regression tests — **PASS**
+
+### Files Changed During Review
+- None.
+
+### Remaining Risks
+- None material. The only risk is if `_createInitiatedPlan` changes its internal `_refreshRunSheets()` call in the future, but the redundant external call provides an extra safety net, not a liability.
+
+### Review Status: ✅ APPROVED

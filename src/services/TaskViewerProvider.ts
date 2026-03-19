@@ -5689,7 +5689,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
             
             const plan: BatchPromptPlan = { topic, absolutePath: planPathAbsolute };
+            const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
+            const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
             let textToCopy = buildKanbanBatchPrompt(role, [plan], {
+                instruction: resolvedInstruction,
+                includeInlineChallenge,
                 accurateCodingEnabled: this._isAccurateCodingEnabled()
             });
             const customAgent = findCustomAgentByRole(customAgents, effectiveColumn);

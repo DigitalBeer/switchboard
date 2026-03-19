@@ -179,3 +179,51 @@ Grumpy is correct. The system is failing at two independent layers: `TaskViewerP
  
                  if (this._cliTriggersEnabled) {
 ```
+
+---
+
+## Code Review (2026-03-19)
+
+### Stage 1 — Grumpy Principal Engineer
+
+> *Ah, the DETAILED version of the custom agent fix plan. Line numbers, patches, the whole works. Someone learned from that vague napkin sketch in the sibling plan. Let's see if the execution matches this rare display of engineering rigor.*
+
+- **NIT — `_getNextColumnId` got smarter than the plan asked for.** The plan spec (Edit 2A) shows a simple index-based `allColumns[idx + 1].id` return. But the actual implementation (lines 416-424) adds parallel-lane kind-skipping: if the current column is `kind: 'coded'`, it skips all other `coded` columns to land on `CODE REVIEWED`. This is CORRECT — without it, `LEAD CODED` would advance to `CODER CODED` instead of `CODE REVIEWED`. The plan missed this edge case entirely. The implementer saved you from a routing bug that would have caused absolute chaos. Document this, for the love of all that is holy.
+- **NIT — Patch line numbers are approximate.** The plan says Edit 1A is at "line ~2978" and Edit 1B at "line ~2747". Actual locations are line 2964 and line 2733 respectively. Close enough for a plan (tilde-prefixed), but worth noting the implementation shifted positions slightly as code was added.
+- **NIT — Plan and sibling plan overlap.** This plan (`brain_c9f0..._fix_custom...`) and its sibling (`brain_c9f0...`) describe the exact same feature fix. The sibling is vague; this one is detailed. Both are in the Kanban. The implementation satisfies both, but tracking two plans for one fix is confusing.
+
+**Severity summary:** 0 CRITICAL, 0 MAJOR, 3 NIT.
+
+### Stage 2 — Balanced Synthesis
+
+All 5 edits specified in the plan are implemented correctly:
+
+| Edit | Plan Spec | Actual Code | Status |
+|:---|:---|:---|:---|
+| 1A — Persist `customAgents` | `saveStartupCommands` handler | TVP line 2964-2967 | ✅ |
+| 1B — Hydrate `customAgents` | `ready` handler | TVP line 2733-2734 | ✅ |
+| 2A — Async `_getNextColumnId` | Change signature, fetch agents | KP line 411-425 (+ kind-skip bonus) | ✅ |
+| 2B — Await in `moveSelected` | `await this._getNextColumnId(column, workspaceRoot)` | KP line 1181 | ✅ |
+| 2C — Await in `moveAll` | `await this._getNextColumnId(column, workspaceRoot)` | KP line 1237 | ✅ |
+
+Additional call sites also correctly await: `promptSelected` (line 1269), `promptAll` (line 1306).
+
+**Fix now:** Nothing. Implementation exceeds plan spec.
+
+**Defer:** Consider merging or archiving the vague sibling plan to reduce Kanban noise.
+
+### Validation Results
+- `npm run compile` — **PASS** (exit 0)
+- `split-coded-columns-regression.test.js` — **PASS**
+- `kanban-batch-prompt-regression.test.js` — **PASS**
+- `kanban-complexity-regression.test.js` — **4/4 PASS**
+- `kanban-smart-router-regression.test.js` — **4/4 PASS**
+
+### Files Changed During Review
+- None (all code changes were applied by the original implementer).
+
+### Remaining Risks
+- Sibling plan (`brain_c9f0...md`) duplicates this plan's scope, creating potential for confusion in future Kanban triage.
+- Kind-skipping logic in `_getNextColumnId` is undocumented in the plan; future maintainers may not understand why it was added.
+
+### Review Status: ✅ APPROVED

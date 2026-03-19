@@ -161,3 +161,35 @@ Grumpy raises valid concerns about magic numbers and the lack of telemetry, but 
 - Should `NEWLINE_DELAY` be increased to 2000ms as recommended by the predecessor plan, or is the chunking fix sufficient to make 1000ms reliable?
 - Should the single confirmation Enter (Step 1) be behind a configurable setting so users can disable it if their CLI agent doesn't need it?
 - Is the `extension.js` duplicate actively used at runtime, or is it a stale build artifact that gets overwritten by `npm run compile`?
+
+## Reviewer Pass — 2026-03-19
+
+### Implementation Status: ✅ COMPLETE — All 3 steps implemented + significant enhancement
+
+| Step | Status | Files |
+|------|--------|-------|
+| Step 1: Single confirmation Enter | ✅ | `src/services/terminalUtils.ts` (lines 96–100: single CLI confirmation Enter after delay) |
+| Step 2: Re-enable chunking for CLI agents | ✅ | `src/services/terminalUtils.ts` (lines 72–91: newline flattening + chunking unified path) |
+| Step 3: Sync duplicate in extension.ts | ✅ | `src/extension.ts` line 11 imports `sendRobustText` from `terminalUtils`; no inline duplicate exists. Uses at lines 436 and 1512. |
+
+### Enhancement beyond plan scope
+The implementation added **clipboard paste delivery** (lines 47–70) for payloads >100 chars, bypassing PTY line-buffer limits entirely via `vscode.env.clipboard.writeText()` + `workbench.action.terminal.paste`. This is a strictly superior fix for the truncation problem — it eliminates the root cause (PTY buffer limits) rather than working around it (chunking). The chunking path remains as fallback.
+
+### Grumpy Findings
+- **MAJOR (FIXED):** `clipboard.writeText(text)` at line 52 was NOT wrapped in try/catch. If the clipboard API failed (remote dev, headless, permissions), the function threw an unhandled error and the payload was silently lost — the chunking fallback path never executed. **Fixed:** Wrapped entire clipboard paste block in try/catch with fallback to chunked send.
+- **NIT:** `CLIPBOARD_PASTE_THRESHOLD = 100` is aggressive — virtually all real payloads use clipboard paste, making the chunking code path (lines 78–91) effectively dead code in normal operation. Acceptable since clipboard is the better approach.
+- **NIT:** Clipboard paste path returns before the `isCliAgent` confirmation Enter check (line 96). Correct behavior (paste doesn't need double-Enter) but intent is undocumented. Added inline comment in fix.
+
+### Balanced Synthesis
+- **MAJOR fix applied.** The clipboard paste block now has a try/catch that falls through to the chunking path on failure, ensuring no payload is ever silently lost.
+- **NITs deferred.** The aggressive threshold is a feature (clipboard is more reliable than chunking). The CLI Enter bypass is intentionally correct.
+
+### Code Changes Applied
+- **`src/services/terminalUtils.ts`**: Wrapped clipboard paste delivery (lines 47–70) in try/catch. On failure, logs the error and falls through to the chunked send path. Added comment documenting that clipboard paste doesn't need CLI confirmation Enter.
+
+### Validation
+- `npx tsc --noEmit` — ✅ Clean (0 errors) after fix
+
+### Remaining Risks
+- Clipboard paste overwrites user clipboard for ~1s (save/restore mitigates but doesn't eliminate race condition with concurrent user copies). Low risk — terminal sends are infrequent.
+- `NEWLINE_DELAY` kept at 1000ms (not increased to 2000ms per predecessor plan). The clipboard paste approach makes this moot for most payloads; chunking fallback path uses 1000ms which has been reliable for non-CLI terminals since Feb 27.

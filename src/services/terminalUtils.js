@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizePathForOS = normalizePathForOS;
 exports.getAntigravityHash = getAntigravityHash;
 exports.sendRobustText = sendRobustText;
+const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
 const crypto = __importStar(require("crypto"));
 /**
@@ -63,29 +64,72 @@ function getAntigravityHash(rawPath) {
 async function sendRobustText(terminal, text, paced = true, log) {
     const CHUNK_SIZE = 500;
     const CHUNK_DELAY = 50; // ms between chunks
-    const NEWLINE_DELAY = paced ? 1000 : 100; // ms before newline
-    const COPILOT_SECOND_ENTER_DELAY = paced ? 350 : 150;
-    const needsSecondEnter = /\bcopilot\b/i.test(terminal.name);
-    if (text.length <= CHUNK_SIZE) {
-        terminal.sendText(text, false);
+    const NEWLINE_DELAY = paced ? 1000 : 100; // adaptive delay before submission
+    const CLI_CONFIRM_ENTER_DELAY = paced ? 350 : 150;
+    const isCliAgent = /\b(copilot|gemini|claude|windsurf|cursor|cortex)\b/i.test(terminal.name);
+    const _log = (msg) => { log?.(msg); console.log(`[sendRobustText] ${msg}`); };
+    // For most payloads, use clipboard paste to bypass PTY line-buffer limits
+    // that silently truncate input. Threshold lowered to 100 chars to ensure
+    // reliability for all message types while avoiding clipboard overhead for
+    // trivial single-word commands.
+    const CLIPBOARD_PASTE_THRESHOLD = 100;
+    if (text.length > CLIPBOARD_PASTE_THRESHOLD) {
+        _log(`Large payload (${text.length} chars) for '${terminal.name}', using clipboard paste delivery.`);
+        try {
+            let previousClipboard = '';
+            try {
+                previousClipboard = await vscode.env.clipboard.readText();
+            }
+            catch { /* ignore */ }
+            await vscode.env.clipboard.writeText(text);
+            terminal.show(false);
+            await new Promise(r => setTimeout(r, 200));
+            await vscode.commands.executeCommand('workbench.action.terminal.paste');
+            // Wait for paste to settle, then restore clipboard
+            await new Promise(r => setTimeout(r, 800));
+            try {
+                await vscode.env.clipboard.writeText(previousClipboard);
+            }
+            catch { /* ignore */ }
+            // Submit the pasted content (clipboard paste doesn't need CLI confirmation Enter)
+            await new Promise(r => setTimeout(r, NEWLINE_DELAY));
+            terminal.sendText('', true);
+            _log(`Clipboard paste complete for '${terminal.name}', Enter sent.`);
+            return;
+        }
+        catch (clipErr) {
+            _log(`Clipboard paste failed for '${terminal.name}', falling back to chunked send: ${clipErr}`);
+        }
+    }
+    // Flatten newlines for CLI agents to prevent premature submission
+    const payload = isCliAgent ? text.replace(/[\r\n]+/g, ' ') : text;
+    if (isCliAgent) {
+        _log(`CLI terminal '${terminal.name}' detected. Flattening newlines for ${text.length} chars.`);
+    }
+    if (payload.length <= CHUNK_SIZE) {
+        terminal.sendText(payload, false);
+        _log(`Sent ${payload.length} chars in single call.`);
     }
     else {
-        log?.(`Large payload (${text.length} chars), sending in ${Math.ceil(text.length / CHUNK_SIZE)} chunks...`);
-        for (let i = 0; i < text.length; i += CHUNK_SIZE) {
-            const chunk = text.substring(i, i + CHUNK_SIZE);
+        const chunkCount = Math.ceil(payload.length / CHUNK_SIZE);
+        _log(`Large payload (${payload.length} chars), sending in ${chunkCount} chunks...`);
+        for (let i = 0; i < payload.length; i += CHUNK_SIZE) {
+            const chunk = payload.substring(i, i + CHUNK_SIZE);
             terminal.sendText(chunk, false);
-            if (i + CHUNK_SIZE < text.length) {
+            if (i + CHUNK_SIZE < payload.length) {
                 await new Promise(r => setTimeout(r, CHUNK_DELAY));
             }
         }
+        _log(`All ${chunkCount} chunks sent.`);
     }
-    // Final delay before newline to ensure terminal is ready to accept the command
+    // Give the terminal time to settle before submitting the buffered payload.
     await new Promise(r => setTimeout(r, NEWLINE_DELAY));
-    terminal.sendText('\n', false);
-    if (needsSecondEnter) {
-        log?.(`Copilot terminal detected for '${terminal.name}', sending confirmation Enter`);
-        await new Promise(r => setTimeout(r, COPILOT_SECOND_ENTER_DELAY));
-        terminal.sendText('\n', false);
+    terminal.sendText('', true);
+    if (isCliAgent) {
+        _log(`CLI terminal '${terminal.name}', sending single confirmation Enter.`);
+        await new Promise(r => setTimeout(r, CLI_CONFIRM_ENTER_DELAY));
+        terminal.sendText('', true);
     }
+    _log(`sendRobustText complete for '${terminal.name}' (${text.length} chars).`);
 }
 //# sourceMappingURL=terminalUtils.js.map

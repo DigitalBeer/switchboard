@@ -148,3 +148,57 @@ Valid concerns about data structure mismatches and role mapping inconsistencies.
 - The unified prompt builder should use the **autoban role mapping** for consistency
 
 The `focusDirective` and `batchExecutionRules` should apply to **all batch prompts** (both Copy and Advance) for consistency. Implementation steps now include explicit data adapters for both contexts, role mapping reconciliation, and extraction of all helper method dependencies. This is correctly classified as Band B complexity due to multi-file coordination and data structure normalization requirements.
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer Review
+
+**CRITICAL — Card Copy Prompt Still Differs From Batch Prompt** (Severity: CRITICAL)
+*Oh, you CENTRALIZED the prompt builder. Beautiful. Architectural poetry. Except you forgot to actually USE the same options when calling it from the card copy path.* `_handleCopyPlanLink` at line 5692 called `buildKanbanBatchPrompt(role, [plan], { accurateCodingEnabled })` — note the MISSING `instruction: 'low-complexity'` for coder role and MISSING `includeInlineChallenge` for lead role. Meanwhile, `_generateBatchExecutionPrompt` in KanbanProvider passes `instruction: 'low-complexity'` for all-low-complexity batches, and the dispatch path via `_getPromptInstructionOptions` respects the `leadInlineChallenge` user setting. Result? Card "Copy Prompt" for a low-complexity plan in PLAN REVIEWED says "Please execute the following 1 plans." while "Prompt Selected" says "Please execute the following 1 low-complexity plans from PLAN REVIEWED." *THE ENTIRE POINT OF THIS PLAN was to make them identical. You built the cannon but forgot the cannonball.*
+
+**NIT — `_columnToRole` Still Maps PLAN REVIEWED → planner** (Severity: NIT)
+The old `KanbanProvider._columnToRole` mapping persists, but this is documented as intentional — it serves manual column transitions (move/advance with CLI triggers), not prompt generation. Acceptable dual-mapping, just confusing for future readers.
+
+### Stage 2: Balanced Synthesis
+
+| Finding | Verdict | Action |
+|---|---|---|
+| Card copy missing `instruction`/`includeInlineChallenge` | **Fix now** | Pass `'low-complexity'` for coder role and route through `_getPromptInstructionOptions` for lead inline challenge |
+| `_columnToRole` dual mapping | **Defer** | Documented as intentional; different semantic purpose |
+
+### Code Fix Applied
+
+**File changed:** `src/services/TaskViewerProvider.ts` — `_handleCopyPlanLink` (lines 5691-5698)
+
+**Before:**
+```typescript
+const plan: BatchPromptPlan = { topic, absolutePath: planPathAbsolute };
+let textToCopy = buildKanbanBatchPrompt(role, [plan], {
+    accurateCodingEnabled: this._isAccurateCodingEnabled()
+});
+```
+
+**After:**
+```typescript
+const plan: BatchPromptPlan = { topic, absolutePath: planPathAbsolute };
+const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
+const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
+let textToCopy = buildKanbanBatchPrompt(role, [plan], {
+    instruction: resolvedInstruction,
+    includeInlineChallenge,
+    accurateCodingEnabled: this._isAccurateCodingEnabled()
+});
+```
+
+### Validation Results
+
+- **TypeScript compilation**: `npx tsc --noEmit` — **PASS** (zero errors)
+- **Prompt parity**: Card copy for coder now produces `"Please execute the following 1 low-complexity plans from PLAN REVIEWED."` matching batch path
+- **Lead inline challenge**: Card copy for lead now respects `switchboard.lead.inlineChallenge` setting, matching dispatch path
+
+### Remaining Risks
+
+1. **Dispatch path (`handleKanbanTrigger`) for coder role** does not receive `'low-complexity'` instruction from the caller (KanbanProvider passes `undefined`). This means the "Send to Agent" and autoban dispatch paths produce `"Please execute the following 1 plans."` without the low-complexity prefix. However, this is a pre-existing issue in the dispatch pipeline and is outside the scope of this plan's card-copy-vs-batch focus.
+2. The `_columnToRole` dual mapping may confuse future contributors — consider adding an inline doc comment clarifying its distinct purpose.

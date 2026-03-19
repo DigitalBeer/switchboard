@@ -3021,6 +3021,7 @@
                 autobanState.maxSendsPerTerminal = value;
                 maxSendsInput.value = String(value);
                 vscode.postMessage({ type: 'updateAutobanMaxSends', maxSendsPerTerminal: value });
+                isAutobanPanelInteracting = false;
                 renderAgentList();
             });
 

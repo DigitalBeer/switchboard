@@ -84,3 +84,33 @@ No structural changes needed. The existing `toolReachable` field will now be set
 
 ## Agent Recommendation
 **Lead Coder** — Multi-file changes with async IPC flow, timer management, and interaction with prior architectural decisions require careful coordination.
+
+## Reviewer Pass — 2026-03-19
+
+### Implementation Status: ✅ COMPLETE — All 5 steps implemented
+
+| Step | Status | Files |
+|------|--------|-------|
+| Step 1: IPC health probe | ✅ | `src/extension.ts` (checkMcpConnection, lines 2861–2947) |
+| Step 2: 5-min recurring check | ✅ | `src/extension.ts` (mcpHealthCheckInterval, lines 960–963; cleared in deactivate lines 2951–2954) |
+| Step 3: Manual recheck icon | ✅ | `src/webview/implementation.html` (↻ icon, line 1418); `src/services/TaskViewerProvider.ts` (recheckMcpConnection handler, line 2778); `src/extension.ts` (switchboard.recheckMcp command, lines 1133–1143) |
+| Step 4: Status light states | ✅ | No changes needed — existing UI logic works with IPC-backed toolReachable |
+| Step 5: McpStatus interface | ✅ | No structural changes — toolReachable now set by IPC probe |
+
+### Grumpy Findings
+- **NIT:** 3000ms initial delay before first health check means "CHECKING" shows for 3s on startup.
+- **NIT:** Window focus triggers `refreshMcpStatus()` (line 966–971) — undocumented bonus, not in plan.
+- **NIT:** Manual recheck sends synthetic "CHECKING" intermediate state causing brief orange flicker before real result.
+
+### Balanced Synthesis
+All findings are NIT. No code fixes required. Implementation correctly addresses all adversarial concerns from the plan:
+- 10s timeout (matching adversarial recommendation)
+- `mcpServerProcess.connected` pre-check before probe send
+- Proper cleanup in `deactivate()`
+
+### Validation
+- `npx tsc --noEmit` — ✅ Clean (0 errors)
+
+### Remaining Risks
+- Window focus refresh is undocumented in code comments — future maintainer confusion risk (low).
+- If MCP server is under heavy load, 10s timeout may still produce false negatives (accepted risk per adversarial synthesis).

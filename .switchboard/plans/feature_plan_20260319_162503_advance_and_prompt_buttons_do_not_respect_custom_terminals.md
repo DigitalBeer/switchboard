@@ -325,3 +325,43 @@ case 'promptAll': {
 - CLI triggers fire correctly for custom columns when enabled.
 - No regressions in existing built-in column behavior.
 - PLAN REVIEWED complexity routing continues to work as expected.
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer (Adversarial)
+
+**"The prompt buttons were LYING TO USERS. They said 'advance to next stage' but they were yeeting cards through a hardcoded workflow pipeline. Now let's see if this fix actually fixes anything."**
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | Implementation IMPROVES on the plan: plan proposed including `this._cliTriggersEnabled` branching in prompt buttons, but actual implementation uses **visual-only moves** (comment: "Prompt buttons are for IDE chat agents — use visual-only moves (no CLI triggers)"). This is architecturally superior — prompt buttons copy text for IDE chat, they should NOT also trigger CLI terminals. |
+| 2 | NIT | For PLAN REVIEWED in prompt buttons (lines 1272-1278, 1310-1319), `_partitionByComplexityRoute` → `_targetColumnForDispatchRole(role)` routes directly to LEAD CODED or CODER CODED, **bypassing custom columns** between PLAN REVIEWED and the coded lanes. This is intentional and documented in plan ("Preserved the existing complexity-based routing logic"). |
+| 3 | NIT | `_getNextColumnId()` (lines 411-425) skips columns of the same `kind`. Custom columns all have `kind: 'custom'`. Two consecutive custom columns (e.g., `custom_agent_qa` at 150, `custom_agent_test` at 160) would skip each other. This is by design — same parallel-lane semantics as LEAD CODED/CODER CODED — but could surprise users with multiple custom columns. |
+| 4 | NIT | Defensive logging at lines 1188 and 1239 correctly present in moveSelected/moveAll. Not needed in prompt buttons since they use `kanbanForwardMove` exclusively (no role check branch). |
+
+**No CRITICAL or MAJOR findings.**
+
+### Stage 2: Balanced Synthesis
+
+- **Keep all changes**: Column-based advancement in prompt buttons, visual-only moves for prompt actions, PLAN REVIEWED complexity routing preservation, defensive logging in move handlers.
+- **No code fixes needed.** Implementation is correct and architecturally cleaner than the plan's proposal.
+- **Defer**: Parallel-lanes behavior for consecutive custom columns (NIT #3) is by design; document for users if needed.
+
+### Files Changed (Implementation)
+- `src/services/KanbanProvider.ts` — `promptSelected` handler (lines 1250-1286): Replaced workflow-based advancement with column-based `_getNextColumnId` + `kanbanForwardMove` (visual-only)
+- `src/services/KanbanProvider.ts` — `promptAll` handler (lines 1287-1328): Same column-based visual-only advancement
+- `src/services/KanbanProvider.ts` — `moveSelected` handler (lines 1154-1197): Column-based advancement with CLI trigger support + defensive logging for null roles (line 1188)
+- `src/services/KanbanProvider.ts` — `moveAll` handler (lines 1198-1249): Same as moveSelected + defensive logging (line 1239)
+- `src/services/KanbanProvider.ts` — `_generatePromptForColumn` (lines 439-454): Custom columns fall through to `_generateBatchExecutionPrompt` via `columnToPromptRole` returning the custom role string
+- `src/services/KanbanProvider.ts` — `_columnToRole` (lines 1401-1410): Returns custom role for `custom_agent_*` columns (pre-existing, verified working)
+
+### Validation Results
+- **TypeScript compilation**: ✅ Clean (`npx tsc --noEmit` exit 0)
+- **Code review**: ✅ All 4 components correctly implemented
+- **Architecture improvement**: ✅ Prompt buttons correctly use visual-only moves (better than plan's proposal)
+
+### Remaining Risks
+- **Low**: Consecutive custom columns of the same `kind` treated as parallel lanes by `_getNextColumnId` (by design)
+- **Low**: PLAN REVIEWED complexity routing still bypasses custom columns between PLAN REVIEWED and coded lanes (intentional, documented)

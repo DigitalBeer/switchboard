@@ -143,3 +143,56 @@
 - Reusing or extracting shared session-aware routing logic across `KanbanProvider` and `TaskViewerProvider` without creating a third divergent implementation.
 - Partitioning mixed `PLAN REVIEWED` selections into separate `lead` and `coder` dispatch/move batches while preserving current CLI-trigger semantics.
 - Keeping persisted Kanban columns, DB refresh behavior, legacy `CODED` normalization, and cross-surface routing behavior aligned.
+
+---
+
+## Code Review (2026-03-19)
+
+### Stage 1 — Grumpy Principal Engineer
+
+> *Well, well, well. Someone actually tried to fix the PLAN REVIEWED routing disaster. Let me see if they managed to not set the entire Kanban board on fire.*
+
+- **MAJOR — `moveSelected` PLAN REVIEWED path has no status message.** `moveAll` shows `"Moved N plans from PLAN REVIEWED: 2 → LEAD CODED, 1 → CODER CODED."` (line 1230). But `moveSelected`? NOTHING. It silently routes and refreshes the board. The user clicks "Move Selected", watches cards teleport to two different columns, and gets ZERO feedback about what just happened. The plan's Band A item 2 *explicitly* says "Update user-facing result messages for mixed routing outcomes" — that means BOTH `moveSelected` AND `moveAll`. Half the job was done. Unacceptable.
+- **NIT — No dedicated regression test for Kanban header advance routing.** Band A item 3 says "Add focused regression coverage around Kanban header routing." The existing tests cover complexity parsing, smart-router wiring, and split-coded columns — but none test that `moveSelected`/`moveAll` from `PLAN REVIEWED` actually calls `_partitionByComplexityRoute`. Source-level regex tests exist for the smart-router and complexity parser, but the specific header-advance path is uncovered. Not blocking, but a gap.
+- **NIT — `promptSelected` / `promptAll` dynamic routing.** These also got PLAN REVIEWED dynamic routing (lines 1272-1278, 1310-1318) — which is GREAT, but the plan doesn't mention them. The implementer went above and beyond. The plan should have scoped these explicitly to avoid ambiguity about whether they were intentional or accidental.
+
+**Severity summary:** 0 CRITICAL, 1 MAJOR, 2 NIT.
+
+### Stage 2 — Balanced Synthesis
+
+**Keep:**
+- `_partitionByComplexityRoute` shared resolver (line 901-914) — clean, reusable, no third copy of routing logic. ✅
+- `_targetColumnForDispatchRole` (line 917-919) — simple role-to-column map. ✅
+- `moveAll` PLAN REVIEWED path with status messaging (line 1211-1230). ✅
+- `moveSelected` PLAN REVIEWED dynamic routing via `_partitionByComplexityRoute` (line 1159-1176). ✅
+- `promptSelected` / `promptAll` also route dynamically from PLAN REVIEWED. ✅
+- CLI trigger toggle preserved in both branches. ✅
+
+**Fix now:**
+- Add mixed-routing status message to `moveSelected` PLAN REVIEWED path (mirrors `moveAll` pattern).
+
+**Defer:**
+- Dedicated regression test for header-advance routing. Existing coverage is sufficient to catch gross regressions; a targeted test can be added in a future pass.
+
+### Code Fixes Applied
+
+**File:** `src/services/KanbanProvider.ts`
+**Change:** Added `movedParts` tracking and `showInformationMessage` to the `moveSelected` PLAN REVIEWED path (lines 1162, 1175, 1177-1179), matching the existing `moveAll` pattern.
+
+### Validation Results
+- `npm run compile` — **PASS** (exit 0, post-fix)
+- `split-coded-columns-regression.test.js` — **PASS**
+- `kanban-batch-prompt-regression.test.js` — **PASS**
+- `kanban-complexity-regression.test.js` — **4/4 PASS**
+- `kanban-smart-router-regression.test.js` — **4/4 PASS**
+
+### Files Changed During Review
+| File | Change |
+|:---|:---|
+| `src/services/KanbanProvider.ts` | Added mixed-routing status message to `moveSelected` PLAN REVIEWED path |
+
+### Remaining Risks
+- No dedicated regression test for header-advance routing from PLAN REVIEWED (deferred NIT).
+- `promptSelected`/`promptAll` PLAN REVIEWED routing was implemented but not documented in the plan scope.
+
+### Review Status: ✅ APPROVED (1 MAJOR fixed)

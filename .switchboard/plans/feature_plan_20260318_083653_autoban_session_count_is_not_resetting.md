@@ -93,3 +93,47 @@ The session count badge (`sessionCapBadge.textContent`) is updated when `autoban
 
 ## Agent Recommendation
 **Coder** — One-line fix in a well-understood method. Minimal risk.
+
+---
+
+## Implementation Review
+
+### Stage 1 — Grumpy Principal Engineer
+
+*cracks knuckles, opens `TaskViewerProvider.ts`*
+
+**Finding 1 — VERIFIED: Reset-on-stop is present (line 1874)**
+`_stopAutobanWithMessage()` now calls `_resetAutobanSessionCounters()` after `_stopAutobanEngine()` and before `_persistAutobanState()`. The order is correct: engine stops → counters reset → state persisted with zeroed counts → UI broadcast shows 0. Textbook.
+
+**Finding 2 — VERIFIED: Log before reset (line 1873)**
+`console.log(\`[Autoban] Stopped: ${this._autobanState.sessionSendCount ?? 0} plans dispatched this session.\`)` fires BEFORE the reset, capturing the final count. The Balanced Synthesis recommended logging the final count — this satisfies that.
+
+**Finding 3 — NIT: `console.log` vs output channel**
+The plan's adversarial review suggested logging to `this._outputChannel?.appendLine(...)` for user-visible diagnostics. The implementation uses `console.log`, which only shows in Developer Tools, not the VS Code Output panel. Functionally equivalent for debugging, but less discoverable for end users.
+
+**Severity: NIT** — `console.log` works. The output channel would be friendlier but this is not a functional gap.
+
+**Finding 4 — VERIFIED: Defense-in-depth reset-on-start preserved**
+`_resetAutobanSessionCounters()` still called at lines 2193, 2257, 3013 (start paths). Both stop-reset and start-reset are in place. No sync risk since both call the same method.
+
+**Severity summary:** Zero CRITICAL, zero MAJOR, one cosmetic NIT.
+
+### Stage 2 — Balanced Synthesis
+
+- **Keep:** Reset-on-stop at line 1874, log at line 1873, defense-in-depth start resets.
+- **Fix now:** Nothing — the NIT is cosmetic and does not affect correctness.
+- **Defer:** Optionally migrate `console.log` to output channel in a future logging consistency pass.
+
+### Code Fixes Applied
+None required.
+
+### Verification Results
+- **TypeScript compilation:** ✅ `npx tsc --noEmit` exits 0, no errors.
+- **Code trace:** `_stopAutobanWithMessage` → `_stopAutobanEngine()` → log count → `_resetAutobanSessionCounters()` → `_persistAutobanState()` → `_postAutobanState()`. Correct order.
+- **Reset method:** `_resetAutobanSessionCounters()` (line 1500) zeroes `sessionSendCount`, `sendCounts`, `poolCursor`. Complete.
+
+### Files Changed During Review
+None — implementation was already correct.
+
+### Remaining Risks
+- **NIT:** `console.log` instead of output channel for the stop message. Non-blocking.

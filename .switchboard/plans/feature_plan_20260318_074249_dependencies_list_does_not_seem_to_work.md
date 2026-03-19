@@ -86,3 +86,30 @@ After rendering the open plans checkboxes, check for any `state.dependencies` en
 
 ## Agent Recommendation
 **Coder** — The matching fix is straightforward string normalization. The orphaned display is a small UI addition. No architectural changes needed.
+
+## Reviewer Pass (2026-03-19)
+
+### Implementation Status: ✅ COMPLETE — No fixes required
+
+### Files Changed by Implementation
+- `src/webview/review.html` (lines 745–795): `renderOpenPlans()` — normalized dependency matching with dual-key (topic + sessionId) and orphaned dependency display.
+- `src/webview/review.html` (lines 990–1004): Save handler uses normalized comparison to detect actual changes before posting update.
+
+### Grumpy Findings
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | Orphan display is read-only with no explicit "these will be removed on save" hint. Users might think orphans persist. In practice, saving with no orphan checkboxes auto-cleans them — correct behavior but non-obvious UX. |
+| 2 | NIT | O(n×m) matching algorithm in `matchedDeps` tracking. Irrelevant at expected volumes (≤50 plans × ≤20 deps). |
+
+### Balanced Synthesis
+- Normalized matching with `toLowerCase()` and sessionId fallback covers the root cause (case/whitespace mismatch between stored dependency strings and current plan topics).
+- Orphaned dependency display explains the "11 dependencies but 0 checkboxes" discrepancy clearly.
+- Save-on-checkbox-state implicitly cleans orphaned deps — correct behavior.
+- No code fixes needed.
+
+### Validation Results
+- `npm run compile`: ✅ PASSED (webpack compiled successfully)
+- No TypeScript changes — pure frontend HTML/JS.
+
+### Remaining Risks
+- Long-term, dependency storage should use `sessionId` as canonical key instead of topic strings (acknowledged in plan as future refactor).

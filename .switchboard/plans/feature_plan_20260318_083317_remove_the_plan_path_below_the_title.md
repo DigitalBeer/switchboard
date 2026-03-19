@@ -53,3 +53,43 @@ Delete any CSS rules targeting the plan path element class (e.g., `.plan-path`, 
 
 ## Agent Recommendation
 **Coder** — Single-element DOM removal. Minimal risk.
+
+---
+
+## Implementation Review
+
+### Stage 1 — Grumpy Principal Engineer
+
+*adjusts spectacles, squints at diff*
+
+**Finding 1 — NIT: Where's the body?**
+I was told there'd be a DOM element to rip out. I open `review.html` lines 460–474 and the header is already surgically clean: eyebrow, title, title-input, action buttons. No `plan-path`, no `file-path-display`, no stray `<div>` whispering the absolute path of a markdown file nobody asked to see. Either the element was removed before I got here or it never existed in the HTML I'm reviewing. Either way, the *goal* is satisfied — there is no plan path below the title.
+
+**Finding 2 — NIT: CSS ghosts**
+No `.plan-path` or `.file-path` CSS rules remain in the `<style>` block. Clean.
+
+**Finding 3 — NIT: `planFileAbsolute` still lives in state**
+`state.planFileAbsolute` is still stored (line 579) and passed in messages (line 944 for comments, line 774 for dependency metadata display). This is correct — it's used by copy-link and comment submission, NOT for standalone display. No issue.
+
+**Severity summary:** Zero CRITICAL, zero MAJOR, zero actionable NITs. This is as clean as it gets.
+
+### Stage 2 — Balanced Synthesis
+
+- **Keep:** The header structure is clean. No plan path display element exists. Copy Link button retains access to `planFileAbsolute` via state.
+- **Fix now:** Nothing.
+- **Defer:** Nothing.
+
+### Code Fixes Applied
+None required.
+
+### Verification Results
+- **TypeScript compilation:** ✅ `npx tsc --noEmit` exits 0, no errors.
+- **DOM inspection:** Header (lines 460–474) contains only eyebrow, title, title-input, and action buttons. No plan path element.
+- **CSS inspection:** No `.plan-path` or `.file-path` rules in `<style>` section.
+- **Copy Link:** `copyPlanLinkButtonEl` handler (line 963) sends `copyPlanLink` message with `state.sessionId` — unaffected.
+
+### Files Changed During Review
+None — implementation was already correct.
+
+### Remaining Risks
+None.

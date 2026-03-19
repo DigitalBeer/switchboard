@@ -72,3 +72,38 @@ Search for any other references to the old method name and update them.
 
 **Balanced Synthesis**: 
 Valid concern about coupling with Plan 2. However, Plan 1 can be executed as a tactical fix that Plan 2 will later absorb into the unified prompt builder. The complexity check should happen at the intro text generation level (before building the full prompt string), inspecting all cards via `cards.some(card => !this._isLowComplexity(card))`. The `_generateBatchPlannerPrompt` method is for the CREATED column (planning phase), not execution, so it doesn't need this fix—it's a different workflow entirely. The plan is sound as a short-term fix with the understanding that Plan 2 will centralize this logic into a shared utility. Implementation steps now clarify the exact insertion points and logic flow.
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer
+
+**[NIT]** *The plan said one thing, the implementation did something better — and didn't update the plan.* The plan specified inline `complexityLabel` and `scopeGuidance` variables within `_generateBatchExecutionPrompt`. The actual implementation is *cleaner*: it selects `role = 'lead'` vs `role = 'coder'` and delegates to `buildKanbanBatchPrompt()` in `agentPromptBuilder.ts`, which already has role-appropriate prompt templates. This is objectively superior — it uses the shared canonical prompt builder instead of duplicating string logic. But the plan's Implementation Steps are now stale documentation. Someone reading Step 2 would expect inline string manipulation and find delegation to a shared module instead. *The horror of documentation that lies to you.*
+
+**[NIT]** *Step 1 line numbers are stale.* Plan says "Line 411: Rename", "Line 454: Update call site", "Line 1120: Update call site." Actual locations: method at line 399, call sites at lines 442, 453, and 1119. Line numbers drifted during implementation. This is expected for any plan that references line numbers, but it's worth noting for traceability.
+
+**[NIT]** *The `batchLowComplexity` handler name is now slightly misleading.* The handler at line 1108 still says `case 'batchLowComplexity'` and filters for only low-complexity cards, then calls `_generateBatchExecutionPrompt(sourceCards)`. Since all sourceCards are guaranteed low-complexity (filtered at line 1114), the method will always select `role = 'coder'` with `instruction = 'low-complexity'`. This is correct, but the handler name suggests it *only* handles low complexity, while the method it calls is now generic. A future developer might incorrectly assume the method only handles low-complexity plans because of where they first encounter it. Harmless, but a code smell.
+
+**Verdict**: Three NITs. Zero functional issues. The implementation is actually *better* than the plan specified — it routes through the canonical `buildKanbanBatchPrompt` rather than hand-rolling prompt strings.
+
+### Stage 2: Balanced Synthesis
+
+- **Keep**: The implementation approach (role-based delegation to `agentPromptBuilder.ts`) is superior to the plan's inline approach. All three call sites are correctly updated. The `hasHighComplexity` check at line 400 correctly flips between lead/coder roles.
+- **Fix now**: Nothing. All NITs are documentation/naming concerns with zero functional impact.
+- **Defer**: Update plan line numbers and implementation steps to reflect actual code if this plan is referenced again. The `batchLowComplexity` message type name could be renamed in a future cleanup.
+
+### Code Fixes Applied
+None required — no CRITICAL or MAJOR findings. Implementation exceeds plan quality.
+
+### Verification Results
+- **TypeScript compile**: `npx tsc --noEmit` → **PASS** (exit code 0, zero errors)
+- **Functional trace**: High-complexity cards → `hasHighComplexity=true` → `role='lead'` → `buildKanbanBatchPrompt('lead', ...)` → prompt says "Please execute the following N plans." (no "low-complexity" language) ✓
+- **Functional trace**: All low-complexity cards → `hasHighComplexity=false` → `role='coder'`, `instruction='low-complexity'` → `buildKanbanBatchPrompt('coder', ...)` → prompt says "Please execute the following N low-complexity plans from PLAN REVIEWED." ✓
+
+### Files Changed
+- `src/services/KanbanProvider.ts` (method rename at line 399, complexity detection at lines 400-407, call sites at lines 442, 453, 1119)
+- `src/services/agentPromptBuilder.ts` (shared prompt builder — unchanged by this plan, but is the canonical path used)
+
+### Remaining Risks
+- None. The shared prompt builder ensures prompt consistency across all UI surfaces.
+
+### Status: ✅ APPROVED

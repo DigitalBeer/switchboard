@@ -269,6 +269,16 @@ export class InboxWatcher {
         const filePath = uri.fsPath;
         const fileName = path.basename(filePath);
 
+        // PATH VALIDATION: Ensure file is within the expected inbox directory before any processing
+        const expectedInboxDir = path.join(this.workspaceRoot, '.switchboard', 'inbox');
+        const normalizedFilePath = path.resolve(filePath);
+        const normalizedInboxDir = path.resolve(expectedInboxDir);
+        const relPath = path.relative(normalizedInboxDir, normalizedFilePath);
+        if (relPath.startsWith('..') || path.isAbsolute(relPath)) {
+            this.outputChannel.appendLine(`[InboxWatcher] REJECTED: Path traversal detected — ${filePath} is outside inbox directory`);
+            return;
+        }
+
         // CONCURRENCY LOCK: Prevent double-processing (scan vs watcher events)
         if (this.processingFiles.has(filePath)) return;
         if (!fs.existsSync(filePath)) return;

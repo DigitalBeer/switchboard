@@ -134,3 +134,38 @@ Instead, make the manual override a **plan-file-visible signal** that every pars
 
 ### Agent Recommendation
 Send this to the **Lead Coder**. The fix spans multiple tightly-coupled files and must keep parser behavior synchronized across VS Code UI, autoban routing, and MCP state reporting.
+
+## Reviewer Pass (2026-03-19)
+
+### Implementation Status: ✅ COMPLETE — 1 CRITICAL fix applied
+
+### Files Changed by Implementation
+- `src/services/KanbanProvider.ts` (lines 743–751): Manual override marker check as highest priority in `getComplexityFromPlan()`.
+- `src/services/KanbanProvider.ts` (line 805): `isEmptyMarker` now includes `unknown` as an empty placeholder.
+- `src/services/TaskViewerProvider.ts` (lines 5153–5209): `_applyComplexityToPlanContent()` inserts/updates `**Manual Complexity Override:**` marker in the Complexity Audit section.
+- `src/services/TaskViewerProvider.ts` (lines 5510–5520): `setComplexity` handler writes marker to plan file and updates DB.
+- `src/services/TaskViewerProvider.ts` (lines 5603–5608): `savePlanText` re-derives complexity via `getComplexityFromPlan()` which now respects the override marker — snap-back bug is fixed.
+- `src/mcp-server/register-tools.js` (lines 824–828): `isEmptyBandBLine` includes `unknown`.
+- `src/mcp-server/register-tools.js` (lines 833–837): Manual override marker check added.
+
+### Files Changed by Reviewer
+- `src/mcp-server/register-tools.js` (lines 839–848): **CRITICAL FIX** — Agent Recommendation priority reordered to match `KanbanProvider.ts`. Previously, agent recommendation was only checked when no Complexity Audit section existed; now it is checked before Band B parsing regardless, preventing UI/MCP complexity drift.
+
+### Grumpy Findings
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| 1 | CRITICAL | MCP parser (`register-tools.js`) had divergent priority order from `KanbanProvider.ts` — agent recommendation was only checked when no Complexity Audit section existed, while `KanbanProvider.ts` checks it before Band B parsing unconditionally. Plans with both sections would get different complexity from UI vs MCP. | **FIXED** |
+| 2 | MAJOR | `_applyComplexityToPlanContent` still replaces the entire Band B body with generic text when the dropdown is used, destroying user-written plan prose. The plan's adversarial review warned about this. | **DEFERRED** — override marker is the durable signal; Band B body is now cosmetic for classification. Fixing requires complex "preserve existing content" logic with new parsing risk. |
+| 3 | NIT | `isEmptyMarker` and `isEmptyBandBLine` both correctly handle `unknown` now. Consistent across both parsers. | OK |
+
+### Balanced Synthesis
+- The core fix works: override marker is written by dropdown, read first by all parser paths (KanbanProvider, MCP, autoban routing, save-reparse), and persists through plan text saves.
+- The CRITICAL MCP priority divergence has been fixed.
+- Band B body clobbering is accepted as deferred because the override marker supersedes Band B content for all classification decisions.
+
+### Validation Results
+- `npm run compile`: ✅ PASSED (webpack compiled successfully, both bundles)
+
+### Remaining Risks
+- Band B body is replaced with generic text on dropdown use (deferred — cosmetic only since override marker is authoritative).
+- Custom agents' complexity columns not covered (out of scope — existing limitation).

@@ -720,14 +720,18 @@ export class SessionActionLog {
             await fs.promises.mkdir(this.sessionsDir, { recursive: true });
 
             // Log Rotation Check (5MB limit)
+            // Guard: stat + rename is not atomic. If the file disappears between
+            // the two calls (e.g. another process rotated it first), catch ENOENT
+            // gracefully instead of crashing the flush pipeline.
             try {
-                if (fs.existsSync(this.activityLogPath)) {
-                    const stats = await fs.promises.stat(this.activityLogPath);
-                    if (stats.size > 5 * 1024 * 1024) {
-                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                        const archivePath = path.join(this.sessionsDir, `activity-${timestamp}.jsonl`);
-                        await fs.promises.rename(this.activityLogPath, archivePath);
-                    }
+                const stats = await fs.promises.stat(this.activityLogPath).catch(() => null);
+                if (stats && stats.size > 5 * 1024 * 1024) {
+                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                    const archivePath = path.join(this.sessionsDir, `activity-${timestamp}.jsonl`);
+                    await fs.promises.rename(this.activityLogPath, archivePath).catch((renameErr: NodeJS.ErrnoException) => {
+                        if (renameErr.code !== 'ENOENT') throw renameErr;
+                        // File already rotated by another process — safe to ignore
+                    });
                 }
             } catch (e) {
                 console.error('[SessionActionLog] Log rotation failed:', e);

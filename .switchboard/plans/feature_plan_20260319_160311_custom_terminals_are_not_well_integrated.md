@@ -381,3 +381,45 @@ This plan contains only Band A routine changes:
 - Extend webview rendering logic with a filter+map operation
 
 No complex state management, no risky refactoring, no new architectural patterns. All changes are additive and follow existing code patterns.
+
+---
+
+## Reviewer Pass — 2026-03-19
+
+### Stage 1: Grumpy Principal Engineer (Adversarial)
+
+**"Three bugs in a trenchcoat pretending to be one feature request. Let me peel this onion."**
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | PID retry in `_createAutobanTerminal()` (line 2100-2116) uses `setTimeout` with an async callback. If the extension deactivates during the 2-second delay, the retry fires on a disposed context. No crash risk — `updateState` will silently fail — but it's sloppy lifecycle management. |
+| 2 | NIT | PID re-resolution loop in `_refreshTerminalStatuses()` (lines 8671-8695) calls `updateState()` per terminal with missing PID. If 5 terminals lack PIDs, that's 5 sequential file writes. Not a performance issue since this is rare in practice. |
+| 3 | NIT | `DEFAULT_CUSTOM_AGENT_KANBAN_ORDER` at `agentConfig.ts:38` uses `Math.max(300, ...)` as a floor for empty-array safety. Currently evaluates to 400. Clean defensive coding. |
+| 4 | NIT | Autoban roles array in `implementation.html:2862-2870` spreads `lastCustomAgents.filter(...)`. If `lastCustomAgents` were undefined, `.filter()` would throw. BUT `lastCustomAgents` is initialized as `[]` at webview script top, so this is safe. |
+| 5 | NIT | `_computeDispatchReadiness` (line 8764) correctly passes custom agent roles into the `roles` array, and `roleCandidates` (line 8765) maps custom roles to `[agent.name, agent.role]`. Dispatch readiness correctly resolves custom terminals. |
+
+**No CRITICAL or MAJOR findings.**
+
+### Stage 2: Balanced Synthesis
+
+- **Keep all changes**: PID retry/re-resolution logic, dynamic kanban order default (400), autoban tab custom agent integration, dispatch readiness custom role inclusion.
+- **No code fixes needed.**
+- **Defer**: `setTimeout` lifecycle concern (NIT #1) and batch state writes (NIT #2) are acceptable technical debt for this scope.
+
+### Files Changed (Implementation)
+- `src/services/TaskViewerProvider.ts` — `_createAutobanTerminal()` (lines 2091-2117): PID timeout increased to 10s, retry logic added
+- `src/services/TaskViewerProvider.ts` — `_refreshTerminalStatuses()` (lines 8671-8695): PID re-resolution for terminals with missing PIDs
+- `src/services/TaskViewerProvider.ts` — `_computeDispatchReadiness()` caller (line 8764): Custom agent roles included in roles array
+- `src/services/agentConfig.ts` (line 38): `DEFAULT_CUSTOM_AGENT_KANBAN_ORDER` computed as `Math.max(300, ...orders) + 100`
+- `src/services/agentConfig.ts` — `parseCustomAgents()` (line 93): Uses computed default instead of magic number 150
+- `src/webview/implementation.html` (line 1446): Custom agent modal default kanban order updated to 400
+- `src/webview/implementation.html` (lines 2862-2870): Autoban roles array extended with custom agents filtered by `includeInKanban`
+
+### Validation Results
+- **TypeScript compilation**: ✅ Clean (`npx tsc --noEmit` exit 0)
+- **Code review**: ✅ All 3 issues (orange status light, kanban order default, autoban tab) correctly implemented
+- **Defensive coding**: ✅ `Math.max(300, ...)` floor, `lastCustomAgents` initialization, null PID guards
+
+### Remaining Risks
+- **Low**: Extension deactivation during PID retry timeout (NIT, no crash impact)
+- **Low**: Multiple consecutive custom columns all have `kind: 'custom'` — `_getNextColumnId` treats them as parallel lanes (by design, consistent with LEAD CODED/CODER CODED behavior)

@@ -157,3 +157,28 @@ Would you like me to go ahead and dispatch this to the Coder agent to implement?
 
 ### Agent Recommendation
 Send this to the **Coder agent**. The verified implementation is a small, localized renderer change in one file with clear fallback behavior and no architectural churn.
+
+## Reviewer Pass (2026-03-19)
+
+### Implementation Status: ✅ COMPLETE — No fixes required
+
+### Files Changed by Implementation
+- `src/webview/implementation.html` — `formatActivitySummary()` (lines 1993–2008): topic lookup from `currentRunSheets` with raw-ID fallback, appended as suffix to batch dispatch message.
+
+### Grumpy Findings
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | NIT | Uses `function(id)` / `function(s)` ES5 syntax instead of arrow functions used elsewhere in the file. Cosmetic inconsistency only. |
+| 2 | NIT | No truncation on long topic lists for large batches. Plan explicitly deferred this for observability reasons. |
+
+### Balanced Synthesis
+- Implementation is correct and matches the plan exactly.
+- `Array.isArray` guard, `sheet.topic` fallback to raw ID, and `currentRunSheets` reuse all present.
+- No code fixes needed.
+
+### Validation Results
+- `npm run compile`: ✅ PASSED (webpack compiled successfully)
+- No TypeScript changes — pure frontend HTML/JS.
+
+### Remaining Risks
+- Very long batch topic lists may cause visual wrapping in the live feed (accepted per plan).

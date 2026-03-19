@@ -40,7 +40,7 @@ const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const lockfile = __importStar(require("proper-lockfile"));
 /** Transient directories that are safe to wipe on activation. */
-const TRANSIENT_DIRS = ['inbox', 'outbox', 'cooldowns'];
+const TRANSIENT_DIRS = ['inbox', 'outbox', 'cooldowns', 'MCP'];
 /** Transient files that are safe to delete on activation. */
 const TRANSIENT_FILES = ['bridge_debug.log'];
 /**
@@ -88,8 +88,38 @@ async function readPersistedFields(statePath) {
     try {
         const content = await fs.promises.readFile(statePath, 'utf8');
         const state = JSON.parse(content);
+        // Preserve startup commands
         if (state.startupCommands && typeof state.startupCommands === 'object') {
             persisted.startupCommands = state.startupCommands;
+        }
+        // Preserve agent visibility preferences
+        if (state.visibleAgents && typeof state.visibleAgents === 'object') {
+            persisted.visibleAgents = state.visibleAgents;
+        }
+        // Preserve custom agent configurations
+        if (Array.isArray(state.customAgents)) {
+            persisted.customAgents = state.customAgents;
+        }
+        // Preserve autoban configuration
+        if (state.autoban && typeof state.autoban === 'object') {
+            persisted.autoban = state.autoban;
+        }
+        // Preserve plan ingestion target
+        if (typeof state.planIngestionFolder === 'string') {
+            persisted.planIngestionFolder = state.planIngestionFolder;
+        }
+        // Preserve jules tracking state
+        if (Array.isArray(state.julesSessions)) {
+            persisted.julesSessions = state.julesSessions;
+        }
+        if (typeof state.julesPollingDegraded === 'boolean') {
+            persisted.julesPollingDegraded = state.julesPollingDegraded;
+        }
+        if (typeof state.julesPollingLastCheckedAt === 'string') {
+            persisted.julesPollingLastCheckedAt = state.julesPollingLastCheckedAt;
+        }
+        if (typeof state.julesPollingDegradedAt === 'string') {
+            persisted.julesPollingDegradedAt = state.julesPollingDegradedAt;
         }
         // NOTE: terminals are intentionally NOT preserved across resets.
         // Stale terminal entries cause orphan persistence and sidebar ghosts.
