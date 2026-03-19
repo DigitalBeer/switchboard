@@ -694,6 +694,13 @@
             </label>
             <span class="toggle-label">CLI Triggers</span>
         </label>
+        <label class="cli-toggle-inline pair-programming-toggle" id="pair-programming-toggle" title="Pair Programming: Lead does Band B, Coder auto-starts Band A simultaneously">
+            <label class="toggle-switch">
+                <input type="checkbox" id="pairProgrammingCheckbox">
+                <span class="toggle-slider"></span>
+            </label>
+            <span class="toggle-label">Pair Programming</span>
+        </label>
         <button class="strip-btn" id="btn-refresh-strip" title="Sync board with latest backend state">↻ SYNC BOARD</button>
     </div>
     <div class="kanban-board" id="kanban-board"></div>
@@ -1135,6 +1142,13 @@
                 });
             });
 
+            document.querySelectorAll('.pair-program-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const sessionId = btn.dataset.session;
+                    postKanbanMessage({ type: 'pairProgramCard', sessionId });
+                });
+            });
+
             requestAnimationFrame(() => restoreBoardViewState(viewState));
         }
 
@@ -1144,6 +1158,9 @@
             const complexity = card.complexity || 'Unknown';
             const complexityClass = complexity.toLowerCase();
             let copyLabel = 'Copy Prompt';
+            const pairProgramBtn = card.column === 'PLAN REVIEWED'
+                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" title="Pair Program: copy Band B prompt to clipboard, auto-send Band A to Coder terminal">⚡ Pair</button>`
+                : '';
             return `
                 <div class="kanban-card" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                     <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
@@ -1151,6 +1168,7 @@
                     <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
                         <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">${copyLabel}</button>
                         <div style="display: flex; gap: 4px;">
+                            ${pairProgramBtn}
                             <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
                             </button>
@@ -1396,6 +1414,14 @@
                     syncAutobanCountdownTimer();
                     updateAutobanButtonState();
                     break;
+                case 'updatePairProgramming': {
+                    const ppCheckbox = document.getElementById('pairProgrammingCheckbox');
+                    if (ppCheckbox) {
+                        ppCheckbox.checked = msg.enabled;
+                        ppCheckbox.closest('.pair-programming-toggle')?.classList.toggle('is-off', !msg.enabled);
+                    }
+                    break;
+                }
             }
         });
 
@@ -1452,6 +1478,9 @@
             cliTriggersEnabled = checked;
             updateCliToggleUi();
             postKanbanMessage({ type: 'toggleCliTriggers', enabled: checked });
+        });
+        document.getElementById('pairProgrammingCheckbox')?.addEventListener('change', (e) => {
+            postKanbanMessage({ type: 'togglePairProgramming', enabled: e.target.checked });
         });
 
         updateCliToggleUi();

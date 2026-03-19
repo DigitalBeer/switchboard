@@ -18,6 +18,8 @@ export interface PromptBuilderOptions {
     includeInlineChallenge?: boolean;
     /** Whether accuracy-mode workflow hint is appended (coder role). */
     accurateCodingEnabled?: boolean;
+    /** When true, lead is told a coder agent is handling Band A concurrently. Coder is told to do Band A only. */
+    pairProgrammingEnabled?: boolean;
 }
 
 function buildReviewerExecutionIntro(planCount: number): string {
@@ -58,11 +60,14 @@ export function buildKanbanBatchPrompt(
     const baseInstruction = options?.instruction;
     const includeInlineChallenge = options?.includeInlineChallenge ?? false;
     const accurateCodingEnabled = options?.accurateCodingEnabled ?? false;
+    const pairProgrammingEnabled = options?.pairProgrammingEnabled ?? false;
 
     const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
-    const batchExecutionRules = `If your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.
+    const parallelInstruction = plans.length > 1
+        ? `If your platform supports parallel sub-agents, dispatch one sub-agent per plan to execute them concurrently. If not, process them sequentially.\n\n`
+        : '';
 
-CRITICAL INSTRUCTIONS:
+    const batchExecutionRules = `${parallelInstruction}CRITICAL INSTRUCTIONS:
 1. Treat each plan file path below as a completely isolated context. Do not mix requirements between plans.
 2. Execute each plan fully before moving to the next (if sequential).
 3. If one plan hits an issue, report it clearly but continue processing the remaining plans when safe to do so.`;
@@ -73,6 +78,9 @@ CRITICAL INSTRUCTIONS:
 - do NOT start \`/challenge\` or any auxiliary workflow for this step.`;
     const challengeBlock = includeInlineChallenge ? `\n\n${inlineChallengeDirective}` : '';
     const planList = plans.map(plan => `- [${plan.topic}] Plan File: ${plan.absolutePath}`).join('\n');
+
+    const chatCritiqueDirective =
+        `When you output the adversarial critique (Grumpy and Balanced sections), include them verbatim in your chat response as formatted markdown — do not only write them to the plan file. The user must be able to read the critique directly in chat without opening the plan.`;
 
     if (role === 'planner') {
         const plannerVerb = baseInstruction === 'enhance' ? 'enhance' : 'improve';
@@ -88,8 +96,9 @@ For each plan:
 2. Fill out 'TODO' sections or underspecified parts. Scan the Kanban board/plans folder for potential cross-plan conflicts and document them.
 3. Ensure the plan has a "## Complexity Audit" section with "### Band A — Routine" and "### Band B — Complex / Risky" subsections. If missing, create it. If present, update it. If Band B is empty, write "- None" explicitly.
 4. Perform adversarial review: post a Grumpy critique (dramatic "Grumpy Principal Engineer" voice: incisive, specific, theatrical) then a Balanced synthesis.
-5. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
-6. Recommend agent: if the plan is simple (routine changes, only Band A), say "Send to Coder". If complex (Band B tasks, new frameworks), say "Send to Lead Coder".
+5. ${chatCritiqueDirective}
+6. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
+7. Recommend agent: if the plan is simple (routine changes, only Band A), say "Send to Coder". If complex (Band B tasks, new frameworks), say "Send to Lead Coder".
 
 ${focusDirective}
 
@@ -117,6 +126,8 @@ For each plan:
 
 CRITICAL: Do not stop after Stage 1. Complete the Grumpy review, the Balanced synthesis, the code fixes, and the plan update all in one continuous response.
 
+${chatCritiqueDirective}
+
 ${focusDirective}
 
 PLANS TO PROCESS:
@@ -124,7 +135,7 @@ ${planList}`;
     }
 
     if (role === 'lead') {
-        return `Please execute the following ${plans.length} plans.
+        let leadPrompt = `Please execute the following ${plans.length} plans.
 
 ${batchExecutionRules}${challengeBlock}
 
@@ -132,13 +143,17 @@ ${focusDirective}
 
 PLANS TO PROCESS:
 ${planList}`;
+        if (pairProgrammingEnabled) {
+            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. Once the Coder finishes Band A (they will complete before you), check and integrate their work into your implementation before finalising.`;
+        }
+        return leadPrompt;
     }
 
     if (role === 'coder') {
         const intro = baseInstruction === 'low-complexity'
             ? `Please execute the following ${plans.length} low-complexity plans from PLAN REVIEWED.`
             : `Please execute the following ${plans.length} plans.`;
-        return withCoderAccuracyInstruction(`${intro}
+        let coderPrompt = withCoderAccuracyInstruction(`${intro}
 
 ${batchExecutionRules}${challengeBlock}
 
@@ -146,6 +161,10 @@ ${focusDirective}
 
 PLANS TO PROCESS:
 ${planList}`, accurateCodingEnabled);
+        if (pairProgrammingEnabled) {
+            coderPrompt += `\n\nAdditional Instructions: only do band a.`;
+        }
+        return coderPrompt;
     }
 
     return `Please process the following ${plans.length} plans.

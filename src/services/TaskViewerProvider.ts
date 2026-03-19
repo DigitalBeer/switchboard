@@ -1238,6 +1238,16 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 targetAgent,
                 planCount: validPlans.length
             }, undefined, resolvedWorkspaceRoot);
+
+            // Pair Programming: if lead dispatch and pair programming enabled, also dispatch to coder
+            if (role === 'lead' && this._autobanState.pairProgrammingEnabled) {
+                const coderPrompt = buildKanbanBatchPrompt('coder', validPlans, {
+                    pairProgrammingEnabled: true,
+                    accurateCodingEnabled: this._isAccurateCodingEnabled()
+                });
+                await this.dispatchToCoderTerminal(coderPrompt);
+            }
+
             return true;
         } catch (e) {
             await this._logEvent('dispatch', {
@@ -2265,6 +2275,32 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         await this._persistAutobanState();
         this._postAutobanState();
+    }
+
+    /** Called by Kanban controls strip to toggle Pair Programming mode. */
+    public async setPairProgrammingEnabled(enabled: boolean): Promise<void> {
+        this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, pairProgrammingEnabled: enabled });
+        await this._persistAutobanState();
+        this._postAutobanState();
+        vscode.window.showInformationMessage(`Pair Programming mode ${enabled ? 'enabled' : 'disabled'}.`);
+    }
+
+    /** Dispatch a prompt to the Coder terminal for Band A pair programming. */
+    public async dispatchToCoderTerminal(prompt: string): Promise<void> {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            vscode.window.showWarningMessage('Pair Program: no workspace root found.');
+            return;
+        }
+        const coderAgent = await this._getAgentNameForRole('coder', workspaceRoot);
+        if (!coderAgent) {
+            vscode.window.showWarningMessage('Pair Program: no Coder terminal found. Please register a Coder terminal first.');
+            return;
+        }
+        await this._dispatchExecuteMessage(workspaceRoot, coderAgent, prompt, {
+            batch: true,
+            pairProgramming: true
+        });
     }
 
     /** Column-to-role mapping for Autoban dispatches. */

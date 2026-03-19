@@ -920,6 +920,16 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(setAutobanFromKanbanDisposable);
 
+    const setPairProgrammingDisposable = vscode.commands.registerCommand('switchboard.setPairProgrammingFromKanban', async (enabled: boolean) => {
+        await taskViewerProvider.setPairProgrammingEnabled(enabled);
+    });
+    context.subscriptions.push(setPairProgrammingDisposable);
+
+    const dispatchToCoderTerminalDisposable = vscode.commands.registerCommand('switchboard.dispatchToCoderTerminal', async (prompt: string) => {
+        await taskViewerProvider.dispatchToCoderTerminal(prompt);
+    });
+    context.subscriptions.push(dispatchToCoderTerminalDisposable);
+
     const refreshMcpStatus = async () => {
         if (!workspaceRoot) return;
         const mcpStatus = await checkMcpConnection(context, workspaceRoot);

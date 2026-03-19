@@ -371,6 +371,7 @@ export class KanbanProvider implements vscode.Disposable {
             this._panel.webview.postMessage({ type: 'visibleAgents', agents: visibleAgents });
             if (this._autobanState) {
                 this._panel.webview.postMessage({ type: 'updateAutobanConfig', state: this._autobanState });
+                this._panel.webview.postMessage({ type: 'updatePairProgramming', enabled: this._autobanState.pairProgrammingEnabled });
             }
         } catch (e) {
             console.error('[KanbanProvider] Failed to refresh board:', e);
@@ -421,10 +422,24 @@ export class KanbanProvider implements vscode.Disposable {
         const role = hasHighComplexity ? 'lead' : 'coder';
         const instruction = hasHighComplexity ? undefined : 'low-complexity';
         const accurateCodingEnabled = vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
+        const pairProgrammingEnabled = this._autobanState?.pairProgrammingEnabled ?? false;
         return buildKanbanBatchPrompt(role, this._cardsToPromptPlans(cards, workspaceRoot), {
             instruction,
-            accurateCodingEnabled
+            accurateCodingEnabled,
+            pairProgrammingEnabled
         });
+    }
+
+    private async _dispatchWithPairProgrammingIfNeeded(
+        cards: KanbanCard[],
+        workspaceRoot: string
+    ): Promise<void> {
+        const pairProgrammingEnabled = this._autobanState?.pairProgrammingEnabled ?? false;
+        if (!pairProgrammingEnabled) { return; }
+        const coderPrompt = buildKanbanBatchPrompt('coder', this._cardsToPromptPlans(cards, workspaceRoot), {
+            pairProgrammingEnabled: true
+        });
+        await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
     }
 
     /** Get the next column ID in the pipeline, or null for the last column. */
@@ -721,6 +736,7 @@ export class KanbanProvider implements vscode.Disposable {
         this._autobanState = state;
         if (!this._panel) { return; }
         this._panel.webview.postMessage({ type: 'updateAutobanConfig', state });
+        this._panel.webview.postMessage({ type: 'updatePairProgramming', enabled: state.pairProgrammingEnabled });
     }
 
     /**
@@ -1042,6 +1058,14 @@ export class KanbanProvider implements vscode.Disposable {
                     this._autobanState = { ...this._autobanState, enabled };
                 }
                 await vscode.commands.executeCommand('switchboard.setAutobanEnabledFromKanban', enabled);
+                break;
+            }
+            case 'togglePairProgramming': {
+                const enabled = !!msg.enabled;
+                if (this._autobanState) {
+                    this._autobanState = { ...this._autobanState, pairProgrammingEnabled: enabled };
+                }
+                await vscode.commands.executeCommand('switchboard.setPairProgrammingFromKanban', enabled);
                 break;
             }
             case 'triggerAction': {
@@ -1394,6 +1418,30 @@ export class KanbanProvider implements vscode.Disposable {
             case 'importFromClipboard':
                 await vscode.commands.executeCommand('switchboard.importPlanFromClipboard');
                 break;
+            case 'pairProgramCard': {
+                const card = this._lastCards.find(c => c.sessionId === msg.sessionId);
+                if (!card || !this._currentWorkspaceRoot) { break; }
+                if (card.column !== 'PLAN REVIEWED') {
+                    vscode.window.showWarningMessage('Pair Program is only available for PLAN REVIEWED cards.');
+                    break;
+                }
+
+                const plans = this._cardsToPromptPlans([card], this._currentWorkspaceRoot);
+
+                // Build lead (Band B) prompt — with pair programming note
+                const leadPrompt = buildKanbanBatchPrompt('lead', plans, { pairProgrammingEnabled: true });
+
+                // Build coder (Band A) prompt
+                const coderPrompt = buildKanbanBatchPrompt('coder', plans, { pairProgrammingEnabled: true });
+
+                // Copy lead prompt to clipboard for the IDE agent
+                await vscode.env.clipboard.writeText(leadPrompt);
+                vscode.window.showInformationMessage('Band B prompt copied to clipboard. Dispatching Band A to Coder terminal...');
+
+                // Auto-dispatch Band A to Coder terminal
+                await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
+                break;
+            }
             case 'analystMapSelected': {
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
