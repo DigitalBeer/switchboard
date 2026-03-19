@@ -116,7 +116,11 @@ export class InboxWatcher {
         if (this.housekeepingDebounceTimer) clearTimeout(this.housekeepingDebounceTimer);
         if (this.scanDebounceTimer) clearTimeout(this.scanDebounceTimer);
         
-        this.outputChannel.appendLine('[InboxWatcher] Stopped');
+        try {
+            this.outputChannel.appendLine('[InboxWatcher] Stopped');
+        } catch {
+            // Output channel may already be disposed during extension shutdown
+        }
     }
 
     public async runHousekeepingNow(): Promise<void> {
