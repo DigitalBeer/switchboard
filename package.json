@@ -151,6 +151,11 @@
           "default": false,
           "description": "When enabled, Lead Coder execution prompts include an inline challenge step before implementation."
         },
+        "switchboard.jules.autoSync": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, automatically runs git add/commit/push before sending plans to Jules. Defaults to OFF."
+        },
         "switchboard.team.strictPrompts": {
           "type": "boolean",
           "default": false,

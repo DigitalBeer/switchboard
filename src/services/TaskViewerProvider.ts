@@ -112,6 +112,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _configuredPlanSyncTimer?: NodeJS.Timeout;
     private _managedImportMirrorsForActiveFolder = new Set<string>();
     private _recentActionDispatches = new Map<string, NodeJS.Timeout>(); // short TTL dedupe for sidebar actions
+    private _julesSyncInFlight = false; // re-entrancy guard for auto-sync-before-Jules
     private _pendingPlanCreations = new Set<string>(); // suppress watcher for internally created plans
     private _planFsDebounceTimers = new Map<string, NodeJS.Timeout>(); // debounce native plan watcher events
     private _sessionWatcher?: vscode.FileSystemWatcher;
@@ -2971,6 +2972,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                                 vscode.ConfigurationTarget.Workspace
                             );
                         }
+                        if (typeof data.julesAutoSyncEnabled === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update(
+                                'jules.autoSync',
+                                data.julesAutoSyncEnabled,
+                                vscode.ConfigurationTarget.Workspace
+                            );
+                        }
                         if (typeof data.planIngestionFolder === 'string') {
                             const normalizedPlanIngestionFolder = this._normalizeConfiguredPlanFolder(data.planIngestionFolder);
                             let validationError = this._getConfiguredPlanFolderValidationError(normalizedPlanIngestionFolder);
@@ -3025,6 +3033,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'getLeadChallengeSetting': {
                         const enabled = this._isLeadInlineChallengeEnabled();
                         this._view?.webview.postMessage({ type: 'leadChallengeSetting', enabled });
+                        break;
+                    }
+                    case 'getJulesAutoSyncSetting': {
+                        const enabled = this._isJulesAutoSyncEnabled();
+                        this._view?.webview.postMessage({ type: 'julesAutoSyncSetting', enabled });
                         break;
                     }
                     case 'setActiveTab': {
@@ -6932,6 +6945,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return vscode.workspace.getConfiguration('switchboard').get<boolean>('leadCoder.inlineChallenge', false);
     }
 
+    private _isJulesAutoSyncEnabled(): boolean {
+        return vscode.workspace.getConfiguration('switchboard').get<boolean>('jules.autoSync', false);
+    }
+
     private _withCoderAccuracyInstruction(basePayload: string): string {
         if (!this._isAccurateCodingEnabled()) {
             return basePayload;
@@ -7158,6 +7175,35 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
 
         if (role === 'jules') {
+            // Auto-sync guard: if enabled, sync the repo before sending to Jules
+            if (this._isJulesAutoSyncEnabled()) {
+                if (this._julesSyncInFlight) {
+                    clearDispatchLock();
+                    return false; // Drop duplicate click while sync is in progress
+                }
+                this._julesSyncInFlight = true;
+                this._view?.webview.postMessage({ type: 'airlock_syncStart' });
+                try {
+                    await Promise.race([
+                        this._performGitSync(),
+                        new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new Error('Auto-sync timed out after 60 seconds')), 60_000)
+                        )
+                    ]);
+                    this._view?.webview.postMessage({ type: 'airlock_syncComplete' });
+                } catch (err: any) {
+                    this._julesSyncInFlight = false;
+                    const msg = err?.message || String(err);
+                    this._view?.webview.postMessage({ type: 'airlock_syncError', message: msg });
+                    vscode.window.showWarningMessage(`Auto-sync failed — Jules send cancelled: ${msg}`);
+                    clearDispatchLock();
+                    this._view?.webview.postMessage({ type: 'actionTriggered', role: 'jules', success: false });
+                    return false;
+                } finally {
+                    this._julesSyncInFlight = false;
+                }
+            }
+
             const pushGuard = await this._isPlanFilePushedToRemote(resolvedWorkspaceRoot, planFileAbsolute);
             if (!pushGuard.ok) {
                 clearDispatchLock();
@@ -9036,45 +9082,8 @@ Create this file exactly as specified, then continue your work.`);
     }
 
     private async _handleAirlockSyncRepo(): Promise<void> {
-        const workspaceRoot = this._resolveWorkspaceRoot();
-        if (!workspaceRoot) {
-            this._view?.webview.postMessage({ type: 'airlock_syncError', message: 'No workspace open' });
-            return;
-        }
-
         try {
-            const gitExtension = vscode.extensions.getExtension('vscode.git');
-            if (!gitExtension) {
-                throw new Error('VS Code Git extension is not available.');
-            }
-
-            const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
-            const api = git.getAPI(1);
-
-            if (!api || api.repositories.length === 0) {
-                throw new Error('No Git repositories found in the workspace.');
-            }
-
-            // Find matching repo or fallback to primary
-            let repo = api.repositories.find((r: any) => this._getStablePath(r.rootUri.fsPath) === this._getStablePath(workspaceRoot));
-            if (!repo) {
-                repo = api.repositories[0];
-            }
-
-            // Stage all untracked/modified files
-            const changesToStage = repo.state.workingTreeChanges.map((c: any) => c.uri.fsPath);
-            if (changesToStage.length > 0) {
-                await repo.add(changesToStage);
-            }
-
-            // Commit only if there are actually staged files
-            if (repo.state.indexChanges.length > 0) {
-                await repo.commit('chore: airlock context sync');
-            }
-
-            // Push to remote
-            await repo.push();
-
+            await this._performGitSync();
             this._view?.webview.postMessage({ type: 'airlock_syncComplete' });
             vscode.window.showInformationMessage('Airlock: Repository synced to cloud successfully.');
         } catch (err: any) {
@@ -9082,6 +9091,49 @@ Create this file exactly as specified, then continue your work.`);
             this._view?.webview.postMessage({ type: 'airlock_syncError', message: msg });
             vscode.window.showErrorMessage(`Airlock sync failed: ${msg}`);
         }
+    }
+
+    /**
+     * Core git sync logic: stage all, commit, push.
+     * Throws on failure. Reused by manual sync button and auto-sync-before-Jules guard.
+     */
+    private async _performGitSync(): Promise<void> {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            throw new Error('No workspace open');
+        }
+
+        const gitExtension = vscode.extensions.getExtension('vscode.git');
+        if (!gitExtension) {
+            throw new Error('VS Code Git extension is not available.');
+        }
+
+        const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
+        const api = git.getAPI(1);
+
+        if (!api || api.repositories.length === 0) {
+            throw new Error('No Git repositories found in the workspace.');
+        }
+
+        // Find matching repo or fallback to primary
+        let repo = api.repositories.find((r: any) => this._getStablePath(r.rootUri.fsPath) === this._getStablePath(workspaceRoot));
+        if (!repo) {
+            repo = api.repositories[0];
+        }
+
+        // Stage all untracked/modified files
+        const changesToStage = repo.state.workingTreeChanges.map((c: any) => c.uri.fsPath);
+        if (changesToStage.length > 0) {
+            await repo.add(changesToStage);
+        }
+
+        // Commit only if there are actually staged files
+        if (repo.state.indexChanges.length > 0) {
+            await repo.commit('chore: airlock context sync');
+        }
+
+        // Push to remote
+        await repo.push();
     }
 
     private async _handleAirlockOpenNotebookLM(): Promise<void> {

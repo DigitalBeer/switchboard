@@ -1247,6 +1247,10 @@
                     <label style="min-width:70px;">Jules</label>
                     <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility only</span>
                 </div>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+                    <input id="onboard-jules-auto-sync" type="checkbox" style="width:auto; margin:0;">
+                    <span style="font-size:10px; color:var(--text-secondary);">Auto-sync repo before sending to Jules (default OFF)</span>
+                </label>
                 <div style="margin-top: 12px; display: flex; gap: 8px;">
                     <button id="btn-onboard-save" class="secondary-btn w-full"
                         style="padding: 10px; font-size: 11px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);">SAVE
@@ -1381,6 +1385,10 @@
                     <label style="min-width:70px;">Jules</label>
                     <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility only</span>
                 </div>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <input id="jules-auto-sync-toggle" type="checkbox" style="width:auto; margin:0;">
+                    <span>Auto-sync repo before sending to Jules</span>
+                </label>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="accurate-coding-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Accurate coding mode for Coder prompts</span>
@@ -1818,6 +1826,7 @@
                         vscode.postMessage({ type: 'getStartupCommands' });
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
                         vscode.postMessage({ type: 'getLeadChallengeSetting' });
+                        vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
                         vscode.postMessage({ type: 'getVisibleAgents' });
                         vscode.postMessage({ type: 'getCustomAgents' });
                     }
@@ -1840,8 +1849,9 @@
                 });
                 const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
                 const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
+                const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
                 const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
-                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, planIngestionFolder, customAgents: lastCustomAgents });
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, julesAutoSyncEnabled, planIngestionFolder, customAgents: lastCustomAgents });
                 lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
                 lastPlanIngestionFolder = planIngestionFolder;
                 renderCustomAgentConfigList();
@@ -2229,6 +2239,13 @@
                     }
                     break;
                 }
+                case 'julesAutoSyncSetting': {
+                    const toggle = document.getElementById('jules-auto-sync-toggle');
+                    if (toggle) {
+                        toggle.checked = message.enabled === true;
+                    }
+                    break;
+                }
                 case 'recentActivity': {
                     const incoming = Array.isArray(message.events) ? message.events : [];
                     if (message.append) {
@@ -2298,6 +2315,17 @@
                     const wStatus2 = document.getElementById('webai-status');
                     if (expBtn2) { expBtn2.disabled = false; expBtn2.innerText = 'BUNDLE CODE'; expBtn2.classList.remove('dispatching'); }
                     if (wStatus2) wStatus2.innerText = '⚠ ' + (message.message || 'Bundle failed');
+                    break;
+                }
+                case 'airlock_syncStart': {
+                    const sBtn = document.getElementById('jules-sync-btn');
+                    if (sBtn) {
+                        sBtn.disabled = true;
+                        sBtn.innerText = 'SYNCING...';
+                        sBtn.classList.add('dispatching');
+                    }
+                    const statusEl = document.getElementById('jules-sync-status');
+                    if (statusEl) statusEl.innerText = 'Auto-syncing before Jules send...';
                     break;
                 }
                 case 'airlock_syncComplete': {
@@ -3431,7 +3459,7 @@
                 if (role) visibleAgents[role] = cb.checked;
             });
             lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
-            vscode.postMessage({ type: 'saveStartupCommands', commands: agents, visibleAgents, accurateCodingEnabled: false, onboardingComplete: true });
+            vscode.postMessage({ type: 'saveStartupCommands', commands: agents, visibleAgents, accurateCodingEnabled: false, julesAutoSyncEnabled: !!document.getElementById('onboard-jules-auto-sync')?.checked, onboardingComplete: true });
         });
 
         document.getElementById('btn-onboard-skip').addEventListener('click', () => {
