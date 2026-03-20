@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773370858568",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_140058_allow_plans_to_be_moved_backwards_in_kanban.md",
+  "topic": "Allow plans to be moved backwards in Kanban",
+  "createdAt": "2026-03-13T03:00:58.564Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-13T03:00:58.564Z",
+      "action": "start"
+    },
+    {
+      "workflow": "challenge",
+      "action": "complete",
+      "timestamp": "2026-03-13T09:38:39.297Z"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-15T19:42:28.188Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T13:25:56.571Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773480943768",
+  "planFile": ".switchboard\\plans\\feature_plan_20260314_203543_consolidate_enhance_and_challenge_workflows.md",
+  "topic": "Replace enhance.md with improve-plan.md",
+  "createdAt": "2026-03-14T09:35:43.764Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-14T09:35:43.764Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Enhanced plan",
+      "timestamp": "2026-03-14T21:38:31.866Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-17T02:22:53.902Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T04:49:43.278Z",
+      "action": "start"
+    }
+  ]
+}

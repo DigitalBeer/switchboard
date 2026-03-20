@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773177814226",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_082334_allow_jules_to_be_turned_on_or_off.md",
+  "topic": "Allow Jules to be turned on or off",
+  "createdAt": "2026-03-10T21:23:34.223Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-10T21:23:34.223Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-11T18:19:38.767Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-14T21:39:07.326Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T10:55:56.514Z",
+      "action": "start"
+    }
+  ]
+}

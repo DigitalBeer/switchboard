@@ -1,0 +1,40 @@
+{
+  "sessionId": "sess_1773875495902",
+  "planFile": ".switchboard/plans/feature_plan_20260319_101135_relocate_analyst_context_map_option.md",
+  "topic": "Relocate analyst context map option",
+  "createdAt": "2026-03-18T23:11:35.899Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-18T23:11:35.899Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-19T00:51:31.200Z"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-19T00:52:43.066Z"
+    },
+    {
+      "workflow": "reset-to-plan-reviewed",
+      "timestamp": "2026-03-19T00:54:42.382Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-19T00:59:36.093Z"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:22:06.593Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

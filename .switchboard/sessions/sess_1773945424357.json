@@ -1,0 +1,24 @@
+{
+  "sessionId": "sess_1773945424357",
+  "planFile": ".switchboard/plans/feature_plan_20260320_053704_no_subagents_in_prompt_if_only_has_one_plan.md",
+  "topic": "No subagents in prompt if only has one plan",
+  "createdAt": "2026-03-19T18:37:04.353Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-19T18:37:04.353Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-19T18:39:01.014Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-coder-coded",
+      "timestamp": "2026-03-19T18:44:05.507Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

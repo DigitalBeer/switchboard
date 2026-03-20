@@ -1,0 +1,35 @@
+{
+  "sessionId": "sess_1773780622867",
+  "planFile": ".switchboard/plans/feature_plan_20260318_075022_add_icons_to_kanban_top_rows.md",
+  "topic": "Add Icons to Kanban top rows",
+  "createdAt": "2026-03-17T20:50:22.865Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T20:50:22.865Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T23:02:28.602Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T00:14:41.860Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-18T00:15:18.693Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:16:54.607Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

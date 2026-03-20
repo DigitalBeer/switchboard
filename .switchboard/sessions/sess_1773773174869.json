@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1773773174869",
+  "planFile": ".switchboard/plans/feature_plan_20260318_054614_mcp_status_light_in_sidebar_should_check_ipc_connection.md",
+  "topic": "MCP status light in sidebar should check IPC connection",
+  "createdAt": "2026-03-17T18:46:14.865Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T18:46:14.865Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T23:02:28.595Z"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-18T00:48:17.603Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:16:54.552Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

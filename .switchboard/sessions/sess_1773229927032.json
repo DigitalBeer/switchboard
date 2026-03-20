@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773229927032",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_225207_improve_kanban_copy_button.md",
+  "topic": "Context-Aware Cross-IDE Copy Prompts for Kanban Cards",
+  "createdAt": "2026-03-11T11:52:07.024Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-11T11:52:07.024Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-12T04:33:01.397Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-12T04:54:44.594Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-12T10:11:26.920Z",
+      "action": "start"
+    }
+  ]
+}

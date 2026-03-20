@@ -1,0 +1,34 @@
+{
+  "sessionId": "sess_1773771747528",
+  "planFile": ".switchboard/plans/feature_plan_20260318_052227_complexity_dropdown_does_not_override.md",
+  "topic": "Complexity dropdown does not override",
+  "createdAt": "2026-03-17T18:22:27.526Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T18:22:27.526Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T18:27:54.324Z"
+    },
+    {
+      "timestamp": "2026-03-17T18:33:22.444Z",
+      "workflow": "improve-plan"
+    },
+    {
+      "workflow": "move-to-lead-coded",
+      "timestamp": "2026-03-17T18:49:40.513Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:02:34.534Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

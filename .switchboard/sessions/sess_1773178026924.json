@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773178026924",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_082706_add_docs_button_to_setup_menu.md",
+  "topic": "Add docs button to setup menu",
+  "createdAt": "2026-03-10T21:27:06.922Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-10T21:27:06.922Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-12T04:06:14.335Z",
+      "action": "start"
+    },
+    {
+      "workflow": "coder",
+      "timestamp": "2026-03-15T00:55:00.000Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T11:40:56.516Z",
+      "action": "start"
+    }
+  ]
+}

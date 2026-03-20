@@ -1,0 +1,139 @@
+{
+  "sessionId": "sess_1773804707820",
+  "planFile": ".switchboard/plans/feature_plan_20260318_143147_agent_visibility_in_the_setup_menu_does_not_persist.md",
+  "topic": "Agent visibility in the setup menu does not persist",
+  "createdAt": "2026-03-18T03:31:47.815Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-18T03:31:47.815Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T03:33:47.635Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T03:35:43.772Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T03:35:48.071Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T03:47:24.856Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T03:47:31.232Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T05:09:35.648Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T05:10:01.601Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T05:13:26.937Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T05:43:42.829Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T05:50:49.678Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T06:12:32.654Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T06:29:56.276Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T06:35:50.666Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T06:43:37.611Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T06:49:01.497Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T06:49:11.265Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T06:49:17.318Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T06:49:20.931Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T06:53:35.435Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T07:28:34.094Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T07:28:38.298Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-18T10:31:36.369Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:19:22.371Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

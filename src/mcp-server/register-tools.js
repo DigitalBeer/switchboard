@@ -658,7 +658,14 @@ async function appendRunSheetEvent(sessionId, eventPayload, workspaceRoot = getW
             timestamp: new Date().toISOString(),
             ...eventPayload
         });
-        await fs.promises.writeFile(filePath, JSON.stringify(sheet, null, 2), 'utf8');
+        const tmpPath = `${filePath}.${Date.now()}.tmp`;
+        try {
+            await fs.promises.writeFile(tmpPath, JSON.stringify(sheet, null, 2), 'utf8');
+            await fs.promises.rename(tmpPath, filePath);
+        } catch (renameErr) {
+            try { await fs.promises.unlink(tmpPath); } catch { /* best-effort cleanup */ }
+            throw renameErr;
+        }
     } catch (e) {
         console.error(`[audit] Failed to append runsheet event to ${sessionId}: ${e?.message || e}`);
     }

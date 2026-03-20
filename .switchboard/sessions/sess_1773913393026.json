@@ -1,0 +1,36 @@
+{
+  "sessionId": "sess_1773913393026",
+  "planFile": ".switchboard/plans/feature_plan_20260319_204313_handoff_mode.md",
+  "topic": "Pair Programming Mode",
+  "createdAt": "2026-03-19T09:43:13.023Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-19T09:43:13.023Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-plan-reviewed",
+      "timestamp": "2026-03-19T09:45:50.718Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "move-to-lead-coded",
+      "timestamp": "2026-03-19T18:33:57.872Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-plan-reviewed",
+      "timestamp": "2026-03-19T18:34:04.154Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-19T18:34:11.257Z",
+      "action": "start"
+    }
+  ]
+}

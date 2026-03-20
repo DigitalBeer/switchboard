@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773370545776",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_135545_conversational_kanban_control_via_smart_router.md",
+  "topic": "Conversational Kanban Control via Smart Router",
+  "createdAt": "2026-03-13T02:55:45.770Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-13T02:55:45.770Z",
+      "action": "start"
+    },
+    {
+      "workflow": "challenge",
+      "action": "complete",
+      "timestamp": "2026-03-13T09:38:39.296Z"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-17T02:22:08.972Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T04:49:44.601Z",
+      "action": "start"
+    }
+  ]
+}

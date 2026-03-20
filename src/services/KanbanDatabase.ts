@@ -108,6 +108,7 @@ export class KanbanDatabase {
     private _db: SqlJsDatabase | null = null;
     private _initPromise: Promise<boolean> | null = null;
     private _lastInitError: string | null = null;
+    private _writeTail: Promise<void> = Promise.resolve();
 
     private constructor(private readonly _workspaceRoot: string) {
         this._dbPath = path.join(this._workspaceRoot, '.switchboard', 'kanban.db');
@@ -311,14 +312,24 @@ export class KanbanDatabase {
 
     private async _persist(): Promise<boolean> {
         if (!this._db) return false;
-        try {
-            const data = this._db.export();
-            await fs.promises.writeFile(this._dbPath, Buffer.from(data));
-            return true;
-        } catch (error) {
-            console.error('[KanbanDatabase] Failed to persist DB file:', error);
-            return false;
-        }
+        const data = this._db.export();
+        const writeOperation = async (): Promise<boolean> => {
+            const tmpPath = `${this._dbPath}.${Date.now()}.tmp`;
+            try {
+                await fs.promises.writeFile(tmpPath, Buffer.from(data));
+                await fs.promises.rename(tmpPath, this._dbPath);
+                return true;
+            } catch (error) {
+                try { await fs.promises.unlink(tmpPath); } catch { /* best-effort cleanup */ }
+                console.error('[KanbanDatabase] Failed to persist DB file:', error);
+                return false;
+            }
+        };
+        let result = false;
+        const nextWrite = this._writeTail.then(async () => { result = await writeOperation(); });
+        this._writeTail = nextWrite.catch(() => { /* swallow to keep chain alive */ });
+        await nextWrite;
+        return result;
     }
 
     private async _persistedUpdate(sql: string, params: unknown[]): Promise<boolean> {

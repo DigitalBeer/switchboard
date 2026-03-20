@@ -1,0 +1,33 @@
+{
+  "sessionId": "sess_1773786711217",
+  "planFile": ".switchboard/plans/feature_plan_20260318_093151_adjust_airlock_tab_text.md",
+  "topic": "Adjust airlock tab text",
+  "createdAt": "2026-03-17T22:31:51.214Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T22:31:51.214Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T23:02:28.621Z"
+    },
+    {
+      "timestamp": "2026-03-17T23:15:26.564Z",
+      "workflow": "improve-plan"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-18T01:04:21.846Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:14:55.164Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "sessionId": "sess_1773771615826",
+  "planFile": ".switchboard/plans/feature_plan_20260318_052015_display_plan_names_in_autoban_live_feed_logs.md",
+  "topic": "Display Plan Names in Autoban Live Feed Logs",
+  "createdAt": "2026-03-17T18:20:15.823Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T18:20:15.823Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T18:27:54.320Z"
+    },
+    {
+      "workflow": "move-to-lead-coded",
+      "timestamp": "2026-03-17T18:49:39.060Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:02:34.507Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773636865087",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_155425_fix_false_high_complexity_ratings.md",
+  "topic": "fix false high complexity ratings",
+  "createdAt": "2026-03-16T04:54:25.083Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-16T04:54:25.083Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Enhanced plan",
+      "timestamp": "2026-03-16T04:55:43.222Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-16T05:10:25.372Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T14:55:56.682Z",
+      "action": "start"
+    }
+  ]
+}

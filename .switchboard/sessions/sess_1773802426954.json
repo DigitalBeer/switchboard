@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1773802426954",
+  "planFile": ".switchboard/plans/feature_plan_20260318_135346_when_jules_is_not_enabled_the_jules_button_should_not_appear.md",
+  "topic": "when jules is not enabled the jules button should not appear",
+  "createdAt": "2026-03-18T02:53:46.950Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-18T02:53:46.950Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-18T03:06:13.435Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-18T03:14:30.463Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:19:22.162Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773732293717",
+  "planFile": ".switchboard/plans/feature_plan_20260317_182453_add_plan_folder_ingestion_target_ot_setup_menu.md",
+  "topic": "Add plan folder ingestion target ot setup menu",
+  "createdAt": "2026-03-17T07:24:53.714Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T07:24:53.714Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-17T07:26:32.720Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-17T09:50:02.959Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T09:50:04.416Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773178836881",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_084036_increase_create_plan_modal_size.md",
+  "topic": "Increase 'Create Plan' modal size",
+  "createdAt": "2026-03-10T21:40:36.878Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-10T21:40:36.878Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-11T00:47:47.639Z",
+      "action": "start"
+    },
+    {
+      "workflow": "coder",
+      "timestamp": "2026-03-15T00:55:00.000Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T12:10:56.541Z",
+      "action": "start"
+    }
+  ]
+}

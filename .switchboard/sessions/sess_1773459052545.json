@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1773459052545",
+  "planFile": ".switchboard\\plans\\feature_plan_20260314_143052_make_airlock_the_second_tab.md",
+  "topic": "Make airlock the second tab",
+  "createdAt": "2026-03-14T03:30:52.539Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-14T03:30:52.539Z",
+      "action": "start"
+    },
+    {
+      "timestamp": "2026-03-15T06:36:20.498Z",
+      "action": "complete_workflow_phase",
+      "workflow": "improve-plan",
+      "notes": "Plan successfully improved and critically reviewed."
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-16T09:43:27.508Z"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T15:25:56.692Z",
+      "action": "start"
+    }
+  ]
+}

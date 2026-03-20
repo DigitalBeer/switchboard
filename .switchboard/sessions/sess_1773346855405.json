@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773346855405",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_072055_add_read_receipt_instruciton_to_copy_button_prompts.md",
+  "topic": "Auto-advance Kanban on copy prompt",
+  "createdAt": "2026-03-12T20:20:55.398Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-12T20:20:55.398Z",
+      "action": "start"
+    },
+    {
+      "workflow": "challenge",
+      "action": "complete",
+      "timestamp": "2026-03-13T09:38:39.290Z"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-15T05:14:00.000Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T12:25:56.572Z",
+      "action": "start"
+    }
+  ]
+}

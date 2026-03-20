@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773691639261",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_070719_plans_in_the_reviewed_column_are_out_of_order.md",
+  "topic": "Plans in the reviewed column are out of order",
+  "createdAt": "2026-03-16T20:07:19.258Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-16T20:07:19.258Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T00:06:46.323Z"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-17T00:59:46.570Z"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T02:22:29.906Z",
+      "action": "start"
+    }
+  ]
+}

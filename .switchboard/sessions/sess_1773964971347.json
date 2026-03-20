@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1773964971347",
+  "planFile": ".switchboard/plans/feature_plan_20260320_110251_optimise_inboxwatcher.md",
+  "topic": "Optimise inboxwatcher",
+  "createdAt": "2026-03-20T00:02:51.318Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-20T00:02:51.318Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "sessionId": "sess_1773836877391",
+  "planFile": ".switchboard/plans/feature_plan_20260318_232757_make_prompts_standard_across_all_sources.md",
+  "topic": "Make prompts standard across all sources",
+  "createdAt": "2026-03-18T12:27:57.389Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-18T12:27:57.389Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-18T18:19:48.669Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:20:05.834Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:20:14.775Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:20:38.911Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:20:50.257Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:21:02.738Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:25:21.976Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:25:37.206Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:25:41.206Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:25:50.645Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:26:29.286Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-18T18:26:44.432Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-18T18:57:55.629Z"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-19T00:52:43.051Z"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:22:06.381Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

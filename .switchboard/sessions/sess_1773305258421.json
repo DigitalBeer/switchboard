@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773305258421",
+  "planFile": ".switchboard\\plans\\feature_plan_20260312_194738_increase_delay_to_account_for_lag_in_sending_cli_commands.md",
+  "topic": "Enhance Terminal Send Robustness (Universal Double-Tap & Delay Tuning)",
+  "createdAt": "2026-03-12T08:47:38.417Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-12T08:47:38.417Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-12T08:47:56.122Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-16T04:16:05.465Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T14:40:56.649Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773604476938",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_065436_change_kanban_headers.md",
+  "topic": "change kanban headers",
+  "createdAt": "2026-03-15T19:54:36.930Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-15T19:54:36.930Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-16T15:01:00.000Z",
+      "action": "complete"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-16T09:43:27.525Z"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T17:40:56.752Z",
+      "action": "start"
+    }
+  ]
+}

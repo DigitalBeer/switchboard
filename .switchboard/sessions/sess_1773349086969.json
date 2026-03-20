@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773349086969",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_075806_make_kanban_subheader_more_information.md",
+  "topic": "Make kanban subheader more informative",
+  "createdAt": "2026-03-12T20:58:06.965Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-12T20:58:06.965Z",
+      "action": "start"
+    },
+    {
+      "workflow": "challenge",
+      "action": "complete",
+      "timestamp": "2026-03-13T09:38:39.292Z"
+    },
+    {
+      "workflow": "coder",
+      "action": "complete",
+      "timestamp": "2026-03-13T09:40:00.000Z"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T10:25:56.503Z",
+      "action": "start"
+    }
+  ]
+}

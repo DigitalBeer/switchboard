@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773723128400",
+  "planFile": ".switchboard/plans/feature_plan_20260317_155208_send_to_agent_button_should_ignore_trigger_setting.md",
+  "topic": "Send to agent button should ignore trigger setting",
+  "createdAt": "2026-03-17T04:52:08.396Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T04:52:08.396Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-17T05:46:36.681Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-17T09:08:03.012Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T09:08:04.612Z",
+      "action": "start"
+    }
+  ]
+}

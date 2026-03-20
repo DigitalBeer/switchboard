@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773737008674",
+  "planFile": ".switchboard/plans/feature_plan_20260317_194328_max_batch_size_should_be_1_2_3_4_5.md",
+  "topic": "Max batch size should be 1, 2, 3, 4, 5",
+  "createdAt": "2026-03-17T08:43:28.670Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T08:43:28.670Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-17T08:47:03.007Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-17T09:57:03.031Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T09:59:03.232Z",
+      "action": "start"
+    }
+  ]
+}

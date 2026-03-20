@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773727619446",
+  "planFile": ".switchboard/plans/feature_plan_20260317_170659_access_main_program_button_denied_too_dark.md",
+  "topic": "Access main program button denied too dark",
+  "createdAt": "2026-03-17T06:06:59.440Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T06:06:59.440Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-17T06:08:05.895Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-17T09:36:02.998Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T09:38:03.089Z",
+      "action": "start"
+    }
+  ]
+}

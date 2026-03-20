@@ -1,0 +1,38 @@
+{
+  "sessionId": "sess_1773726830787",
+  "planFile": ".switchboard/plans/feature_plan_20260317_165350_remove_view_plan_option_from_kanban_cards.md",
+  "topic": "Remove view plan option from kanban cards",
+  "createdAt": "2026-03-17T05:53:50.785Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-17T05:53:50.785Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T05:54:50.397Z"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-17T05:55:26.358Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "timestamp": "2026-03-17T05:59:32.097Z",
+      "workflow": "improve-plan"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-17T09:15:03.015Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T09:17:03.113Z",
+      "action": "start"
+    }
+  ]
+}

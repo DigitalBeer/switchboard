@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773178275161",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_083115_rewrite_airlock_tab_text.md",
+  "topic": "Rewrite airlock tab text",
+  "createdAt": "2026-03-10T21:31:15.158Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-10T21:31:15.158Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-12T04:07:29.709Z",
+      "action": "start"
+    },
+    {
+      "workflow": "coder",
+      "timestamp": "2026-03-15T00:55:00.000Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-16T11:55:56.542Z",
+      "action": "start"
+    }
+  ]
+}

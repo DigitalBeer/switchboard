@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1773795868198",
+  "planFile": ".switchboard/plans/feature_plan_20260318_120428_bug_advance_plan_buttons_do_not_route_dynamically.md",
+  "topic": "Bug: advance plan buttons do not route dynamically",
+  "createdAt": "2026-03-18T01:04:28.192Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-18T01:04:28.192Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-18T01:05:53.735Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-18T01:11:31.645Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-19T07:20:19.613Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

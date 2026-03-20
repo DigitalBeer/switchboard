@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1773690812568",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_065332_remove_text_input_areas_from_airlock_tab.md",
+  "topic": "Remove text input areas from airlock tab",
+  "createdAt": "2026-03-16T19:53:32.534Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-16T19:53:32.534Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "action": "start",
+      "timestamp": "2026-03-17T00:06:46.315Z"
+    },
+    {
+      "workflow": "handoff",
+      "action": "start",
+      "timestamp": "2026-03-17T00:59:46.561Z"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-17T02:35:00.399Z",
+      "action": "start"
+    }
+  ]
+}
