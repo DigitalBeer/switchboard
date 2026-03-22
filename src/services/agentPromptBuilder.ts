@@ -148,7 +148,7 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}`;
         if (pairProgrammingEnabled) {
-            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. Once the Coder finishes Band A (they will complete before you), check and integrate their work into your implementation before finalising.`;
+            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. IMPORTANT: The Coder has JUST started and will NOT be finished yet — do NOT attempt to check or read their work at the start. Begin your Band B implementation immediately. Only check and integrate the Coder's Band A work as a final step before declaring completion, by which time they will have finished.`;
         }
         return leadPrompt;
     }

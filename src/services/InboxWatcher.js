@@ -88,7 +88,12 @@ class InboxWatcher {
             clearTimeout(this.housekeepingDebounceTimer);
         if (this.scanDebounceTimer)
             clearTimeout(this.scanDebounceTimer);
-        this.outputChannel.appendLine('[InboxWatcher] Stopped');
+        try {
+            this.outputChannel.appendLine('[InboxWatcher] Stopped');
+        }
+        catch {
+            // Output channel may already be disposed during extension shutdown
+        }
     }
     async runHousekeepingNow() {
         this.outputChannel.appendLine('[InboxWatcher] Manual housekeeping triggered.');
@@ -176,11 +181,14 @@ class InboxWatcher {
     }
     /**
      * Polling fallback — catches anything both watchers miss.
-     * Runs every 60 seconds as a heartbeat safety net. Primary detection is via
+     * Runs every 300 seconds (5 mins) as a heartbeat safety net. Primary detection is via
      * fs.watch + FileSystemWatcher. Passive triggers (window focus) cover the gap.
      */
     startPollTimer() {
-        this.pollTimer = setInterval(() => this.scanAllInboxes(), 60000);
+        if (this.pollTimer) {
+            clearInterval(this.pollTimer);
+        }
+        this.pollTimer = setInterval(() => this.scanAllInboxes(), 300000);
     }
     async processUri(uri) {
         const filePath = uri.fsPath;
@@ -223,6 +231,15 @@ class InboxWatcher {
     async handleMessageFile(uri, targetName) {
         const filePath = uri.fsPath;
         const fileName = path.basename(filePath);
+        // PATH VALIDATION: Ensure file is within the expected inbox directory before any processing
+        const expectedInboxDir = path.join(this.workspaceRoot, '.switchboard', 'inbox');
+        const normalizedFilePath = path.resolve(filePath);
+        const normalizedInboxDir = path.resolve(expectedInboxDir);
+        const relPath = path.relative(normalizedInboxDir, normalizedFilePath);
+        if (relPath.startsWith('..') || path.isAbsolute(relPath)) {
+            this.outputChannel.appendLine(`[InboxWatcher] REJECTED: Path traversal detected — ${filePath} is outside inbox directory`);
+            return;
+        }
         // CONCURRENCY LOCK: Prevent double-processing (scan vs watcher events)
         if (this.processingFiles.has(filePath))
             return;

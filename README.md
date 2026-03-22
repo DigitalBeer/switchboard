@@ -58,8 +58,19 @@ Switchboard decouples planning from execution, acting like a true Agile developm
 
 ### Pair Programming Mode
 
-Press the **Pair Programming** switch and when you drag a plan card into the Lead Coder column, Switchboard will split it and send the low-complexity tasks in that plan to the Coder column as well. Once the Coder completes the tasks, the Lead Coder will review. This can reduce your Opus usage by as much as 50% by offloading easy work to a cheap coder like Gemini Flash instead of asking Opus to handle boilerplate.
-Alternatively, press the 'Pair Programming' button on a plan card to copy the complex work to your clipboard to paste into Windsurf or Antigravity, and automatically send the simple work to the Coder agent. This achieves the same effect, saving as much as 50% of yout IDE agent quota. 
+Pair programming splits high-complexity plans into two streams: Lead Coder handles the complex work, while a cheaper Coder agent (e.g. Gemini Flash) handles the boilerplate simultaneously. This can reduce your primary IDE agent quota by up to 50%.
+
+Enable pair programming with the **Pair Programming** toggle at the top of the CLI-BAN. There are three ways it works, depending on your setup:
+
+| Mode | How to trigger | Lead gets | Coder gets |
+| :--- | :--- | :--- | :--- |
+| **CLI Parallel** | Drag a high-complexity card to Lead Coder column (Coder column in CLI mode) | CLI terminal dispatch | CLI terminal dispatch |
+| **Hybrid** | Click the **Pair** button on a card (Coder column in CLI mode) | Clipboard prompt → paste to IDE chat | CLI terminal dispatch |
+| **Full Clipboard** | Click the **Pair** button on a card (Coder column in Prompt mode) | Clipboard prompt → paste to IDE chat | Notification button → clipboard prompt |
+
+**CLI Parallel** is the default — both agents fire automatically in separate terminals. **Hybrid** is for when you want to use your IDE chat (Windsurf, Antigravity) for the complex work while a CLI agent handles the easy parts. **Full Clipboard** is for IDEs where you prefer pasting all prompts manually — click the notification button when you're ready for the Coder prompt.
+
+To set up Full Clipboard mode: set the Coder column's drag-and-drop mode to **Prompt** using the toggle icon in the column header, then click the **Pair** button on any high-complexity card. 
 
 ### Task Batching
 

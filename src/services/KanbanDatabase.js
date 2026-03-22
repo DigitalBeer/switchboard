@@ -79,6 +79,13 @@ ON CONFLICT(plan_id) DO UPDATE SET
 `;
 const MIGRATION_VERSION_KEY = 'kanban_db_migration_version';
 const runtimeRequire = (0, module_1.createRequire)(__filename);
+const VALID_KANBAN_COLUMNS = new Set([
+    'CREATED', 'PLAN REVIEWED', 'LEAD CODED', 'CODER CODED', 'CODE REVIEWED', 'CODED'
+]);
+const VALID_COMPLEXITIES = new Set(['Unknown', 'Low', 'High']);
+const VALID_STATUSES = new Set(['active', 'archived', 'completed']);
+// Allow built-in columns plus custom agent columns (alphanumeric, underscores, spaces)
+const SAFE_COLUMN_NAME_RE = /^[a-zA-Z0-9 _-]{1,128}$/;
 class KanbanDatabase {
     _workspaceRoot;
     static _instances = new Map();
@@ -197,12 +204,24 @@ class KanbanDatabase {
         }
     }
     async updateColumn(sessionId, newColumn) {
+        if (!VALID_KANBAN_COLUMNS.has(newColumn) && !SAFE_COLUMN_NAME_RE.test(newColumn)) {
+            console.error(`[KanbanDatabase] Rejected invalid column name: ${newColumn}`);
+            return false;
+        }
         return this._persistedUpdate('UPDATE plans SET kanban_column = ?, updated_at = ? WHERE session_id = ?', [newColumn, new Date().toISOString(), sessionId]);
     }
     async updateComplexity(sessionId, complexity) {
+        if (!VALID_COMPLEXITIES.has(complexity)) {
+            console.error(`[KanbanDatabase] Rejected invalid complexity value: ${complexity}`);
+            return false;
+        }
         return this._persistedUpdate('UPDATE plans SET complexity = ?, updated_at = ? WHERE session_id = ?', [complexity, new Date().toISOString(), sessionId]);
     }
     async updateStatus(sessionId, status) {
+        if (!VALID_STATUSES.has(status)) {
+            console.error(`[KanbanDatabase] Rejected invalid status value: ${status}`);
+            return false;
+        }
         return this._persistedUpdate('UPDATE plans SET status = ?, updated_at = ? WHERE session_id = ?', [status, new Date().toISOString(), sessionId]);
     }
     async updateTopic(sessionId, topic) {
@@ -271,14 +290,17 @@ class KanbanDatabase {
                 return true;
             }
             catch (error) {
-                try { await fs.promises.unlink(tmpPath); } catch { /* best-effort cleanup */ }
+                try {
+                    await fs.promises.unlink(tmpPath);
+                }
+                catch { /* best-effort cleanup */ }
                 console.error('[KanbanDatabase] Failed to persist DB file:', error);
                 return false;
             }
         };
         let result = false;
         const nextWrite = this._writeTail.then(async () => { result = await writeOperation(); });
-        this._writeTail = nextWrite.catch(() => { /* swallow to keep chain alive */ });
+        this._writeTail = nextWrite.catch(() => { });
         await nextWrite;
         return result;
     }

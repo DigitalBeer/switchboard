@@ -15,11 +15,11 @@ const BUILT_IN_AGENT_LABELS = {
     analyst: 'Analyst'
 };
 const DEFAULT_KANBAN_COLUMNS = [
-    { id: 'CREATED', label: 'New', order: 0, kind: 'created', autobanEnabled: true },
-    { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', order: 100, kind: 'review', autobanEnabled: true },
-    { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', order: 190, kind: 'coded', autobanEnabled: true },
-    { id: 'CODER CODED', label: 'Coder', role: 'coder', order: 200, kind: 'coded', autobanEnabled: true },
-    { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', order: 300, kind: 'reviewed', autobanEnabled: false },
+    { id: 'CREATED', label: 'New', order: 0, kind: 'created', autobanEnabled: true, dragDropMode: 'cli' },
+    { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', order: 100, kind: 'review', autobanEnabled: true, dragDropMode: 'cli' },
+    { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', order: 190, kind: 'coded', autobanEnabled: true, dragDropMode: 'cli' },
+    { id: 'CODER CODED', label: 'Coder', role: 'coder', order: 200, kind: 'coded', autobanEnabled: true, dragDropMode: 'cli' },
+    { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', order: 300, kind: 'reviewed', autobanEnabled: false, dragDropMode: 'cli' },
 ];
 const DEFAULT_CUSTOM_AGENT_KANBAN_ORDER = Math.max(300, ...DEFAULT_KANBAN_COLUMNS.map(c => c.order)) + 100;
 function sanitizeId(raw) {
@@ -75,6 +75,7 @@ function parseCustomAgents(raw) {
             promptInstructions: String(source.promptInstructions || '').trim(),
             includeInKanban: source.includeInKanban === true,
             kanbanOrder,
+            dragDropMode: (source.dragDropMode === 'prompt' ? 'prompt' : 'cli'),
         });
         seenRoles.add(role);
     }
@@ -95,7 +96,8 @@ function buildKanbanColumns(customAgents) {
         role: agent.role,
         order: agent.kanbanOrder,
         kind: 'custom',
-        autobanEnabled: false
+        autobanEnabled: false,
+        dragDropMode: agent.dragDropMode,
     }));
     return [...DEFAULT_KANBAN_COLUMNS, ...customColumns].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
 }

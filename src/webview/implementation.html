@@ -1452,6 +1452,11 @@
             <textarea id="custom-agent-prompt" class="modal-textarea" placeholder="Extra instructions to append when this agent is dispatched"></textarea>
             <label class="modal-label" for="custom-agent-order">Kanban order</label>
             <input id="custom-agent-order" class="modal-input" type="number" value="400">
+            <label class="modal-label" for="custom-agent-dragdrop">Drag &amp; Drop Mode</label>
+            <select id="custom-agent-dragdrop" class="modal-input">
+                <option value="cli">CLI Agent (trigger terminal action)</option>
+                <option value="prompt">Clipboard Prompt (copy to clipboard)</option>
+            </select>
             <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                 <input id="custom-agent-kanban" type="checkbox" style="width:auto; margin:0;">
                 <span>Show as Kanban column</span>
@@ -1499,6 +1504,7 @@
         const customAgentCommandInput = document.getElementById('custom-agent-command');
         const customAgentPromptInput = document.getElementById('custom-agent-prompt');
         const customAgentOrderInput = document.getElementById('custom-agent-order');
+        const customAgentDragDropModeInput = document.getElementById('custom-agent-dragdrop');
         const customAgentKanbanInput = document.getElementById('custom-agent-kanban');
         const customAgentError = document.getElementById('custom-agent-error');
         let recoverablePlansCache = [];
@@ -1556,6 +1562,7 @@
             customAgentCommandInput.value = agent?.startupCommand || '';
             customAgentPromptInput.value = agent?.promptInstructions || '';
             customAgentOrderInput.value = String(agent?.kanbanOrder ?? 150);
+            customAgentDragDropModeInput.value = agent?.dragDropMode || 'cli';
             customAgentKanbanInput.checked = agent?.includeInKanban === true;
             customAgentError.textContent = '';
             customAgentModal.classList.remove('hidden');
@@ -1585,7 +1592,8 @@
                 startupCommand,
                 promptInstructions: customAgentPromptInput.value.trim(),
                 includeInKanban: !!customAgentKanbanInput.checked,
-                kanbanOrder: Number(customAgentOrderInput.value) || 400
+                kanbanOrder: Number(customAgentOrderInput.value) || 400,
+                dragDropMode: customAgentDragDropModeInput.value
             };
 
             const duplicate = lastCustomAgents.find(agent =>
@@ -1664,7 +1672,8 @@
 
                 const meta = document.createElement('div');
                 meta.style.cssText = 'font-size:10px; color:var(--text-secondary); font-family:var(--font-mono);';
-                meta.textContent = `${agent.startupCommand}${agent.includeInKanban ? ` • Kanban ${agent.kanbanOrder}` : ''}`;
+                const modeLabel = agent.dragDropMode === 'prompt' ? 'Clipboard Prompt' : 'CLI Agent';
+                meta.textContent = `${agent.startupCommand}${agent.includeInKanban ? ` • Kanban ${agent.kanbanOrder}` : ''} • Mode: ${modeLabel}`;
 
                 row.appendChild(top);
                 row.appendChild(meta);
