@@ -73,6 +73,7 @@ class TaskViewerProvider {
     _configuredPlanSyncTimer;
     _managedImportMirrorsForActiveFolder = new Set();
     _recentActionDispatches = new Map(); // short TTL dedupe for sidebar actions
+    _julesSyncInFlight = false; // re-entrancy guard for auto-sync-before-Jules
     _pendingPlanCreations = new Set(); // suppress watcher for internally created plans
     _planFsDebounceTimers = new Map(); // debounce native plan watcher events
     _sessionWatcher;
@@ -155,6 +156,8 @@ class TaskViewerProvider {
         // Restore persisted Autoban state
         const savedAutoban = this._context.workspaceState.get('autoban.state');
         this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)(savedAutoban);
+        // Ensure pair programming defaults to OFF on load regardless of previous session state
+        this._autobanState.pairProgrammingEnabled = false;
         this._setupStateWatcher();
         this._setupPlanWatcher();
         this._setupSessionWatcher();
@@ -1033,6 +1036,14 @@ class TaskViewerProvider {
                 targetAgent,
                 planCount: validPlans.length
             }, undefined, resolvedWorkspaceRoot);
+            // Pair Programming: if lead dispatch and pair programming enabled, also dispatch to coder
+            if (role === 'lead' && this._autobanState.pairProgrammingEnabled) {
+                const coderPrompt = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)('coder', validPlans, {
+                    pairProgrammingEnabled: true,
+                    accurateCodingEnabled: this._isAccurateCodingEnabled()
+                });
+                await this.dispatchToCoderTerminal(coderPrompt);
+            }
             return true;
         }
         catch (e) {
@@ -1922,6 +1933,30 @@ class TaskViewerProvider {
         await this._persistAutobanState();
         this._postAutobanState();
     }
+    /** Called by Kanban controls strip to toggle Pair Programming mode. */
+    async setPairProgrammingEnabled(enabled) {
+        this._autobanState = (0, autobanState_1.normalizeAutobanConfigState)({ ...this._autobanState, pairProgrammingEnabled: enabled });
+        await this._persistAutobanState();
+        this._postAutobanState();
+        vscode.window.showInformationMessage(`Pair Programming mode ${enabled ? 'enabled' : 'disabled'}.`);
+    }
+    /** Dispatch a prompt to the Coder terminal for Band A pair programming. */
+    async dispatchToCoderTerminal(prompt) {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            vscode.window.showWarningMessage('Pair Program: no workspace root found.');
+            return;
+        }
+        const coderAgent = await this._getAgentNameForRole('coder', workspaceRoot);
+        if (!coderAgent) {
+            vscode.window.showWarningMessage('Pair Program: no Coder terminal found. Please register a Coder terminal first.');
+            return;
+        }
+        await this._dispatchExecuteMessage(workspaceRoot, coderAgent, prompt, {
+            batch: true,
+            pairProgramming: true
+        });
+    }
     /** Column-to-role mapping for Autoban dispatches. */
     _autobanColumnToRole(column) {
         switch (column) {
@@ -2513,6 +2548,9 @@ class TaskViewerProvider {
                         if (typeof data.leadChallengeEnabled === 'boolean') {
                             await vscode.workspace.getConfiguration('switchboard').update('leadCoder.inlineChallenge', data.leadChallengeEnabled, vscode.ConfigurationTarget.Workspace);
                         }
+                        if (typeof data.julesAutoSyncEnabled === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update('jules.autoSync', data.julesAutoSyncEnabled, vscode.ConfigurationTarget.Workspace);
+                        }
                         if (typeof data.planIngestionFolder === 'string') {
                             const normalizedPlanIngestionFolder = this._normalizeConfiguredPlanFolder(data.planIngestionFolder);
                             let validationError = this._getConfiguredPlanFolderValidationError(normalizedPlanIngestionFolder);
@@ -2570,6 +2608,11 @@ class TaskViewerProvider {
                     case 'getLeadChallengeSetting': {
                         const enabled = this._isLeadInlineChallengeEnabled();
                         this._view?.webview.postMessage({ type: 'leadChallengeSetting', enabled });
+                        break;
+                    }
+                    case 'getJulesAutoSyncSetting': {
+                        const enabled = this._isJulesAutoSyncEnabled();
+                        this._view?.webview.postMessage({ type: 'julesAutoSyncSetting', enabled });
                         break;
                     }
                     case 'setActiveTab': {
@@ -5170,7 +5213,11 @@ class TaskViewerProvider {
                 role = (0, agentPromptBuilder_1.columnToPromptRole)(effectiveColumn) || 'coder';
             }
             const plan = { topic, absolutePath: planPathAbsolute };
+            const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
+            const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
             let textToCopy = (0, agentPromptBuilder_1.buildKanbanBatchPrompt)(role, [plan], {
+                instruction: resolvedInstruction,
+                includeInlineChallenge,
                 accurateCodingEnabled: this._isAccurateCodingEnabled()
             });
             const customAgent = (0, agentConfig_1.findCustomAgentByRole)(customAgents, effectiveColumn);
@@ -6333,6 +6380,9 @@ class TaskViewerProvider {
     _isLeadInlineChallengeEnabled() {
         return vscode.workspace.getConfiguration('switchboard').get('leadCoder.inlineChallenge', false);
     }
+    _isJulesAutoSyncEnabled() {
+        return vscode.workspace.getConfiguration('switchboard').get('jules.autoSync', false);
+    }
     _withCoderAccuracyInstruction(basePayload) {
         if (!this._isAccurateCodingEnabled()) {
             return basePayload;
@@ -6527,6 +6577,34 @@ class TaskViewerProvider {
             return false;
         }
         if (role === 'jules') {
+            // Auto-sync guard: if enabled, sync the repo before sending to Jules
+            if (this._isJulesAutoSyncEnabled()) {
+                if (this._julesSyncInFlight) {
+                    clearDispatchLock();
+                    return false; // Drop duplicate click while sync is in progress
+                }
+                this._julesSyncInFlight = true;
+                this._view?.webview.postMessage({ type: 'airlock_syncStart' });
+                try {
+                    await Promise.race([
+                        this._performGitSync(),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Auto-sync timed out after 60 seconds')), 60_000))
+                    ]);
+                    this._view?.webview.postMessage({ type: 'airlock_syncComplete' });
+                }
+                catch (err) {
+                    this._julesSyncInFlight = false;
+                    const msg = err?.message || String(err);
+                    this._view?.webview.postMessage({ type: 'airlock_syncError', message: msg });
+                    vscode.window.showWarningMessage(`Auto-sync failed — Jules send cancelled: ${msg}`);
+                    clearDispatchLock();
+                    this._view?.webview.postMessage({ type: 'actionTriggered', role: 'jules', success: false });
+                    return false;
+                }
+                finally {
+                    this._julesSyncInFlight = false;
+                }
+            }
             const pushGuard = await this._isPlanFilePushedToRemote(resolvedWorkspaceRoot, planFileAbsolute);
             if (!pushGuard.ok) {
                 clearDispatchLock();
@@ -8248,37 +8326,8 @@ Create this file exactly as specified, then continue your work.`);
         }
     }
     async _handleAirlockSyncRepo() {
-        const workspaceRoot = this._resolveWorkspaceRoot();
-        if (!workspaceRoot) {
-            this._view?.webview.postMessage({ type: 'airlock_syncError', message: 'No workspace open' });
-            return;
-        }
         try {
-            const gitExtension = vscode.extensions.getExtension('vscode.git');
-            if (!gitExtension) {
-                throw new Error('VS Code Git extension is not available.');
-            }
-            const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
-            const api = git.getAPI(1);
-            if (!api || api.repositories.length === 0) {
-                throw new Error('No Git repositories found in the workspace.');
-            }
-            // Find matching repo or fallback to primary
-            let repo = api.repositories.find((r) => this._getStablePath(r.rootUri.fsPath) === this._getStablePath(workspaceRoot));
-            if (!repo) {
-                repo = api.repositories[0];
-            }
-            // Stage all untracked/modified files
-            const changesToStage = repo.state.workingTreeChanges.map((c) => c.uri.fsPath);
-            if (changesToStage.length > 0) {
-                await repo.add(changesToStage);
-            }
-            // Commit only if there are actually staged files
-            if (repo.state.indexChanges.length > 0) {
-                await repo.commit('chore: airlock context sync');
-            }
-            // Push to remote
-            await repo.push();
+            await this._performGitSync();
             this._view?.webview.postMessage({ type: 'airlock_syncComplete' });
             vscode.window.showInformationMessage('Airlock: Repository synced to cloud successfully.');
         }
@@ -8287,6 +8336,41 @@ Create this file exactly as specified, then continue your work.`);
             this._view?.webview.postMessage({ type: 'airlock_syncError', message: msg });
             vscode.window.showErrorMessage(`Airlock sync failed: ${msg}`);
         }
+    }
+    /**
+     * Core git sync logic: stage all, commit, push.
+     * Throws on failure. Reused by manual sync button and auto-sync-before-Jules guard.
+     */
+    async _performGitSync() {
+        const workspaceRoot = this._resolveWorkspaceRoot();
+        if (!workspaceRoot) {
+            throw new Error('No workspace open');
+        }
+        const gitExtension = vscode.extensions.getExtension('vscode.git');
+        if (!gitExtension) {
+            throw new Error('VS Code Git extension is not available.');
+        }
+        const git = gitExtension.isActive ? gitExtension.exports : await gitExtension.activate();
+        const api = git.getAPI(1);
+        if (!api || api.repositories.length === 0) {
+            throw new Error('No Git repositories found in the workspace.');
+        }
+        // Find matching repo or fallback to primary
+        let repo = api.repositories.find((r) => this._getStablePath(r.rootUri.fsPath) === this._getStablePath(workspaceRoot));
+        if (!repo) {
+            repo = api.repositories[0];
+        }
+        // Stage all untracked/modified files
+        const changesToStage = repo.state.workingTreeChanges.map((c) => c.uri.fsPath);
+        if (changesToStage.length > 0) {
+            await repo.add(changesToStage);
+        }
+        // Commit only if there are actually staged files
+        if (repo.state.indexChanges.length > 0) {
+            await repo.commit('chore: airlock context sync');
+        }
+        // Push to remote
+        await repo.push();
     }
     async _handleAirlockOpenNotebookLM() {
         await vscode.env.openExternal(vscode.Uri.parse('https://notebooklm.google.com/'));

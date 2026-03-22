@@ -672,6 +672,47 @@
         .cli-toggle-inline.is-off {
             color: var(--accent-orange);
         }
+
+        /* Per-column mode toggle */
+        .mode-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border: 1px solid var(--border-color);
+            background: var(--panel-bg);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s;
+            margin-right: 8px;
+            margin-left: auto;
+        }
+
+        .mode-toggle:hover {
+            border-color: var(--accent-teal-dim);
+            background: color-mix(in srgb, var(--accent-teal) 8%, transparent);
+            box-shadow: var(--glow-teal);
+        }
+
+        .mode-toggle img {
+            width: 16px;
+            height: 16px;
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.8);
+            transition: filter 0.15s;
+        }
+
+        .mode-toggle:hover img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.1);
+        }
+
+        .mode-toggle.mode-prompt img {
+            filter: sepia(1) saturate(1.5) hue-rotate(0deg) brightness(0.9);
+        }
+        
+        .mode-toggle.mode-prompt:hover img {
+            filter: sepia(1) saturate(1.5) hue-rotate(0deg) brightness(1.2);
+        }
     </style>
 </head>
 
@@ -694,7 +735,7 @@
             </label>
             <span class="toggle-label">CLI Triggers</span>
         </label>
-        <label class="cli-toggle-inline pair-programming-toggle" id="pair-programming-toggle" title="Pair Programming: Lead does Band B, Coder auto-starts Band A simultaneously">
+        <label class="cli-toggle-inline pair-programming-toggle" id="pair-programming-toggle" title="Pair Programming: Lead does high complexity work, Coder auto-starts low complexity work simultaneously">
             <label class="toggle-switch">
                 <input type="checkbox" id="pairProgrammingCheckbox">
                 <span class="toggle-slider"></span>
@@ -726,6 +767,7 @@
         let lastBoardSignature = '';
         let currentWorkspaceRoot = '';
         let workspaceItems = [];
+        let columnDragDropModes = {};
         const selectedCards = new Set();
 
         // Column abbreviations for inline timers
@@ -739,6 +781,8 @@
         const ICON_JULES = '{{ICON_28}}';
         const ICON_ANALYST_MAP = '{{ICON_ANALYST_MAP}}';
         const ICON_IMPORT_CLIPBOARD = '{{ICON_IMPORT_CLIPBOARD}}';
+        const ICON_CLI = '{{ICON_CLI}}';
+        const ICON_PROMPT = '{{ICON_PROMPT}}';
 
         function getActiveWorkspaceRoot() {
             return currentWorkspaceRoot || (workspaceItems[0] && workspaceItems[0].workspaceRoot) || '';
@@ -858,13 +902,26 @@
                 const isPlanReviewed = def.id === 'PLAN REVIEWED';
                 const isLastColumn = def.id === lastColumnId;
                 const hasAgent = !isCreated;
+                
+                const mode = columnDragDropModes[def.id] || 'cli';
+                const modeIcon = mode === 'prompt' ? ICON_PROMPT : ICON_CLI;
+                const modeTitle = mode === 'prompt' ? 'Mode: Copy Prompt (drag cards to copy prompt to clipboard)' : 'Mode: CLI Dispatch (drag cards to trigger CLI agent)';
+                const modeToggle = (!isCreated && !isLastColumn) 
+                    ? `<div class="mode-toggle mode-${mode}" data-column="${escapeAttr(def.id)}" title="${escapeAttr(modeTitle)}">
+                           <img src="${modeIcon}" alt="${mode}">
+                       </div>` 
+                    : '';
+
                 const rightSide = isCreated
                     ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
                             <button class="btn-add-plan" id="btn-add-plan" title="Add Plan">+</button>
                             <button class="btn-add-plan" id="btn-import-clipboard" title="Import plan from clipboard"><img src="${ICON_IMPORT_CLIPBOARD}" alt="Import" style="width: 16px; height: 16px;"></button>
                             <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
                        </div>`
-                    : `<span class="column-count" id="count-${escapeAttr(def.id)}">0</span>`;
+                    : `<div style="display: flex; align-items: center; gap: 4px;">
+                            ${modeToggle}
+                            <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
+                       </div>`;
                 const subline = hasAgent
                     ? `<div class="column-agent" id="agent-${escapeAttr(def.id)}"></div>`
                     : `<div class="column-subline-spacer" aria-hidden="true"></div>`;
@@ -899,7 +956,11 @@
                         ${analystMapBtn}
                     </div>`;
                 } else {
-                    buttonArea = `<div class="column-button-area"></div>`;
+                    buttonArea = `<div class="column-button-area">
+                        <button class="column-icon-btn" style="visibility: hidden; pointer-events: none;" tabindex="-1" aria-hidden="true">
+                            <img src="${ICON_MOVE_SELECTED}" alt="">
+                        </button>
+                    </div>`;
                 }
 
                 return `<div class="kanban-column" data-column="${escapeAttr(def.id)}">
@@ -921,6 +982,23 @@
 
             document.getElementById('btn-import-clipboard')?.addEventListener('click', () => {
                 postKanbanMessage({ type: 'importFromClipboard' });
+            });
+
+            // Mode toggle handlers
+            document.querySelectorAll('.mode-toggle').forEach(toggle => {
+                toggle.addEventListener('click', () => {
+                    const columnId = toggle.dataset.column;
+                    const currentMode = columnDragDropModes[columnId] || 'cli';
+                    const nextMode = currentMode === 'cli' ? 'prompt' : 'cli';
+                    
+                    // Optimistic update
+                    columnDragDropModes[columnId] = nextMode;
+                    renderColumns();
+                    renderBoard(currentCards);
+                    updateAllColumnAgents();
+                    
+                    postKanbanMessage({ type: 'setColumnDragDropMode', columnId, mode: nextMode });
+                });
             });
 
             // Column icon button handlers
@@ -1158,17 +1236,23 @@
             const complexity = card.complexity || 'Unknown';
             const complexityClass = complexity.toLowerCase();
             let copyLabel = 'Copy Prompt';
-            const pairProgramBtn = card.column === 'PLAN REVIEWED'
-                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" title="Pair Program: copy Band B prompt to clipboard, auto-send Band A to Coder terminal">⚡ Pair</button>`
+            const coderMode = columnDragDropModes['CODER CODED'] || 'cli';
+            const pairTitle = coderMode === 'prompt' 
+                ? 'Pair Program (Clipboard Relay): copy high complexity prompt to clipboard, then click notification for low complexity prompt' 
+                : 'Pair Program: copy high complexity prompt to clipboard, auto-send low complexity to Coder terminal';
+            const pairProgramBtn = (card.column === 'PLAN REVIEWED' && complexity === 'High')
+                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" title="${escapeAttr(pairTitle)}">Pair</button>`
                 : '';
             return `
                 <div class="kanban-card" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                     <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
-                    <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}">${complexity}</span> · ${timeAgo}</div>
+                    <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}" title="${complexity.toLowerCase()} complexity">${complexity}</span> · ${timeAgo}</div>
                     <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
-                        <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">${copyLabel}</button>
                         <div style="display: flex; gap: 4px;">
                             ${pairProgramBtn}
+                            <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Copy prompt to clipboard">${copyLabel}</button>
+                        </div>
+                        <div style="display: flex; gap: 4px;">
                             <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
                             </button>
@@ -1267,8 +1351,12 @@
                 }
             });
 
+            // Determine the effective drop mode for this column
+            const dropMode = columnDragDropModes[targetColumn] || 'cli';
+
             if (forwardIds.length > 0) {
-                if (cliTriggersEnabled && !isColumnAgentAvailable(targetColumn)) {
+                // Agent availability check only applies in CLI mode — prompt mode doesn't need a CLI agent
+                if (dropMode === 'cli' && cliTriggersEnabled && !isColumnAgentAvailable(targetColumn)) {
                     // Strip forward moves if agent isn't ready/assigned, but allow backward moves to proceed
                     forwardIds.length = 0; 
                     const agentEl = document.getElementById('agent-' + targetColumn);
@@ -1284,6 +1372,11 @@
 
             const validIds = [...forwardIds, ...backwardIds];
             if (validIds.length === 0) return;
+
+            // Capture source columns BEFORE the optimistic update loop mutates card.column
+            const sourceColumnForPrompt = forwardIds.length > 0
+                ? (currentCards.find(c => c.sessionId === forwardIds[0])?.column || targetColumn)
+                : targetColumn;
 
             const targetBody = document.getElementById('col-' + targetColumn);
 
@@ -1324,11 +1417,18 @@
             if (validIds.length > 0) {
                 document.querySelectorAll('.kanban-card.selected').forEach(el => el.classList.remove('selected'));
                 setTimeout(() => {
-                    if (cliTriggersEnabled) {
-                        if (forwardIds.length === 1) {
-                            postKanbanMessage({ type: 'triggerAction', sessionId: forwardIds[0], targetColumn, workspaceRoot });
-                        } else if (forwardIds.length > 1) {
-                            postKanbanMessage({ type: 'triggerBatchAction', sessionIds: forwardIds, targetColumn, workspaceRoot });
+                    if (cliTriggersEnabled && forwardIds.length > 0) {
+                        if (dropMode === 'prompt') {
+                            // Prompt mode: copy prompt to clipboard + visual advance (no CLI dispatch)
+                            // sourceColumnForPrompt was captured before the optimistic card.column update
+                            postKanbanMessage({ type: 'promptOnDrop', sessionIds: forwardIds, sourceColumn: sourceColumnForPrompt, targetColumn, workspaceRoot });
+                        } else {
+                            // CLI mode: dispatch to CLI agent (existing behaviour)
+                            if (forwardIds.length === 1) {
+                                postKanbanMessage({ type: 'triggerAction', sessionId: forwardIds[0], targetColumn, workspaceRoot });
+                            } else {
+                                postKanbanMessage({ type: 'triggerBatchAction', sessionIds: forwardIds, targetColumn, workspaceRoot });
+                            }
                         }
                     } else if (forwardIds.length > 0) {
                         postKanbanMessage({ type: 'moveCardForward', sessionIds: forwardIds, targetColumn, workspaceRoot });
@@ -1419,6 +1519,49 @@
                     if (ppCheckbox) {
                         ppCheckbox.checked = msg.enabled;
                         ppCheckbox.closest('.pair-programming-toggle')?.classList.toggle('is-off', !msg.enabled);
+                    }
+                    break;
+                }
+                case 'updateColumnDragDropModes':
+                    if (msg.modes && typeof msg.modes === 'object') {
+                        columnDragDropModes = msg.modes;
+                        // Update toggle icons to reflect received modes
+                        document.querySelectorAll('.mode-toggle').forEach(toggle => {
+                            const colId = toggle.dataset.column;
+                            const mode = columnDragDropModes[colId] || 'cli';
+                            toggle.classList.toggle('mode-cli', mode === 'cli');
+                            toggle.classList.toggle('mode-prompt', mode === 'prompt');
+                            const img = toggle.querySelector('img');
+                            if (img) {
+                                img.src = mode === 'prompt' ? ICON_PROMPT : ICON_CLI;
+                                img.alt = mode;
+                            }
+                            toggle.title = mode === 'prompt'
+                                ? 'Mode: Copy Prompt (drag cards to copy prompt to clipboard)'
+                                : 'Mode: CLI Dispatch (drag cards to trigger CLI agent)';
+                        });
+                    }
+                    break;
+                case 'promptOnDropResult': {
+                    // Visual feedback when prompt-mode drop completes: flash the target column count badge green
+                    if (msg.success && Array.isArray(msg.sessionIds) && msg.sessionIds.length > 0) {
+                        const card = currentCards.find(c => msg.sessionIds.includes(c.sessionId));
+                        if (card) {
+                            const countEl = document.getElementById('count-' + card.column);
+                            if (countEl) {
+                                const origText = countEl.textContent;
+                                const origBg = countEl.style.background;
+                                const origColor = countEl.style.color;
+                                countEl.textContent = '✓';
+                                countEl.style.background = 'var(--vscode-testing-iconPassed, #73c991)';
+                                countEl.style.color = 'var(--vscode-editor-background, #1e1e1e)';
+                                setTimeout(() => {
+                                    countEl.textContent = origText;
+                                    countEl.style.background = origBg;
+                                    countEl.style.color = origColor;
+                                }, 1200);
+                            }
+                        }
                     }
                     break;
                 }

@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1774090139533",
+  "planFile": ".switchboard/plans/feature_plan_20260321_214859_code_reviewed_column_is_still_out_of_alignment.md",
+  "topic": "Code reviewed column is still out of alignment",
+  "createdAt": "2026-03-21T10:48:59.532Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-21T10:48:59.532Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-21T10:58:46.662Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-21T11:20:06.140Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-21T11:26:16.700Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

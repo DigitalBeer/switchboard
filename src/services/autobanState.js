@@ -139,7 +139,8 @@ function normalizeAutobanConfigState(state) {
         managedTerminalPools: normalizedManagedTerminalPools,
         poolCursor: normalizedPoolCursor,
         rules: normalizedRules,
-        lastTickAt: state?.lastTickAt ? { ...state.lastTickAt } : undefined
+        lastTickAt: state?.lastTickAt ? { ...state.lastTickAt } : undefined,
+        pairProgrammingEnabled: state?.pairProgrammingEnabled === true
     };
 }
 function buildAutobanBroadcastState(state, lastTickEntries) {

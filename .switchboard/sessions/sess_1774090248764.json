@@ -1,0 +1,29 @@
+{
+  "sessionId": "sess_1774090248764",
+  "planFile": ".switchboard/plans/feature_plan_20260321_215048_pair_button_does_not_advance_card.md",
+  "topic": "Pair button does not advance card",
+  "createdAt": "2026-03-21T10:50:48.762Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-21T10:50:48.762Z",
+      "action": "start"
+    },
+    {
+      "workflow": "sidebar-review",
+      "timestamp": "2026-03-21T10:58:46.690Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-21T11:20:06.165Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-21T11:26:16.718Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

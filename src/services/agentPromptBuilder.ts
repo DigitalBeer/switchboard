@@ -82,6 +82,8 @@ export function buildKanbanBatchPrompt(
     const chatCritiqueDirective =
         `When you output the adversarial critique (Grumpy and Balanced sections), include them verbatim in your chat response as formatted markdown — do not only write them to the plan file. The user must be able to read the critique directly in chat without opening the plan.`;
 
+    const executionDirective = `AUTHORIZATION TO EXECUTE: The plans provided are already authorized. You MUST enter EXECUTION mode immediately. Do NOT enter PLANNING mode or generate an implementation_plan.md. Proceed directly to implementing the changes.`;
+
     if (role === 'planner') {
         const plannerVerb = baseInstruction === 'enhance' ? 'enhance' : 'improve';
         return `Please ${plannerVerb} the following ${plans.length} plans. Break each down into distinct steps grouped by high complexity and low complexity. Add extra detail.
@@ -137,6 +139,8 @@ ${planList}`;
     if (role === 'lead') {
         let leadPrompt = `Please execute the following ${plans.length} plans.
 
+${executionDirective}
+
 ${batchExecutionRules}${challengeBlock}
 
 ${focusDirective}
@@ -144,7 +148,7 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}`;
         if (pairProgrammingEnabled) {
-            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. Once the Coder finishes Band A (they will complete before you), check and integrate their work into your implementation before finalising.`;
+            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. IMPORTANT: The Coder has JUST started and will NOT be finished yet — do NOT attempt to check or read their work at the start. Begin your Band B implementation immediately. Only check and integrate the Coder's Band A work as a final step before declaring completion, by which time they will have finished.`;
         }
         return leadPrompt;
     }
@@ -154,6 +158,8 @@ ${planList}`;
             ? `Please execute the following ${plans.length} low-complexity plans from PLAN REVIEWED.`
             : `Please execute the following ${plans.length} plans.`;
         let coderPrompt = withCoderAccuracyInstruction(`${intro}
+
+${executionDirective}
 
 ${batchExecutionRules}${challengeBlock}
 

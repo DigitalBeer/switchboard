@@ -206,6 +206,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         // Restore persisted Autoban state
         const savedAutoban = this._context.workspaceState.get<Partial<AutobanConfigState>>('autoban.state');
         this._autobanState = normalizeAutobanConfigState(savedAutoban);
+        
+        // Ensure pair programming defaults to OFF on load regardless of previous session state
+        this._autobanState.pairProgrammingEnabled = false;
+
         this._setupStateWatcher();
         this._setupPlanWatcher();
         this._setupSessionWatcher();

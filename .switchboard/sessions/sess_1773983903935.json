@@ -1,0 +1,41 @@
+{
+  "sessionId": "sess_1773983903935",
+  "planFile": ".switchboard/plans/feature_plan_20260320_161823_antigravity_agents_try_to_create_double_plans.md",
+  "topic": "Antigravity agents try to create double plans",
+  "createdAt": "2026-03-20T05:18:23.933Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-20T05:18:23.933Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-20T05:19:37.103Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-20T06:20:08.262Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-20T12:27:06.928Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-coder-coded",
+      "timestamp": "2026-03-20T12:56:24.295Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-20T13:43:14.607Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

@@ -47,12 +47,14 @@ export class KanbanProvider implements vscode.Disposable {
     private _kanbanDbs = new Map<string, KanbanDatabase>();
     private _lastCards: KanbanCard[] = [];
     private _currentWorkspaceRoot: string | null = null;
+    private _columnDragDropModes: Record<string, 'cli' | 'prompt'>;
 
     constructor(
         private readonly _extensionUri: vscode.Uri,
         private readonly _context: vscode.ExtensionContext
     ) {
         this._cliTriggersEnabled = this._context.workspaceState.get<boolean>('kanban.cliTriggersEnabled', true);
+        this._columnDragDropModes = this._context.workspaceState.get<Record<string, 'cli' | 'prompt'>>('kanban.columnDragDropModes', {});
     }
 
     public get cliTriggersEnabled(): boolean {
@@ -369,6 +371,13 @@ export class KanbanProvider implements vscode.Disposable {
             this._panel.webview.postMessage({ type: 'cliTriggersState', enabled: this._cliTriggersEnabled });
             this._panel.webview.postMessage({ type: 'updateAgentNames', agentNames });
             this._panel.webview.postMessage({ type: 'visibleAgents', agents: visibleAgents });
+
+            const effectiveModes: Record<string, 'cli' | 'prompt'> = {};
+            for (const col of columns) {
+                effectiveModes[col.id] = this._columnDragDropModes[col.id] || col.dragDropMode || 'cli';
+            }
+            this._panel.webview.postMessage({ type: 'updateColumnDragDropModes', modes: effectiveModes });
+
             if (this._autobanState) {
                 this._panel.webview.postMessage({ type: 'updateAutobanConfig', state: this._autobanState });
                 this._panel.webview.postMessage({ type: 'updatePairProgramming', enabled: this._autobanState.pairProgrammingEnabled });
@@ -436,8 +445,10 @@ export class KanbanProvider implements vscode.Disposable {
     ): Promise<void> {
         const pairProgrammingEnabled = this._autobanState?.pairProgrammingEnabled ?? false;
         if (!pairProgrammingEnabled) { return; }
+        const accurateCodingEnabled = vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
         const coderPrompt = buildKanbanBatchPrompt('coder', this._cardsToPromptPlans(cards, workspaceRoot), {
-            pairProgrammingEnabled: true
+            pairProgrammingEnabled: true,
+            accurateCodingEnabled
         });
         await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
     }
@@ -806,8 +817,10 @@ export class KanbanProvider implements vscode.Disposable {
             const auditStart = auditMatch.index! + auditMatch[0].length;
 
             // Find "Band B" within the audit section (stop at next top-level heading)
+            // Use a strict anchor to match only actual headings (e.g. `### Band B`),
+            // avoiding false positives if "Band B" appears in normal text inside Band A.
             const afterAudit = content.slice(auditStart);
-            const bandBMatch = afterAudit.match(/\bBand\s+B\b/i);
+            const bandBMatch = afterAudit.match(/^\s*(?:#{1,4}\s+|\*\*)?Band\s+B\b/im);
             if (!bandBMatch) return 'Low';
 
             // Extract text after "Band B" until the next section boundary.
@@ -1089,6 +1102,16 @@ export class KanbanProvider implements vscode.Disposable {
                 const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.triggerAgentFromKanban', role, sessionId, instruction, workspaceRoot);
                 if (dispatched && workspaceRoot) {
                     await this._getKanbanDb(workspaceRoot).updateColumn(sessionId, targetColumn);
+
+                    // Pair programming: when a high-complexity card is dispatched to Lead,
+                    // also dispatch the Coder terminal with the Band A prompt.
+                    // Only fires for high-complexity cards landing on LEAD CODED.
+                    if (role === 'lead' && targetColumn === 'LEAD CODED') {
+                        const card = this._lastCards.find(c => c.sessionId === sessionId && c.workspaceRoot === workspaceRoot);
+                        if (card && !this._isLowComplexity(card) && card.complexity !== 'Unknown') {
+                            await this._dispatchWithPairProgrammingIfNeeded([card], workspaceRoot);
+                        }
+                    }
                 }
                 break;
             }
@@ -1124,6 +1147,68 @@ export class KanbanProvider implements vscode.Disposable {
                 this._cliTriggersEnabled = !!msg.enabled;
                 await this._context.workspaceState.update('kanban.cliTriggersEnabled', this._cliTriggersEnabled);
                 break;
+            case 'setColumnDragDropMode': {
+                const { columnId, mode } = msg;
+                if (columnId && (mode === 'cli' || mode === 'prompt')) {
+                    this._columnDragDropModes[columnId] = mode;
+                    await this._context.workspaceState.update('kanban.columnDragDropModes', this._columnDragDropModes);
+                    // Recompute effective modes (merge persisted overrides with column defaults)
+                    const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                    if (workspaceRoot) {
+                        const customAgents = await this._getCustomAgents(workspaceRoot);
+                        const cols = buildKanbanColumns(customAgents);
+                        const effectiveModes: Record<string, 'cli' | 'prompt'> = {};
+                        for (const col of cols) {
+                            effectiveModes[col.id] = this._columnDragDropModes[col.id] || col.dragDropMode || 'cli';
+                        }
+                        this._panel?.webview.postMessage({ type: 'updateColumnDragDropModes', modes: effectiveModes });
+                    }
+                }
+                break;
+            }
+            case 'promptOnDrop': {
+                // Band B: Drag-and-drop in "prompt" mode — copy prompt to clipboard and advance visually (no CLI dispatch).
+                // Mirrors the logic of 'promptSelected' but triggered by the drop handler when column mode is 'prompt'.
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) { break; }
+                const sessionIds: string[] = Array.isArray(msg.sessionIds) ? msg.sessionIds : (msg.sessionId ? [msg.sessionId] : []);
+                if (sessionIds.length === 0) { break; }
+                const sourceColumn: string = msg.sourceColumn;
+                const targetColumn: string = msg.targetColumn;
+
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card =>
+                    card.workspaceRoot === workspaceRoot && sessionIds.includes(card.sessionId)
+                );
+                if (sourceCards.length === 0) {
+                    this._panel?.webview.postMessage({ type: 'promptOnDropResult', sessionIds, success: false });
+                    break;
+                }
+
+                // Generate prompt based on the source column (the stage being completed)
+                const prompt = this._generatePromptForColumn(sourceCards, sourceColumn, workspaceRoot);
+                await vscode.env.clipboard.writeText(prompt);
+
+                // Advance cards visually — PLAN REVIEWED uses complexity routing
+                if (sourceColumn === 'PLAN REVIEWED') {
+                    const groups = await this._partitionByComplexityRoute(workspaceRoot, sessionIds);
+                    for (const [role, sids] of groups) {
+                        if (sids.length === 0) { continue; }
+                        const targetCol = this._targetColumnForDispatchRole(role);
+                        await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sids, targetCol, workspaceRoot);
+                    }
+                } else {
+                    await vscode.commands.executeCommand('switchboard.kanbanForwardMove', sessionIds, targetColumn, workspaceRoot);
+                }
+
+                // Pair programming: skipped in prompt mode — the user explicitly opted out of CLI dispatches.
+                // Pair programming dispatch only fires via CLI-mode drops (handled in the triggerAction path).
+
+                await this._refreshBoard(workspaceRoot);
+                this._panel?.webview.postMessage({ type: 'promptOnDropResult', sessionIds, success: true });
+                vscode.window.showInformationMessage(`Copied prompt for ${sourceCards.length} plan(s) to clipboard.`);
+                break;
+            }
             case 'batchPlannerPrompt': {
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot) {
@@ -1434,12 +1519,50 @@ export class KanbanProvider implements vscode.Disposable {
                 // Build coder (Band A) prompt
                 const coderPrompt = buildKanbanBatchPrompt('coder', plans, { pairProgrammingEnabled: true });
 
-                // Copy lead prompt to clipboard for the IDE agent
-                await vscode.env.clipboard.writeText(leadPrompt);
-                vscode.window.showInformationMessage('Band B prompt copied to clipboard. Dispatching Band A to Coder terminal...');
+                // Resolve effective Coder column mode
+                const coderColumnId = 'CODER CODED';
+                const coderColumnMode = this._columnDragDropModes[coderColumnId] || 'cli';
 
-                // Auto-dispatch Band A to Coder terminal
-                await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
+                if (coderColumnMode === 'prompt') {
+                    // Mode 3: Two-stage clipboard — Lead prompt first, Coder prompt on demand
+                    await vscode.env.clipboard.writeText(leadPrompt);
+
+                    // Write Coder prompt backup to .switchboard/handoff/ in case notification is dismissed
+                    const handoffDir = path.join(this._currentWorkspaceRoot, '.switchboard', 'handoff');
+                    const backupPath = path.join(handoffDir, `coder_prompt_${msg.sessionId}.md`);
+                    try {
+                        if (!fs.existsSync(handoffDir)) { fs.mkdirSync(handoffDir, { recursive: true }); }
+                        fs.writeFileSync(backupPath, coderPrompt, 'utf8');
+                    } catch (err) {
+                        console.error('[KanbanProvider] Failed to write Coder prompt backup:', err);
+                    }
+
+                    // Advance the card to LEAD CODED (before awaiting notification — don't block board update)
+                    await vscode.commands.executeCommand('switchboard.kanbanForwardMove', [msg.sessionId], 'LEAD CODED', this._currentWorkspaceRoot);
+
+                    // Show persistent notification with action button
+                    const choice = await vscode.window.showInformationMessage(
+                        'Lead prompt copied. Paste to IDE chat, then click below for Coder prompt.',
+                        'Copy Coder Prompt'
+                    );
+                    if (choice === 'Copy Coder Prompt') {
+                        await vscode.env.clipboard.writeText(coderPrompt);
+                        vscode.window.showInformationMessage('Coder prompt copied to clipboard.');
+                        // Clean up backup file after successful copy
+                        try { fs.unlinkSync(backupPath); } catch { /* ignore */ }
+                    } else {
+                        // User dismissed — backup file remains as safety net
+                        console.log(`[KanbanProvider] Pair programming: user dismissed Coder prompt notification. Backup at: ${backupPath}`);
+                    }
+                } else {
+                    // Mode 2: Lead prompt to clipboard, Coder prompt to terminal
+                    await vscode.env.clipboard.writeText(leadPrompt);
+                    vscode.window.showInformationMessage('Band B prompt copied to clipboard. Dispatching Band A to Coder terminal...');
+                    await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
+
+                    // Advance the card to LEAD CODED
+                    await vscode.commands.executeCommand('switchboard.kanbanForwardMove', [msg.sessionId], 'LEAD CODED', this._currentWorkspaceRoot);
+                }
                 break;
             }
             case 'analystMapSelected': {
@@ -1524,6 +1647,8 @@ export class KanbanProvider implements vscode.Disposable {
             '{{ICON_115}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-115.png')).toString(),
             '{{ICON_ANALYST_MAP}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-42.png')).toString(),
             '{{ICON_IMPORT_CLIPBOARD}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-121.png')).toString(),
+            '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-66.png')).toString(),
+            '{{ICON_PROMPT}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-22.png')).toString(),
         };
         for (const [placeholder, uri] of Object.entries(iconMap)) {
             content = content.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), uri);
