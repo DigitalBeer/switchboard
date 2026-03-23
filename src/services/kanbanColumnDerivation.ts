@@ -6,7 +6,7 @@ type WorkflowEvent = {
     workflow?: string | null;
 };
 
-const { deriveKanbanColumn: deriveKanbanColumnImpl } = require('./kanbanColumnDerivation.js') as {
+const { deriveKanbanColumn: deriveKanbanColumnImpl } = require('./kanbanColumnDerivationImpl.js') as {
     deriveKanbanColumn: (events?: WorkflowEvent[], customAgents?: CustomAgentConfig[]) => KanbanDerivedColumn;
 };
 
