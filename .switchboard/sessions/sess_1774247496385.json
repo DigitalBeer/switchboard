@@ -1,0 +1,28 @@
+{
+  "sessionId": "sess_1774247496385",
+  "planFile": ".switchboard/plans/feature_plan_20260323_173136_change_band_a_and_band_b_wording.md",
+  "topic": "Change Band A and Band B wording",
+  "createdAt": "2026-03-23T06:31:36.380Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-23T06:31:36.380Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-23T09:45:56.313Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-23T09:54:51.080Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-23T10:00:57.066Z",
+      "action": "start"
+    }
+  ]
+}

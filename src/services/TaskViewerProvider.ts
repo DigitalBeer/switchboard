@@ -209,6 +209,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         
         // Ensure pair programming defaults to OFF on load regardless of previous session state
         this._autobanState.pairProgrammingEnabled = false;
+        // Seed aggressive pair programming from VS Code config so KanbanProvider starts with the correct value
+        this._autobanState.aggressivePairProgramming = vscode.workspace.getConfiguration('switchboard').get<boolean>('pairProgramming.aggressive', false);
 
         this._setupStateWatcher();
         this._setupPlanWatcher();
@@ -2290,7 +2292,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         vscode.window.showInformationMessage(`Pair Programming mode ${enabled ? 'enabled' : 'disabled'}.`);
     }
 
-    /** Dispatch a prompt to the Coder terminal for Band A pair programming. */
+    /** Dispatch a prompt to the Coder terminal for Routine pair programming. */
     public async dispatchToCoderTerminal(prompt: string): Promise<void> {
         const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) {
@@ -2425,7 +2427,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return buildKanbanBatchPrompt(role, plans, {
             instruction: baseInstruction,
             includeInlineChallenge,
-            accurateCodingEnabled: this._isAccurateCodingEnabled()
+            accurateCodingEnabled: this._isAccurateCodingEnabled(),
+            aggressivePairProgramming: this._isAggressivePairProgrammingEnabled()
         });
     }
 
@@ -2983,6 +2986,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                                 vscode.ConfigurationTarget.Workspace
                             );
                         }
+                        if (typeof data.aggressivePairProgramming === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update(
+                                'pairProgramming.aggressive',
+                                data.aggressivePairProgramming,
+                                vscode.ConfigurationTarget.Workspace
+                            );
+                            // Sync to autobanState so KanbanProvider sees the change
+                            this._autobanState = normalizeAutobanConfigState({
+                                ...this._autobanState,
+                                aggressivePairProgramming: data.aggressivePairProgramming
+                            });
+                            await this._persistAutobanState();
+                            this._postAutobanState();
+                        }
                         if (typeof data.planIngestionFolder === 'string') {
                             const normalizedPlanIngestionFolder = this._normalizeConfiguredPlanFolder(data.planIngestionFolder);
                             let validationError = this._getConfiguredPlanFolderValidationError(normalizedPlanIngestionFolder);
@@ -3042,6 +3059,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'getJulesAutoSyncSetting': {
                         const enabled = this._isJulesAutoSyncEnabled();
                         this._view?.webview.postMessage({ type: 'julesAutoSyncSetting', enabled });
+                        break;
+                    }
+                    case 'getAggressivePairSetting': {
+                        const enabled = this._isAggressivePairProgrammingEnabled();
+                        this._view?.webview.postMessage({ type: 'aggressivePairSetting', enabled });
                         break;
                     }
                     case 'setActiveTab': {
@@ -5205,10 +5227,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     private _applyComplexityToPlanContent(content: string, complexity: 'Unknown' | 'Low' | 'High'): string {
         const bandBBody = complexity === 'High'
-            ? '\n### Band B — Complex / Risky\n- User marked this plan as high complexity.\n'
+            ? '\n### Complex / Risky\n- User marked this plan as high complexity.\n'
             : complexity === 'Low'
-                ? '\n### Band B — Complex / Risky\n- None.\n'
-                : '\n### Band B — Complex / Risky\n- Unknown.\n';
+                ? '\n### Complex / Risky\n- None.\n'
+                : '\n### Complex / Risky\n- Unknown.\n';
 
         const normalizedContent = content.replace(/\r\n/g, '\n');
         const auditRegex = /^#{1,4}\s+Complexity\s+Audit\b[^\n]*$/im;
@@ -5227,7 +5249,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             ? afterAuditHeadingIndex + nextSectionMatch.index
             : normalizedContent.length;
         const auditSection = normalizedContent.slice(auditStart, auditEnd);
-        const bandBRegex = /^#{1,4}\s+Band\s+B\b[^\n]*$/im;
+        const bandBRegex = /^#{1,4}\s+(?:Band\s+B|Complex)\b[^\n]*$/im;
         const bandBMatch = bandBRegex.exec(auditSection);
 
         let updatedAuditSection = auditSection;
@@ -5241,7 +5263,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const bandBEnd = nextBandMatch && nextBandMatch.index !== undefined
                 ? bandBAfterHeadingIndex + nextBandMatch.index
                 : auditSection.length;
-            updatedAuditSection = `${auditSection.slice(0, bandBStart)}### Band B — Complex / Risky\n${bandBBody.replace(/^\n### Band B — Complex \/ Risky\n/, '')}${auditSection.slice(bandBEnd).replace(/^\n*/, '\n')}`;
+            updatedAuditSection = `${auditSection.slice(0, bandBStart)}### Complex / Risky\n${bandBBody.replace(/^\n### Complex \/ Risky\n/, '')}${auditSection.slice(bandBEnd).replace(/^\n*/, '\n')}`;
         }
 
         // Insert or update the manual complexity override marker
@@ -5744,10 +5766,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const plan: BatchPromptPlan = { topic, absolutePath: planPathAbsolute };
             const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
             const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
+            // Accuracy mode excluded from clipboard prompts — requires MCP tools only in CLI terminals
             let textToCopy = buildKanbanBatchPrompt(role, [plan], {
                 instruction: resolvedInstruction,
                 includeInlineChallenge,
-                accurateCodingEnabled: this._isAccurateCodingEnabled()
+                accurateCodingEnabled: false
             });
             const customAgent = findCustomAgentByRole(customAgents, effectiveColumn);
             if (customAgent?.promptInstructions) {
@@ -6936,8 +6959,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return { hasBandA: false, hasBandB: false };
         }
 
-        const hasBandA = /\bband\s*a\b/i.test(taskSplitContent);
-        const hasBandB = /\bband\s*b\b/i.test(taskSplitContent);
+        const hasBandA = /(?:\bband\s*a\b|\broutine\b)/i.test(taskSplitContent);
+        const hasBandB = /(?:\bband\s*b\b|\bcomplex\b)/i.test(taskSplitContent);
         return { hasBandA, hasBandB };
     }
 
@@ -6947,6 +6970,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     private _isLeadInlineChallengeEnabled(): boolean {
         return vscode.workspace.getConfiguration('switchboard').get<boolean>('leadCoder.inlineChallenge', false);
+    }
+
+    private _isAggressivePairProgrammingEnabled(): boolean {
+        return vscode.workspace.getConfiguration('switchboard').get<boolean>('pairProgramming.aggressive', false);
     }
 
     private _isJulesAutoSyncEnabled(): boolean {
@@ -7243,7 +7270,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     dispatches.push({
                         role: 'lead',
                         agent: leadAgent,
-                        payload: buildKanbanBatchPrompt('lead', [teamPlan]) + `\n\nAdditional Instructions: only do band b work.`,
+                        payload: buildKanbanBatchPrompt('lead', [teamPlan]) + `\n\nAdditional Instructions: only do Complex (Band B) work.`,
                         metadata: { phase_gate: { enforce_persona: 'lead' } }
                     });
                 } else {
@@ -7251,7 +7278,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         dispatches.push({
                             role: 'lead',
                             agent: leadAgent,
-                            payload: buildKanbanBatchPrompt('lead', [teamPlan]) + `\n\nAdditional Instructions: only do band b work.`,
+                            payload: buildKanbanBatchPrompt('lead', [teamPlan]) + `\n\nAdditional Instructions: only do Complex (Band B) work.`,
                             metadata: { phase_gate: { enforce_persona: 'lead' } }
                         });
                     }
@@ -7262,14 +7289,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             agent: coderAgent,
                             payload: buildKanbanBatchPrompt('coder', [teamPlan], {
                                 accurateCodingEnabled: this._isAccurateCodingEnabled()
-                            }) + `\n\nAdditional Instructions: only do band a.`,
+                            }) + `\n\nAdditional Instructions: only do Routine (Band A) work.`,
                             metadata: {}
                         });
                     }
                 }
 
                 if (dispatches.length === 0) {
-                    vscode.window.showErrorMessage('No eligible agents available for the detected band breakdown.');
+                    vscode.window.showErrorMessage('No eligible agents available for the detected complexity breakdown.');
                     this._view?.webview.postMessage({ type: 'actionTriggered', role: 'team', success: false });
                     clearDispatchLock();
                     return false;
@@ -7356,7 +7383,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         if (role === 'planner') {
             const plannerInstruction = (baseInstruction === 'improve-plan' || baseInstruction === 'enhance') ? baseInstruction : undefined;
-            messagePayload = buildKanbanBatchPrompt('planner', [dispatchPlan], { instruction: plannerInstruction });
+            messagePayload = buildKanbanBatchPrompt('planner', [dispatchPlan], { instruction: plannerInstruction, aggressivePairProgramming: this._isAggressivePairProgrammingEnabled() });
 
             // Append dispatch-specific strict/light mode delivery extensions
             const grumpyReviewPath = `.switchboard/reviews/grumpy_critique_${sessionId}.md`;

@@ -2385,3 +2385,19 @@
 {"timestamp":"2026-03-21T11:20:04.077Z","type":"dispatch","payload":{"timestamp":"2026-03-21T11:20:04.077Z","dispatchId":"msg_1774092004077_6v9luq41l","event":"received","sender":"sidebar","recipient":"Coder","action":"execute"}}
 {"timestamp":"2026-03-21T11:20:06.191Z","type":"dispatch","payload":{"event":"batch_dispatch_sent","role":"coder","sessionIds":["sess_1774090078974","sess_1774090139533","sess_1774090248764"],"targetAgent":"Coder","planCount":3}}
 {"timestamp":"2026-03-21T11:59:02.236Z","type":"dispatch","payload":{"timestamp":"2026-03-21T11:59:02.236Z","dispatchId":"msg_1774094342236_v9vpfovk6","event":"received","sender":"sidebar","recipient":"Coder","action":"execute"}}
+{"timestamp":"2026-03-23T06:31:36.404Z","type":"plan_management","payload":{"operation":"create_plan","sessionId":"sess_1774247496385","planFile":".switchboard/plans/feature_plan_20260323_173136_untitled_plan.md","topic":"Untitled Plan","contentLineCount":14}}
+{"timestamp":"2026-03-23T06:31:36.602Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T06:31:36.637Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T06:33:37.470Z","type":"plan_management","payload":{"operation":"create_plan","sessionId":"sess_1774247617454","planFile":".switchboard/plans/feature_plan_20260323_173337_untitled_plan.md","topic":"Untitled Plan","contentLineCount":14}}
+{"timestamp":"2026-03-23T06:33:37.678Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T06:33:37.708Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T09:48:47.583Z","type":"plan_management","payload":{"operation":"create_plan","sessionId":"sess_1774259327566","planFile":".switchboard/plans/feature_plan_20260323_204847_untitled_plan.md","topic":"Untitled Plan","contentLineCount":14}}
+{"timestamp":"2026-03-23T09:48:47.648Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T09:48:47.815Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T09:57:43.701Z","type":"workflow_event","payload":{"action":"start_workflow","workflow":"accuracy","target":"session","forcedStopWorkflow":null}}
+{"timestamp":"2026-03-23T09:57:54.683Z","type":"plan_management","payload":{"operation":"create_plan","sessionId":"sess_1774259874657","planFile":".switchboard/plans/feature_plan_20260323_205754_untitled_plan.md","topic":"Untitled Plan","contentLineCount":14}}
+{"timestamp":"2026-03-23T09:57:54.734Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T09:57:54.908Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T10:22:15.507Z","type":"plan_management","payload":{"operation":"create_plan","sessionId":"sess_1774261335490","planFile":".switchboard/plans/feature_plan_20260323_212215_untitled_plan.md","topic":"Untitled Plan","contentLineCount":14}}
+{"timestamp":"2026-03-23T10:22:15.562Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}
+{"timestamp":"2026-03-23T10:22:15.749Z","type":"plan_management","payload":{"operation":"watcher_suppressed"}}

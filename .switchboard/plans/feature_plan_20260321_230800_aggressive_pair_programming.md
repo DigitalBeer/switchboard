@@ -228,3 +228,36 @@ This saves tokens — but the code review step becomes more important. With more
 
 ## Recommended Agent
 **Send to Coder** — This plan is predominantly Band A (toggle UI, state persistence, option plumbing). The Band B work (prompt wording, state propagation) is straightforward once the plumbing is in place.
+
+---
+
+## Reviewer Pass — 2026-03-23
+
+### Findings
+
+| # | Severity | Finding | Status |
+|---|----------|---------|--------|
+| 1 | **CRITICAL** | State split: `saveStartupCommands` saves aggressive toggle to VS Code config but never syncs to `_autobanState`. KanbanProvider reads from `_autobanState` → always sees `false`. All Kanban batch/autoban dispatches never include the aggressive directive. | **FIXED** |
+| 2 | **MAJOR** | Autoban state not seeded from VS Code config on startup. If workspaceState has stale `aggressivePairProgramming: false` but VS Code config has `true`, KanbanProvider starts with wrong value. | **FIXED** |
+| 3 | NIT | Aggressive directive uses "Routine"/"Complex" terminology (matching current codebase) instead of plan's "Band A"/"Band B". Code is correct; plan wording is outdated. | Deferred (cosmetic) |
+| 4 | NIT | Toggle position in HTML is after `lead-challenge-toggle`, not directly after `accurate-coding-toggle` as spec'd. Ordering is sensible. | Deferred (cosmetic) |
+
+### Fixes Applied
+
+**File: `src/services/TaskViewerProvider.ts`**
+
+1. **Lines 2993-2999 (Finding 1 — CRITICAL):** After saving `aggressivePairProgramming` to VS Code config in the `saveStartupCommands` handler, added sync to `this._autobanState` via `normalizeAutobanConfigState()`, then `_persistAutobanState()` + `_postAutobanState()` to propagate to KanbanProvider immediately.
+
+2. **Lines 212-213 (Finding 2 — MAJOR):** After restoring autoban state from `workspaceState` on startup, seed `aggressivePairProgramming` from VS Code config (`switchboard.pairProgramming.aggressive`) so KanbanProvider starts with the correct value.
+
+### Files Changed
+- `src/services/TaskViewerProvider.ts` — 2 edits (startup seed + save sync)
+
+### Validation Results
+- **TypeScript compilation (`npx tsc -p . --noEmit`):** ✅ Pass (exit code 0)
+- **Webpack build (`npm run compile`):** ✅ Pass — both bundles compiled successfully
+
+### Remaining Risks
+- **Model variance in aggressive directive interpretation** — Different planner models may interpret the 4 Band B criteria differently. Acknowledged in plan's adversarial synthesis; bounded by review stage.
+- **No automatic feedback loop** — If aggressive mode causes Coder failures, no auto-dial-back mechanism exists. Deferred to V2.
+- **Aggressive ON + Pair Programming OFF** — Plans still classified aggressively even without a Coder to handle Band A. Minor inefficiency, not harmful. Documented in Edge-Case audit.

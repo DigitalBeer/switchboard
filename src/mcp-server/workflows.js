@@ -63,7 +63,7 @@ const WORKFLOWS = {
         steps: [
             {
                 id: "split",
-                instruction: "Split tasks into Band A (delegatable) and Band B (complex). Skip if ALL flag.",
+                instruction: "Split tasks into Routine (delegatable) and Complex (keep local). Skip if ALL flag.",
                 requiredEvidence: "task_split"
             },
             {
@@ -85,7 +85,7 @@ const WORKFLOWS = {
         steps: [
             {
                 id: "split",
-                instruction: "Split tasks into Band A (delegatable) and Band B (complex). Skip if ALL flag.",
+                instruction: "Split tasks into Routine (delegatable) and Complex (keep local). Skip if ALL flag.",
                 requiredEvidence: "task_split"
             },
             {
@@ -106,12 +106,12 @@ const WORKFLOWS = {
         steps: [
             {
                 id: "split",
-                instruction: "Split tasks into Band A (delegatable) and Band B (complex). Skip if ALL flag.",
+                instruction: "Split tasks into Routine (delegatable) and Complex (keep local). Skip if ALL flag.",
                 requiredEvidence: "task_split"
             },
             {
                 id: "relay_stage",
-                instruction: "Execute Band B locally, stage relay batch artifact for delegation, and stop workflow for model switch.",
+                instruction: "Execute Complex tasks locally, stage relay batch artifact for delegation, and stop workflow for model switch.",
                 requiredEvidence: "relay_staged"
             },
             {

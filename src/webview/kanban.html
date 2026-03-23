@@ -62,11 +62,6 @@
             text-shadow: var(--glow-teal);
         }
 
-        .kanban-title.triggers-off {
-            color: color-mix(in srgb, var(--accent-teal) 55%, var(--text-secondary));
-            text-shadow: none;
-        }
-
         .header-controls {
             display: flex;
             align-items: center;
@@ -809,7 +804,6 @@
             const toggle = document.getElementById('cli-triggers-toggle');
             const toggleLabel = document.getElementById('cli-toggle');
             const offBadge = document.getElementById('triggers-off-badge');
-            const titleEl = document.getElementById('kanban-title');
             if (toggle) {
                 toggle.checked = !!cliTriggersEnabled;
             }
@@ -818,9 +812,6 @@
             }
             if (offBadge) {
                 offBadge.hidden = !!cliTriggersEnabled;
-            }
-            if (titleEl) {
-                titleEl.classList.toggle('triggers-off', !cliTriggersEnabled);
             }
         }
 
@@ -1236,6 +1227,13 @@
             const complexity = card.complexity || 'Unknown';
             const complexityClass = complexity.toLowerCase();
             let copyLabel = 'Copy Prompt';
+            if (card.column === 'CREATED') {
+                copyLabel = 'Copy planning prompt';
+            } else if (card.column === 'PLAN REVIEWED') {
+                copyLabel = complexity === 'Low' ? 'Copy coder prompt' : 'Copy Lead Coder prompt';
+            } else if (card.column === 'LEAD CODED' || card.column === 'CODER CODED') {
+                copyLabel = 'Copy code review prompt';
+            }
             const coderMode = columnDragDropModes['CODER CODED'] || 'cli';
             const pairTitle = coderMode === 'prompt' 
                 ? 'Pair Program (Clipboard Relay): copy high complexity prompt to clipboard, then click notification for low complexity prompt' 
@@ -1250,7 +1248,7 @@
                     <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="display: flex; gap: 4px;">
                             ${pairProgramBtn}
-                            <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Copy prompt to clipboard">${copyLabel}</button>
+                            <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="${escapeAttr(copyLabel)}">${copyLabel}</button>
                         </div>
                         <div style="display: flex; gap: 4px;">
                             <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
@@ -1631,6 +1629,9 @@
         renderBoard([]);
         updateAutobanButtonState();
         syncAutobanCountdownTimer();
+
+        // Signal to extension that webview is ready to receive data
+        postKanbanMessage({ type: 'ready' });
     </script>
 </body>
 

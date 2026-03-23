@@ -151,6 +151,11 @@
           "default": false,
           "description": "When enabled, Lead Coder execution prompts include an inline challenge step before implementation."
         },
+        "switchboard.pairProgramming.aggressive": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, the planner classifies more tasks as Band A (routine), shifting work to the cheaper Coder agent. Only genuinely complex work stays on the Lead."
+        },
         "switchboard.jules.autoSync": {
           "type": "boolean",
           "default": false,

@@ -29,6 +29,7 @@ export type AutobanConfigState = {
     rules: Record<string, AutobanRuleState>;
     lastTickAt?: Record<string, number>;
     pairProgrammingEnabled: boolean;
+    aggressivePairProgramming: boolean;
 };
 
 const DEFAULT_AUTOBAN_RULES: Record<string, AutobanRuleState> = {
@@ -206,7 +207,8 @@ export function normalizeAutobanConfigState(state?: Partial<AutobanConfigState> 
         poolCursor: normalizedPoolCursor,
         rules: normalizedRules,
         lastTickAt: state?.lastTickAt ? { ...state.lastTickAt } : undefined,
-        pairProgrammingEnabled: state?.pairProgrammingEnabled === true
+        pairProgrammingEnabled: state?.pairProgrammingEnabled === true,
+        aggressivePairProgramming: state?.aggressivePairProgramming === true
     };
 }
 

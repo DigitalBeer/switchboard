@@ -27,13 +27,13 @@ Use this workflow to strengthen an existing feature plan in a single fluid pass.
 
    **Complexity Criteria:**
    
-   **Band A (Routine):**
+   **Routine:**
    - Single-file, localized changes (text updates, button renames, CSS tweaks)
    - Reuses existing patterns (calling an already-implemented handler, adding a field to an existing struct)
    - Low risk (no architectural changes, no multi-system coordination)
    - Small scope (typically <20 lines of code per change)
    
-   **Band B (Complex/Risky):**
+   **Complex / Risky:**
    - Multi-file coordination (changes span 3+ files with tight coupling)
    - New architectural patterns (introducing new state management, new message types, new DB schema)
    - Data consistency risks (race conditions, state synchronization across systems)

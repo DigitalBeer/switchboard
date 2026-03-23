@@ -52,10 +52,10 @@ function run() {
         '',
         '## Complexity Audit',
         '',
-        '### Band A (Routine)',
+        '### Routine',
         '- Update a single label.',
         '',
-        '### Band B — Complex / Risky',
+        '### Complex / Risky',
         '- Rework the routing logic across multiple modules.',
         '',
         '## Goal',
@@ -76,11 +76,11 @@ function run() {
         'Send it to the **Lead Coder**.'
     ].join('\n');
 
-    test('register-tools treats parenthesized Band B label with None as low complexity', () => {
+    test('register-tools treats parenthesized Complex/Band B label with None as low complexity', () => {
         assert.strictEqual(getComplexityFromContent(lowPlan), 'low');
     });
 
-    test('register-tools keeps substantive Band B items as high complexity', () => {
+    test('register-tools keeps substantive Complex items as high complexity', () => {
         assert.strictEqual(getComplexityFromContent(highPlan), 'high');
     });
 
@@ -89,7 +89,7 @@ function run() {
         assert.strictEqual(getComplexityFromContent(recommendationOnlyLeadPlan), 'high');
     });
 
-    test('KanbanProvider strips parenthesized Band B labels before evaluating meaning', () => {
+    test('KanbanProvider strips parenthesized complexity labels before evaluating meaning', () => {
         assert.ok(
             kanbanProviderSource.includes("replace(/^\\((.*)\\)$/, '$1')"),
             'Expected KanbanProvider to unwrap parenthesized Band B heading labels before classification.'

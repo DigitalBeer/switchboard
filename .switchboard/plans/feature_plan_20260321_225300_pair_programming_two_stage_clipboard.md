@@ -168,3 +168,45 @@ Oh FANTASTIC, yet another modal branching path hidden behind a combination of TW
 
 ## Recommended Agent
 **Send to Lead Coder** — The bifurcated handler logic in `pairProgramCard` is a Band B task involving async notification flows and fallback file writes.
+
+---
+
+## Post-Implementation Review
+
+### Review Date
+2026-03-23
+
+### Files Changed
+- `src/services/KanbanProvider.ts` — `pairProgramCard` handler: bifurcated Coder dispatch (Mode 2 vs Mode 3), backup file write/cleanup, card advance, effective mode resolution
+- `src/webview/kanban.html` — Dynamic Pair button tooltip based on Coder column mode
+- `README.md` — Comprehensive three-mode Pair Programming documentation
+
+### Review Findings
+
+| # | Finding | Severity | Status |
+|---|---------|----------|--------|
+| MAJOR-1 | Missing `accurateCodingEnabled` in coder prompt build (Mode 3 clipboard path) | MAJOR | **Fixed** |
+| MAJOR-2 | Same bug affected Mode 2 (shared prompt build before branch) | MAJOR | **Fixed** (same fix) |
+| NIT-1 | Inconsistent effective mode resolution (skips `col.dragDropMode` fallback tier) | NIT | Deferred — no behavioral impact for `CODER CODED` default |
+| NIT-2 | Card advance timing asymmetry between Mode 2 and Mode 3 undocumented | NIT | Deferred — by design |
+| NIT-3 | `.switchboard/handoff/` gitignore coverage | NIT | Already correct — covered by `.switchboard/*` exclude pattern |
+
+### Fix Applied
+**`src/services/KanbanProvider.ts` line 1518**: Added `accurateCodingEnabled` config read and passed it to `buildKanbanBatchPrompt('coder', ...)` in the `pairProgramCard` handler, matching the pattern used in `_dispatchWithPairProgrammingIfNeeded` and `_buildPromptForCards`.
+
+### Validation Results
+- **TypeScript compilation** (`npx tsc -p . --noEmit`): ✅ Pass (exit code 0, no errors)
+- **Webpack build** (`npm run compile`): ✅ Pass (both extension and MCP server bundles compiled successfully)
+
+### Implementation Completeness
+- [x] Step 1: Resolve effective Coder column mode
+- [x] Step 2: Bifurcate Coder dispatch (Mode 2 vs Mode 3)
+- [x] Step 3: Card advance (unchanged semantics, correct in both branches)
+- [x] Step 4: Update README.md with three-mode documentation
+- [x] Balanced Response #1: Dynamic Pair button tooltip (discoverability)
+- [x] Balanced Response #2: Backup file write to `.switchboard/handoff/` with cleanup on successful copy
+- [x] Balanced Response #3: Card advance before notification (Mode 3) — by design
+
+### Remaining Risks
+- **Notification dismissal**: If user dismisses without clicking, Coder prompt is only recoverable from `.switchboard/handoff/coder_prompt_<sessionId>.md`. Card is already in LEAD CODED. User must manually move card back to re-trigger, or paste from backup file.
+- **NIT-1 landmine**: If `CODER CODED` column definition default ever changes from `'cli'`, the `pairProgramCard` handler won't respect it (skips `col.dragDropMode` tier). Low risk — would require an explicit column definition change.

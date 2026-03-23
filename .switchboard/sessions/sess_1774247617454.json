@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774247617454",
+  "planFile": ".switchboard/plans/feature_plan_20260323_173337_update_readme_to_match_marketing.md",
+  "topic": "Update Readme to match marketing",
+  "createdAt": "2026-03-23T06:33:37.448Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-23T06:33:37.448Z",
+      "action": "start"
+    }
+  ]
+}

@@ -72,6 +72,12 @@ Enable pair programming with the **Pair Programming** toggle at the top of the C
 
 To set up Full Clipboard mode: set the Coder column's drag-and-drop mode to **Prompt** using the toggle icon in the column header, then click the **Pair** button on any high-complexity card. 
 
+#### Aggressive Pair Programming
+
+Enable **Aggressive Pair Programming** in the Setup sidebar to shift more tasks to the Coder agent. This tells the planner to assume the Coder is highly competent, classifying only truly complex work (new architectures, security logic, concurrency) as Band B for the Lead. Everything else goes to Band A.
+
+This saves tokens — but the code review step becomes more important. With more work on the Coder, the Reviewer agent in the CODE REVIEWED column is your primary quality gate. Make sure you have a capable model assigned to the Reviewer role when using aggressive mode.
+
 ### Task Batching
 
 Select multiple cards in the CLI-BAN to send them as a batch to an agent. This saves quota because every time you send a prompt, you're also sending hidden system instructions and asking the agent to spin up research tasks. Batching means the agent only does this once. All task batches include an instruction for the agent to use its native subagents if available, so that you still get focused attention on each task. 

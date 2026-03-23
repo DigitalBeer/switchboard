@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import { KanbanProvider } from '../services/KanbanProvider';
 
 suite('Kanban complexity parsing', () => {
-    test('treats Band B heading label with None as Low complexity', async () => {
+    test('treats Complex heading with None as Low complexity (backward compat: Band B format)', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'switchboard-kanban-'));
         const planPath = path.join(tempDir, 'plan.md');
         const provider = new KanbanProvider(
@@ -42,7 +42,7 @@ suite('Kanban complexity parsing', () => {
         }
     });
 
-    test('treats plan as Low complexity even if "Band B" is mentioned in Band A text', async () => {
+    test('treats plan as Low complexity even if "Complex" is mentioned in Routine text', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'switchboard-kanban-'));
         const planPath = path.join(tempDir, 'plan.md');
         const provider = new KanbanProvider(
@@ -60,10 +60,10 @@ suite('Kanban complexity parsing', () => {
                 '',
                 '## Complexity Audit',
                 '',
-                '### Band A (Routine)',
-                '- Update terminology instead of "Band B" or "Band A".',
+                '### Routine',
+                '- Update terminology instead of "Complex" or "Routine".',
                 '',
-                '### Band B (Complex/Risky)',
+                '### Complex / Risky',
                 '- None',
                 '',
                 '## Goal',
@@ -78,7 +78,7 @@ suite('Kanban complexity parsing', () => {
         }
     });
 
-    test('treats substantive Band B tasks as High complexity', async () => {
+    test('treats substantive Complex tasks as High complexity', async () => {
         const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'switchboard-kanban-'));
         const planPath = path.join(tempDir, 'plan.md');
         const provider = new KanbanProvider(
@@ -96,10 +96,10 @@ suite('Kanban complexity parsing', () => {
                 '',
                 '## Complexity Audit',
                 '',
-                '### Band A (Routine)',
+                '### Routine',
                 '- Update one small label.',
                 '',
-                '### Band B — Complex / Risky',
+                '### Complex / Risky',
                 '- Rework cross-module routing and database migration sequencing.',
                 '',
                 '## Goal',

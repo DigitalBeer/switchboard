@@ -17,7 +17,7 @@ Before writing any implementation steps, audit the system:
 ## Step 3: Improve Plan (`/improve-plan`)
 Audit the strategy and stress-test the assumptions:
 - Identify missing pieces, implicit dependencies, or assumptions that need hardening
-- Decompose large changes into Band A (routine) and Band B (complex/risky) tasks
+- Decompose large changes into Routine and Complex/Risky tasks
 - **Grumpy Persona**: Aggressively critique every assumption. Find edge cases, race conditions, missing error handling, and scope creep.
 - **Balanced Persona**: Synthesize the critique and finalize the plan.
 
@@ -43,9 +43,9 @@ Produce a complete, copy-paste-ready implementation spec. You must maximize your
 > [Any user-facing warnings, breaking changes, or manual steps required]
 
 ## Complexity Audit
-### Band A — Routine
+### Routine
 - [List routine, safe changes]
-### Band B — Complex / Risky
+### Complex / Risky
 - [List complex logic, state mutations, or risky changes]
 
 ## Edge-Case & Dependency Audit

@@ -1397,6 +1397,10 @@
                     <input id="lead-challenge-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Inline challenge step for Lead Coder prompts</span>
                 </label>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <input id="aggressive-pair-toggle" type="checkbox" style="width:auto; margin:0;">
+                    <span>Aggressive pair programming (shift more tasks to Coder)</span>
+                </label>
                 <div style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">PLAN INGESTION</div>
                 <label class="startup-row" style="display:block; margin-top:6px;">
                     <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
@@ -1836,6 +1840,7 @@
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
                         vscode.postMessage({ type: 'getLeadChallengeSetting' });
                         vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
+                        vscode.postMessage({ type: 'getAggressivePairSetting' });
                         vscode.postMessage({ type: 'getVisibleAgents' });
                         vscode.postMessage({ type: 'getCustomAgents' });
                     }
@@ -1859,8 +1864,9 @@
                 const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
                 const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
                 const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
+                const aggressivePairProgramming = !!document.getElementById('aggressive-pair-toggle')?.checked;
                 const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
-                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, julesAutoSyncEnabled, planIngestionFolder, customAgents: lastCustomAgents });
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, planIngestionFolder, customAgents: lastCustomAgents });
                 lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
                 lastPlanIngestionFolder = planIngestionFolder;
                 renderCustomAgentConfigList();
@@ -2250,6 +2256,13 @@
                 }
                 case 'julesAutoSyncSetting': {
                     const toggle = document.getElementById('jules-auto-sync-toggle');
+                    if (toggle) {
+                        toggle.checked = message.enabled === true;
+                    }
+                    break;
+                }
+                case 'aggressivePairSetting': {
+                    const toggle = document.getElementById('aggressive-pair-toggle');
                     if (toggle) {
                         toggle.checked = message.enabled === true;
                     }
@@ -2831,7 +2844,7 @@
             copySprintBtn.style.cssText = 'width:calc(100% - 16px); margin:0 8px 8px;';
             copySprintBtn.innerText = 'COPY SPRINT PROMPT';
             copySprintBtn.onclick = () => {
-                const prompt = `Review the "new_column_plans.md" file in the uploaded sources. For each plan listed:\n\n1. Read the "how_to_plan.md" guide to understand the planning framework\n2. Generate a highly detailed implementation plan following the guide's structure\n3. Include:\n   - Specific file paths and line numbers\n   - Step-by-step implementation instructions\n   - Dependencies and potential conflicts\n   - Complexity audit (Band A/B classification)\n   - Verification steps\n\nFormat each plan as a separate markdown block with clear headers so I can copy each plan individually.\n\nStart with the first plan and work through all plans in the list.`;
+                const prompt = `Review the "new_column_plans.md" file in the uploaded sources. For each plan listed:\n\n1. Read the "how_to_plan.md" guide to understand the planning framework\n2. Generate a highly detailed implementation plan following the guide's structure\n3. Include:\n   - Specific file paths and line numbers\n   - Step-by-step implementation instructions\n   - Dependencies and potential conflicts\n   - Complexity audit (Routine / Complex classification)\n   - Verification steps\n\nFormat each plan as a separate markdown block with clear headers so I can copy each plan individually.\n\nStart with the first plan and work through all plans in the list.`;
                 navigator.clipboard.writeText(prompt).then(() => {
                     copySprintBtn.innerText = '\u2713 COPIED';
                     setTimeout(() => { copySprintBtn.innerText = 'COPY SPRINT PROMPT'; }, 2000);

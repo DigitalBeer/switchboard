@@ -332,20 +332,33 @@ export class KanbanProvider implements vscode.Disposable {
                     : false;
                 if (synced) {
                     const dbRows = await db.getBoard(workspaceId);
-                    const dbRowsBySession = new Map(dbRows.map(row => [row.sessionId, row]));
-                    const dbRowsByPlanId = new Map(dbRows.map(row => [row.planId, row]));
-                    cards = snapshotRows.map(row => {
-                        const dbRow = dbRowsBySession.get(row.sessionId) || dbRowsByPlanId.get(row.planId);
-                        return {
+                    const snapshotBySession = new Map(snapshotRows.map(row => [row.sessionId, row]));
+                    const snapshotByPlanId = new Map(snapshotRows.map(row => [row.planId, row]));
+                    // Use DB rows as primary source — resilient when file-based pipeline returns empty
+                    if (dbRows.length > 0) {
+                        cards = dbRows.map(dbRow => {
+                            const snap = snapshotBySession.get(dbRow.sessionId) || snapshotByPlanId.get(dbRow.planId);
+                            return {
+                                sessionId: dbRow.sessionId,
+                                topic: dbRow.topic || snap?.topic || dbRow.planFile || 'Untitled',
+                                planFile: dbRow.planFile || snap?.planFile || '',
+                                column: this._normalizeLegacyKanbanColumn(dbRow.kanbanColumn) || 'CREATED',
+                                lastActivity: dbRow.updatedAt || snap?.updatedAt || dbRow.createdAt || '',
+                                complexity: dbRow.complexity || snap?.complexity || 'Unknown',
+                                workspaceRoot: resolvedWorkspaceRoot
+                            };
+                        });
+                    } else if (snapshotRows.length > 0) {
+                        cards = snapshotRows.map(row => ({
                             sessionId: row.sessionId,
-                            topic: dbRow?.topic || row.topic || row.planFile || 'Untitled',
-                            planFile: dbRow?.planFile || row.planFile || '',
-                            column: this._normalizeLegacyKanbanColumn(dbRow?.kanbanColumn || row.kanbanColumn) || 'CREATED',
-                            lastActivity: dbRow?.updatedAt || row.updatedAt || row.createdAt || '',
-                            complexity: dbRow?.complexity || row.complexity,
+                            topic: row.topic || row.planFile || 'Untitled',
+                            planFile: row.planFile || '',
+                            column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
+                            lastActivity: row.updatedAt || row.createdAt || '',
+                            complexity: row.complexity,
                             workspaceRoot: resolvedWorkspaceRoot
-                        };
-                    });
+                        }));
+                    }
                 } else {
                     console.warn('[KanbanProvider] Kanban DB sync failed, using file-derived fallback for this refresh.');
                 }
@@ -423,19 +436,24 @@ export class KanbanProvider implements vscode.Disposable {
     }
 
     private _generateBatchPlannerPrompt(cards: KanbanCard[], workspaceRoot: string): string {
-        return buildKanbanBatchPrompt('planner', this._cardsToPromptPlans(cards, workspaceRoot));
+        const aggressivePairProgramming = this._autobanState?.aggressivePairProgramming ?? false;
+        return buildKanbanBatchPrompt('planner', this._cardsToPromptPlans(cards, workspaceRoot), {
+            aggressivePairProgramming
+        });
     }
 
     private _generateBatchExecutionPrompt(cards: KanbanCard[], workspaceRoot: string): string {
         const hasHighComplexity = cards.some(card => !this._isLowComplexity(card));
         const role = hasHighComplexity ? 'lead' : 'coder';
         const instruction = hasHighComplexity ? undefined : 'low-complexity';
-        const accurateCodingEnabled = vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
+        // Accuracy mode is NOT included in copy-to-clipboard prompts — it requires MCP tools
+        // only available in CLI terminal sessions (autoban dispatch handles accuracy separately).
         const pairProgrammingEnabled = this._autobanState?.pairProgrammingEnabled ?? false;
+        const aggressivePairProgramming = this._autobanState?.aggressivePairProgramming ?? false;
         return buildKanbanBatchPrompt(role, this._cardsToPromptPlans(cards, workspaceRoot), {
             instruction,
-            accurateCodingEnabled,
-            pairProgrammingEnabled
+            pairProgrammingEnabled,
+            aggressivePairProgramming
         });
     }
 
@@ -573,29 +591,41 @@ export class KanbanProvider implements vscode.Disposable {
         let tombstones = new Set<string>();
         let blacklist = new Set<string>();
 
-        try {
-            const switchboardDir = path.join(workspaceRoot, '.switchboard');
-            const identityPath = path.join(switchboardDir, 'workspace_identity.json');
-            const registryPath = path.join(switchboardDir, 'plan_registry.json');
-            const tombstonePath = path.join(switchboardDir, 'plan_tombstones.json');
-            const blacklistPath = path.join(switchboardDir, 'brain_plan_blacklist.json');
+        const switchboardDir = path.join(workspaceRoot, '.switchboard');
+        const identityPath = path.join(switchboardDir, 'workspace_identity.json');
+        const registryPath = path.join(switchboardDir, 'plan_registry.json');
+        const tombstonePath = path.join(switchboardDir, 'plan_tombstones.json');
+        const blacklistPath = path.join(switchboardDir, 'brain_plan_blacklist.json');
 
+        try {
             if (fs.existsSync(identityPath)) {
                 workspaceId = JSON.parse(await fs.promises.readFile(identityPath, 'utf8')).workspaceId;
             }
+        } catch (e) {
+            console.error('[KanbanProvider] Failed to read workspace identity:', e);
+        }
+        try {
             if (fs.existsSync(registryPath)) {
                 registry = JSON.parse(await fs.promises.readFile(registryPath, 'utf8'));
             }
+        } catch (e) {
+            console.error('[KanbanProvider] Failed to read plan registry:', e);
+        }
+        try {
             if (fs.existsSync(tombstonePath)) {
                 tombstones = new Set(JSON.parse(await fs.promises.readFile(tombstonePath, 'utf8')));
             }
+        } catch (e) {
+            console.error('[KanbanProvider] Failed to read plan tombstones:', e);
+        }
+        try {
             if (fs.existsSync(blacklistPath)) {
                 const parsed = JSON.parse(await fs.promises.readFile(blacklistPath, 'utf8'));
                 const rawEntries = Array.isArray(parsed) ? parsed : (Array.isArray(parsed?.entries) ? parsed.entries : []);
                 blacklist = new Set(rawEntries);
             }
         } catch (e) {
-            console.error('[KanbanProvider] Failed to read registry/identity for scoping:', e);
+            console.error('[KanbanProvider] Failed to read brain plan blacklist:', e);
         }
 
         const getStablePath = (planPath: string) => {
@@ -777,7 +807,7 @@ export class KanbanProvider implements vscode.Disposable {
     /**
      * Read a plan file and determine complexity for routing purposes.
      * Priority: (1) Agent Recommendation — "Send to Coder" → Low, "Send to Lead Coder" → High.
-     * Fallback: (2) Band B parsing — empty/None → Low, non-empty → High.
+     * Fallback: (2) Complex / Band B parsing — empty/None → Low, non-empty → High.
      * Returns 'Unknown' if neither signal is present.
      */
     public async getComplexityFromPlan(workspaceRoot: string, planPath: string): Promise<'Unknown' | 'Low' | 'High'> {
@@ -801,13 +831,13 @@ export class KanbanProvider implements vscode.Disposable {
             // The improve-plan workflow always adds an explicit recommendation
             // like "Send it to the Lead Coder" or "Send it to the Coder agent".
             // This is the authoritative routing signal — it accounts for plans
-            // with moderate Band B items that should still route to the Coder.
+            // with moderate Complex (Band B) items that should still route to the Coder.
             const leadCoderRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}lead\s+coder\*{0,2}/i;
             const coderAgentRec = /send\s+it\s+to\s+(the\s+)?\*{0,2}coder(\s+agent)?\*{0,2}/i;
             if (leadCoderRec.test(content)) return 'High';
             if (coderAgentRec.test(content)) return 'Low';
 
-            // Fallback: parse the Complexity Audit / Band B section
+            // Fallback: parse the Complexity Audit / Complex (Band B) section
             // for plans that lack an explicit agent recommendation.
             const auditMatch = content.match(/^#{1,4}\s+Complexity\s+Audit\b/im);
             if (!auditMatch) {
@@ -816,14 +846,14 @@ export class KanbanProvider implements vscode.Disposable {
 
             const auditStart = auditMatch.index! + auditMatch[0].length;
 
-            // Find "Band B" within the audit section (stop at next top-level heading)
-            // Use a strict anchor to match only actual headings (e.g. `### Band B`),
-            // avoiding false positives if "Band B" appears in normal text inside Band A.
+            // Find "Complex" or "Band B" within the audit section (stop at next top-level heading)
+            // Use a strict anchor to match only actual headings (e.g. `### Complex / Risky` or `### Band B`),
+            // avoiding false positives if "Complex" or "Band B" appears in normal text.
             const afterAudit = content.slice(auditStart);
-            const bandBMatch = afterAudit.match(/^\s*(?:#{1,4}\s+|\*\*)?Band\s+B\b/im);
+            const bandBMatch = afterAudit.match(/^\s*(?:#{1,4}\s+|\*\*)?(?:Band\s+B|Complex)\b/im);
             if (!bandBMatch) return 'Low';
 
-            // Extract text after "Band B" until the next section boundary.
+            // Extract text after "Complex / Band B" until the next section boundary.
             // Stop at headings, later band markers, recommendation lines, or horizontal rules.
             const bandBStart = bandBMatch.index! + bandBMatch[0].length;
             const afterBandB = afterAudit.slice(bandBStart);
@@ -846,7 +876,7 @@ export class KanbanProvider implements vscode.Disposable {
             );
 
             const isBandBLabel = (line: string): boolean => (
-                /^(complex(?:\s*(?:\/|and)\s*|\s+)risky|complex|risky|high complexity)\.?$/.test(line)
+                /^(complex(?:\s*(?:\/|and)\s*|\s+)risky|complex|risky|high complexity|routine)\.?$/.test(line)
             );
 
             const isEmptyMarker = (line: string): boolean => {
@@ -1055,6 +1085,7 @@ export class KanbanProvider implements vscode.Disposable {
 
     private async _handleMessage(msg: any) {
         switch (msg.type) {
+            case 'ready':
             case 'refresh':
                 await this._refreshBoard(msg.workspaceRoot);
                 break;
@@ -1104,7 +1135,7 @@ export class KanbanProvider implements vscode.Disposable {
                     await this._getKanbanDb(workspaceRoot).updateColumn(sessionId, targetColumn);
 
                     // Pair programming: when a high-complexity card is dispatched to Lead,
-                    // also dispatch the Coder terminal with the Band A prompt.
+                    // also dispatch the Coder terminal with the Routine prompt.
                     // Only fires for high-complexity cards landing on LEAD CODED.
                     if (role === 'lead' && targetColumn === 'LEAD CODED') {
                         const card = this._lastCards.find(c => c.sessionId === sessionId && c.workspaceRoot === workspaceRoot);
@@ -1167,7 +1198,7 @@ export class KanbanProvider implements vscode.Disposable {
                 break;
             }
             case 'promptOnDrop': {
-                // Band B: Drag-and-drop in "prompt" mode — copy prompt to clipboard and advance visually (no CLI dispatch).
+                // Complex: Drag-and-drop in "prompt" mode — copy prompt to clipboard and advance visually (no CLI dispatch).
                 // Mirrors the logic of 'promptSelected' but triggered by the drop handler when column mode is 'prompt'.
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot) { break; }
@@ -1512,16 +1543,19 @@ export class KanbanProvider implements vscode.Disposable {
                 }
 
                 const plans = this._cardsToPromptPlans([card], this._currentWorkspaceRoot);
+                const aggressivePairProgramming = this._autobanState?.aggressivePairProgramming ?? false;
 
-                // Build lead (Band B) prompt — with pair programming note
-                const leadPrompt = buildKanbanBatchPrompt('lead', plans, { pairProgrammingEnabled: true });
-
-                // Build coder (Band A) prompt
-                const coderPrompt = buildKanbanBatchPrompt('coder', plans, { pairProgrammingEnabled: true });
-
-                // Resolve effective Coder column mode
+                // Resolve effective Coder column mode BEFORE building prompt —
+                // accuracy mode only applies when dispatching to CLI terminal, not clipboard
                 const coderColumnId = 'CODER CODED';
                 const coderColumnMode = this._columnDragDropModes[coderColumnId] || 'cli';
+                const accurateCodingEnabled = coderColumnMode !== 'prompt' && vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
+
+                // Build lead (Complex) prompt — with pair programming note
+                const leadPrompt = buildKanbanBatchPrompt('lead', plans, { pairProgrammingEnabled: true, aggressivePairProgramming });
+
+                // Build coder (Routine) prompt
+                const coderPrompt = buildKanbanBatchPrompt('coder', plans, { pairProgrammingEnabled: true, accurateCodingEnabled });
 
                 if (coderColumnMode === 'prompt') {
                     // Mode 3: Two-stage clipboard — Lead prompt first, Coder prompt on demand
@@ -1557,7 +1591,7 @@ export class KanbanProvider implements vscode.Disposable {
                 } else {
                     // Mode 2: Lead prompt to clipboard, Coder prompt to terminal
                     await vscode.env.clipboard.writeText(leadPrompt);
-                    vscode.window.showInformationMessage('Band B prompt copied to clipboard. Dispatching Band A to Coder terminal...');
+                    vscode.window.showInformationMessage('Complex prompt copied to clipboard. Dispatching Routine tasks to Coder terminal...');
                     await vscode.commands.executeCommand('switchboard.dispatchToCoderTerminal', coderPrompt);
 
                     // Advance the card to LEAD CODED

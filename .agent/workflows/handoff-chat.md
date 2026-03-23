@@ -20,9 +20,9 @@ Allowed branch:
    - Call `start_workflow(name: "handoff-chat", force: true)` to auto-replace any stale workflows.
 
 2. **Split Tasks** (skip if `--all`)
-   - Band A = routine, low-risk (delegatable)
-   - Band B = complex, architectural (keep local)
-   - MUST mark Band A tasks `[DELEGATED]` in task.md
+   - Routine = low-risk (delegatable)
+   - Complex = architectural (keep local)
+   - MUST mark Routine tasks `[DELEGATED]` in task.md
    - Call `complete_workflow_phase(phase: 1, workflow: "handoff-chat")`.
 
 3. **Prepare Clipboard Payload**

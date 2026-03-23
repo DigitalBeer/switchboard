@@ -8,6 +8,22 @@
       "workflow": "unknown",
       "timestamp": "2026-03-21T12:10:55.181Z",
       "action": "start"
+    },
+    {
+      "workflow": "move-to-plan-reviewed",
+      "timestamp": "2026-03-23T09:45:30.199Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-23T09:45:38.893Z",
+      "action": "start"
+    },
+    {
+      "workflow": "reviewer-pass",
+      "timestamp": "2026-03-23T10:00:50.589Z",
+      "action": "start"
     }
   ]
 }

@@ -18,8 +18,10 @@ export interface PromptBuilderOptions {
     includeInlineChallenge?: boolean;
     /** Whether accuracy-mode workflow hint is appended (coder role). */
     accurateCodingEnabled?: boolean;
-    /** When true, lead is told a coder agent is handling Band A concurrently. Coder is told to do Band A only. */
+    /** When true, lead is told a coder agent is handling Routine tasks concurrently. Coder is told to do Routine work only. */
     pairProgrammingEnabled?: boolean;
+    /** When true, planner classifies more tasks as Routine, assuming a competent Coder. */
+    aggressivePairProgramming?: boolean;
 }
 
 function buildReviewerExecutionIntro(planCount: number): string {
@@ -61,6 +63,7 @@ export function buildKanbanBatchPrompt(
     const includeInlineChallenge = options?.includeInlineChallenge ?? false;
     const accurateCodingEnabled = options?.accurateCodingEnabled ?? false;
     const pairProgrammingEnabled = options?.pairProgrammingEnabled ?? false;
+    const aggressivePairProgramming = options?.aggressivePairProgramming ?? false;
 
     const focusDirective = `FOCUS DIRECTIVE: Each plan file path below is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
     const parallelInstruction = plans.length > 1
@@ -86,7 +89,10 @@ export function buildKanbanBatchPrompt(
 
     if (role === 'planner') {
         const plannerVerb = baseInstruction === 'enhance' ? 'enhance' : 'improve';
-        return `Please ${plannerVerb} the following ${plans.length} plans. Break each down into distinct steps grouped by high complexity and low complexity. Add extra detail.
+        const aggressiveDirective = aggressivePairProgramming
+            ? `\n\nPAIR PROGRAMMING OPTIMISATION: Aggressive mode is enabled. Assume the Coder agent is highly competent and can handle most implementation tasks independently, including multi-file changes, test updates, and straightforward refactors. Only classify tasks as Complex / Risky if they involve: (a) new architectural patterns or framework integrations the codebase hasn't used before, (b) security-sensitive logic (auth, crypto, permissions), (c) complex state machines or concurrency, or (d) changes that could silently break existing behaviour without obvious test failures. Everything else — even if it touches multiple files or requires careful reading — should be Routine.\n`
+            : '';
+        return `Please ${plannerVerb} the following ${plans.length} plans. Break each down into distinct steps grouped by high complexity and low complexity. Add extra detail.${aggressiveDirective}
 MANDATORY: You MUST read and strictly adhere to \`.agent/rules/how_to_plan.md\` to format your output and ensure sufficient technical detail. Do not make assumptions about which files need to be changed; provide exact file paths and explicit implementation steps as required by the guide.
 Do not add net-new product requirements or scope.
 You may add clarifying implementation detail only if strictly implied by existing requirements; label it as "Clarification", not a new requirement.
@@ -96,11 +102,11 @@ ${batchExecutionRules}
 For each plan:
 1. Read the plan file before editing.
 2. Fill out 'TODO' sections or underspecified parts. Scan the Kanban board/plans folder for potential cross-plan conflicts and document them.
-3. Ensure the plan has a "## Complexity Audit" section with "### Band A — Routine" and "### Band B — Complex / Risky" subsections. If missing, create it. If present, update it. If Band B is empty, write "- None" explicitly.
+3. Ensure the plan has a "## Complexity Audit" section with "### Routine" and "### Complex / Risky" subsections. If missing, create it. If present, update it. If Complex / Risky is empty, write "- None" explicitly.
 4. Perform adversarial review: post a Grumpy critique (dramatic "Grumpy Principal Engineer" voice: incisive, specific, theatrical) then a Balanced synthesis.
 5. ${chatCritiqueDirective}
 6. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
-7. Recommend agent: if the plan is simple (routine changes, only Band A), say "Send to Coder". If complex (Band B tasks, new frameworks), say "Send to Lead Coder".
+7. Recommend agent: if the plan is simple (routine changes, only Routine tasks), say "Send to Coder". If complex (Complex tasks, new frameworks), say "Send to Lead Coder".
 
 ${focusDirective}
 
@@ -148,7 +154,10 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}`;
         if (pairProgrammingEnabled) {
-            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Band A (routine) tasks for these plans. You only need to do Band B (complex/risky) work. IMPORTANT: The Coder has JUST started and will NOT be finished yet — do NOT attempt to check or read their work at the start. Begin your Band B implementation immediately. Only check and integrate the Coder's Band A work as a final step before declaring completion, by which time they will have finished.`;
+            leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Routine tasks for these plans. You only need to do Complex (Band B) work. IMPORTANT: The Coder has JUST started and will NOT be finished yet — do NOT attempt to check or read their work at the start. Begin your Complex implementation immediately. Only check and integrate the Coder's Routine work as a final step before declaring completion, by which time they will have finished.`;
+            if (aggressivePairProgramming) {
+                leadPrompt += ` Routine scope has been expanded in aggressive pair programming mode. During your final integration check, pay extra attention to any Routine changes that touch files you also modified.`;
+            }
         }
         return leadPrompt;
     }
@@ -168,7 +177,7 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}`, accurateCodingEnabled);
         if (pairProgrammingEnabled) {
-            coderPrompt += `\n\nAdditional Instructions: only do band a.`;
+            coderPrompt += `\n\nAdditional Instructions: only do Routine (Band A) work.`;
         }
         return coderPrompt;
     }
