@@ -366,6 +366,42 @@ export class KanbanProvider implements vscode.Disposable {
                 console.warn(`[KanbanProvider] Kanban DB unavailable, using file-derived fallback: ${db.lastInitError || 'unknown error'}`);
             }
 
+            // Fetch completed plans and append as COMPLETED column cards
+            if (workspaceId && await db.ensureReady()) {
+                const completedRecords = await db.getCompletedPlans(workspaceId, 100);
+                const completedCards: KanbanCard[] = completedRecords.map(rec => ({
+                    sessionId: rec.sessionId,
+                    topic: rec.topic || rec.planFile || 'Untitled',
+                    planFile: rec.planFile || '',
+                    column: 'COMPLETED',
+                    lastActivity: rec.updatedAt || rec.createdAt || '',
+                    complexity: rec.complexity || 'Unknown',
+                    workspaceRoot: resolvedWorkspaceRoot
+                }));
+                cards.push(...completedCards);
+            } else {
+                // File-based fallback: scan completed runsheets
+                try {
+                    const log = this._getSessionLog(resolvedWorkspaceRoot);
+                    const completedSheets = await log.getCompletedRunSheets();
+                    const cappedSheets = completedSheets
+                        .sort((a: any, b: any) => (b.completedAt || '').localeCompare(a.completedAt || ''))
+                        .slice(0, 100);
+                    const fallbackCompletedCards: KanbanCard[] = cappedSheets.map((sheet: any) => ({
+                        sessionId: sheet.sessionId,
+                        topic: sheet.topic || sheet.planFile || 'Untitled',
+                        planFile: sheet.planFile || '',
+                        column: 'COMPLETED',
+                        lastActivity: sheet.completedAt || '',
+                        complexity: (sheet.complexity as any) || 'Unknown',
+                        workspaceRoot: resolvedWorkspaceRoot
+                    }));
+                    cards.push(...fallbackCompletedCards);
+                } catch (e) {
+                    console.warn('[KanbanProvider] Failed to fetch completed sheets for fallback:', e);
+                }
+            }
+
             const agentNames = await this._getAgentNames(resolvedWorkspaceRoot);
             const visibleAgents = await this._getVisibleAgents(resolvedWorkspaceRoot);
 
@@ -1547,6 +1583,61 @@ export class KanbanProvider implements vscode.Disposable {
                     await vscode.commands.executeCommand('switchboard.completePlanFromKanban', msg.sessionId, msg.workspaceRoot);
                 }
                 break;
+            case 'completeSelected': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                let successCount = 0;
+                for (const sessionId of msg.sessionIds) {
+                    const ok = await vscode.commands.executeCommand<boolean>('switchboard.completePlanFromKanban', sessionId, workspaceRoot);
+                    if (ok) { successCount++; }
+                }
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Completed ${successCount} of ${msg.sessionIds.length} plans.`);
+                break;
+            }
+            case 'completeAll': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) { break; }
+                await this._refreshBoard(workspaceRoot);
+                const reviewedCards = this._lastCards.filter(card => card.workspaceRoot === workspaceRoot && card.column === 'CODE REVIEWED');
+                if (reviewedCards.length === 0) {
+                    vscode.window.showInformationMessage('No plans in Reviewed to complete.');
+                    break;
+                }
+                let successCount = 0;
+                for (const card of reviewedCards) {
+                    const ok = await vscode.commands.executeCommand<boolean>('switchboard.completePlanFromKanban', card.sessionId, workspaceRoot);
+                    if (ok) { successCount++; }
+                }
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Completed ${successCount} of ${reviewedCards.length} plans.`);
+                break;
+            }
+            case 'uncompleteCard': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                const targetColumn = msg.targetColumn || 'CODE REVIEWED';
+                let successCount = 0;
+                for (const sessionId of msg.sessionIds) {
+                    const db = this._getKanbanDb(workspaceRoot);
+                    let planId: string | null = null;
+                    if (await db.ensureReady()) {
+                        const record = await db.getPlanBySessionId(sessionId);
+                        if (record) { planId = record.planId; }
+                    }
+                    if (!planId) {
+                        planId = sessionId.startsWith('antigravity_') ? sessionId.replace('antigravity_', '') : sessionId;
+                    }
+                    const ok = await vscode.commands.executeCommand<boolean>('switchboard.restorePlanFromKanban', planId, workspaceRoot);
+                    if (ok) {
+                        await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', [sessionId], targetColumn, workspaceRoot);
+                        successCount++;
+                    }
+                }
+                await this._refreshBoard(workspaceRoot);
+                vscode.window.showInformationMessage(`Recovered ${successCount} of ${msg.sessionIds.length} plans.`);
+                break;
+            }
             case 'reviewPlan':
                 if (msg.sessionId) {
                     await vscode.commands.executeCommand('switchboard.reviewPlanFromKanban', msg.sessionId, msg.workspaceRoot);
@@ -1666,6 +1757,7 @@ export class KanbanProvider implements vscode.Disposable {
             case 'CODER CODED': return 'coder';
             case 'CODED': return 'lead';
             case 'CODE REVIEWED': return 'reviewer';
+            case 'COMPLETED': return null;
             default: return column.startsWith('custom_agent_') ? column : null;
         }
     }

@@ -81,7 +81,7 @@ const MIGRATION_VERSION_KEY = 'kanban_db_migration_version';
 const runtimeRequire = createRequire(__filename);
 
 const VALID_KANBAN_COLUMNS = new Set([
-    'CREATED', 'PLAN REVIEWED', 'LEAD CODED', 'CODER CODED', 'CODE REVIEWED', 'CODED'
+    'CREATED', 'PLAN REVIEWED', 'LEAD CODED', 'CODER CODED', 'CODE REVIEWED', 'CODED', 'COMPLETED'
 ]);
 const VALID_COMPLEXITIES = new Set(['Unknown', 'Low', 'High']);
 const VALID_STATUSES = new Set(['active', 'archived', 'completed']);
@@ -282,6 +282,33 @@ export class KanbanDatabase {
             [workspaceId, column]
         );
         return this._readRows(stmt);
+    }
+
+    public async getCompletedPlans(workspaceId: string, limit: number = 100): Promise<KanbanPlanRecord[]> {
+        if (!(await this.ensureReady()) || !this._db) return [];
+        const stmt = this._db.prepare(
+            `SELECT plan_id, session_id, topic, plan_file, kanban_column, status, complexity,
+                    workspace_id, created_at, updated_at, last_action, source_type
+             FROM plans
+             WHERE workspace_id = ? AND status = 'completed'
+             ORDER BY updated_at DESC
+             LIMIT ?`,
+            [workspaceId, limit]
+        );
+        return this._readRows(stmt);
+    }
+
+    public async getPlanBySessionId(sessionId: string): Promise<KanbanPlanRecord | null> {
+        if (!(await this.ensureReady()) || !this._db) return null;
+        const stmt = this._db.prepare(
+            `SELECT plan_id, session_id, topic, plan_file, kanban_column, status, complexity,
+                    workspace_id, created_at, updated_at, last_action, source_type
+             FROM plans
+             WHERE session_id = ? LIMIT 1`,
+            [sessionId]
+        );
+        const rows = this._readRows(stmt);
+        return rows.length > 0 ? rows[0] : null;
     }
 
     private async _initialize(): Promise<boolean> {

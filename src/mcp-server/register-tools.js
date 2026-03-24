@@ -294,7 +294,8 @@ const BUILTIN_KANBAN_COLUMN_DEFINITIONS = [
     { id: 'PLAN REVIEWED', label: 'Planned', order: 100 },
     { id: 'LEAD CODED', label: 'Lead Coder', order: 190 },
     { id: 'CODER CODED', label: 'Coder', order: 200 },
-    { id: 'CODE REVIEWED', label: 'Reviewed', order: 300 }
+    { id: 'CODE REVIEWED', label: 'Reviewed', order: 300 },
+    { id: 'COMPLETED', label: 'Completed', order: 9999 }
 ];
 
 const BUILTIN_KANBAN_COLUMN_IDS = new Set(BUILTIN_KANBAN_COLUMN_DEFINITIONS.map((definition) => definition.id));
@@ -311,6 +312,8 @@ const KANBAN_COLUMN_ALIASES = {
     'CODER': 'CODER CODED',
     'CODE REVIEWED': 'CODE REVIEWED',
     'REVIEWED': 'CODE REVIEWED',
+    'COMPLETED': 'COMPLETED',
+    'DONE': 'COMPLETED',
     'CODED': 'LEAD CODED'
 };
 

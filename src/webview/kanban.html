@@ -353,6 +353,22 @@
             border-color: var(--accent-teal-dim);
         }
 
+        .kanban-card.completed {
+            opacity: 0.7;
+            border-left: 3px solid var(--vscode-testing-iconPassed, #73c991);
+        }
+        .kanban-card.completed:hover {
+            opacity: 0.85;
+        }
+        .card-done-badge {
+            font-size: 10px;
+            color: var(--vscode-testing-iconPassed, #73c991);
+            padding: 2px 6px;
+            border: 1px solid var(--vscode-testing-iconPassed, #73c991);
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+
         /* During drag, prevent child elements from interfering with drop targets */
         .column-body.drag-over .kanban-card,
         .column-body.drag-over .empty-state {
@@ -766,7 +782,7 @@
         const selectedCards = new Set();
 
         // Column abbreviations for inline timers
-        const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R' };
+        const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R', 'COMPLETED': 'D' };
 
         // Icon URIs injected by extension
         const ICON_MOVE_SELECTED = '{{ICON_53}}';
@@ -892,12 +908,13 @@
                 const isCreated = def.id === 'CREATED';
                 const isPlanReviewed = def.id === 'PLAN REVIEWED';
                 const isLastColumn = def.id === lastColumnId;
-                const hasAgent = !isCreated;
+                const isCompleted = def.kind === 'completed';
+                const hasAgent = !isCreated && !isCompleted;
                 
                 const mode = columnDragDropModes[def.id] || 'cli';
                 const modeIcon = mode === 'prompt' ? ICON_PROMPT : ICON_CLI;
                 const modeTitle = mode === 'prompt' ? 'Mode: Copy Prompt (drag cards to copy prompt to clipboard)' : 'Mode: CLI Dispatch (drag cards to trigger CLI agent)';
-                const modeToggle = (!isCreated && !isLastColumn) 
+                const modeToggle = (!isCreated && !isLastColumn && !isCompleted) 
                     ? `<div class="mode-toggle mode-${mode}" data-column="${escapeAttr(def.id)}" title="${escapeAttr(modeTitle)}">
                            <img src="${modeIcon}" alt="${mode}">
                        </div>` 
@@ -917,9 +934,25 @@
                     ? `<div class="column-agent" id="agent-${escapeAttr(def.id)}"></div>`
                     : `<div class="column-subline-spacer" aria-hidden="true"></div>`;
 
-                // Column button area (with buttons for all columns except last, empty strip for last)
+                // Column button area (with buttons for all columns except last/completed, empty strip for last)
                 let buttonArea = '';
-                if (!isLastColumn) {
+                if (isCompleted || isLastColumn) {
+                    buttonArea = `<div class="column-button-area">
+                        <button class="column-icon-btn" style="visibility: hidden; pointer-events: none;" tabindex="-1" aria-hidden="true">
+                            <img src="${ICON_MOVE_SELECTED}" alt="">
+                        </button>
+                    </div>`;
+                } else if (def.kind === 'reviewed') {
+                    // Reviewed column: Complete Selected / Complete All buttons only (no prompt/CLI dispatch)
+                    buttonArea = `<div class="column-button-area">
+                        <button class="column-icon-btn" data-action="completeSelected" data-column="${escapeAttr(def.id)}" title="Complete selected plans (archive)">
+                            <img src="${ICON_MOVE_SELECTED}" alt="Complete Selected">
+                        </button>
+                        <button class="column-icon-btn" data-action="completeAll" data-column="${escapeAttr(def.id)}" title="Complete all plans in this column (archive)">
+                            <img src="${ICON_MOVE_ALL}" alt="Complete All">
+                        </button>
+                    </div>`;
+                } else {
                     const julesBtn = (isPlanReviewed && lastVisibleAgents.jules !== false)
                         ? `<button class="column-icon-btn" data-action="julesSelected" data-column="${escapeAttr(def.id)}" title="Send selected plans to Jules">
                                <img src="${ICON_JULES}" alt="Jules">
@@ -945,12 +978,6 @@
                         </button>
                         ${julesBtn}
                         ${analystMapBtn}
-                    </div>`;
-                } else {
-                    buttonArea = `<div class="column-button-area">
-                        <button class="column-icon-btn" style="visibility: hidden; pointer-events: none;" tabindex="-1" aria-hidden="true">
-                            <img src="${ICON_MOVE_SELECTED}" alt="">
-                        </button>
                     </div>`;
                 }
 
@@ -999,7 +1026,7 @@
                     const action = btn.dataset.action;
                     const column = btn.dataset.column;
                     const nextCol = getNextColumn(column);
-                    if (!nextCol && action !== 'julesSelected' && action !== 'analystMapSelected') return;
+                    if (!nextCol && action !== 'julesSelected' && action !== 'analystMapSelected' && action !== 'completeSelected' && action !== 'completeAll') return;
 
                     switch (action) {
                         case 'moveSelected': {
@@ -1041,6 +1068,20 @@
                             const ids = getSelectedInColumn(column);
                             if (ids.length === 0) return;
                             postKanbanMessage({ type: 'analystMapSelected', sessionIds: ids });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'completeSelected': {
+                            const ids = getSelectedInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'completeSelected', sessionIds: ids, workspaceRoot: getActiveWorkspaceRoot() });
+                            ids.forEach(id => selectedCards.delete(id));
+                            break;
+                        }
+                        case 'completeAll': {
+                            const ids = getAllInColumn(column);
+                            if (ids.length === 0) return;
+                            postKanbanMessage({ type: 'completeAll', workspaceRoot: getActiveWorkspaceRoot() });
                             ids.forEach(id => selectedCards.delete(id));
                             break;
                         }
@@ -1226,6 +1267,8 @@
             const shortTopic = card.topic.length > 50 ? card.topic.substring(0, 47) + '...' : card.topic;
             const complexity = card.complexity || 'Unknown';
             const complexityClass = complexity.toLowerCase();
+            const isCompleted = card.column === 'COMPLETED';
+            const completedClass = isCompleted ? ' completed' : '';
             let copyLabel = 'Copy Prompt';
             if (card.column === 'CREATED') {
                 copyLabel = 'Copy planning prompt';
@@ -1241,8 +1284,13 @@
             const pairProgramBtn = (card.column === 'PLAN REVIEWED' && complexity === 'High')
                 ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" title="${escapeAttr(pairTitle)}">Pair</button>`
                 : '';
+            const completeOrDoneBtn = isCompleted
+                ? '<span class="card-done-badge" title="Plan completed">✓ Done</span>'
+                : `<button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Complete Plan">
+                       <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>
+                   </button>`;
             return `
-                <div class="kanban-card" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
+                <div class="kanban-card${completedClass}" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                     <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
                     <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}" title="${complexity.toLowerCase()} complexity">${complexity}</span> · ${timeAgo}</div>
                     <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
@@ -1254,9 +1302,7 @@
                             <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
                             </button>
-                            <button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Complete Plan">
-                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>
-                            </button>
+                            ${completeOrDoneBtn}
                         </div>
                     </div>
                 </div>`;
@@ -1348,6 +1394,28 @@
                     forwardIds.push(id);
                 }
             });
+
+            // Special handling: forward drops INTO COMPLETED trigger archive, not dispatch
+            if (targetColumn === 'COMPLETED' && forwardIds.length > 0) {
+                forwardIds.forEach(id => {
+                    const card = currentCards.find(c => c.sessionId === id);
+                    postKanbanMessage({ type: 'completePlan', sessionId: id, workspaceRoot: card?.workspaceRoot || workspaceRoot });
+                });
+                forwardIds.length = 0;
+            }
+
+            // Special handling: backward drags FROM COMPLETED trigger uncomplete/restore
+            const uncompleteIds = backwardIds.filter(id => {
+                const card = currentCards.find(c => c.sessionId === id);
+                return card && card.column === 'COMPLETED';
+            });
+            if (uncompleteIds.length > 0) {
+                postKanbanMessage({ type: 'uncompleteCard', sessionIds: uncompleteIds, targetColumn, workspaceRoot });
+                uncompleteIds.forEach(id => {
+                    const idx = backwardIds.indexOf(id);
+                    if (idx >= 0) backwardIds.splice(idx, 1);
+                });
+            }
 
             // Determine the effective drop mode for this column
             const dropMode = columnDragDropModes[targetColumn] || 'cli';

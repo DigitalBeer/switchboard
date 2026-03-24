@@ -1273,6 +1273,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return await this._handleCompletePlan(sessionId, workspaceRoot);
     }
 
+    public async handleKanbanRestorePlan(planId: string, _workspaceRoot?: string): Promise<boolean> {
+        return await this._handleRestorePlan(planId);
+    }
+
     public async handleDeletePlanFromReview(sessionId: string, workspaceRoot?: string): Promise<boolean> {
         return await this._handleDeletePlan(sessionId, workspaceRoot);
     }
@@ -5873,6 +5877,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const db = await this._getKanbanDb(resolvedWorkspaceRoot);
             if (db) {
                 await db.updateStatus(sessionId, 'completed');
+                await db.updateColumn(sessionId, 'COMPLETED');
             }
             await this._logEvent('plan_management', {
                 operation: 'mark_complete',
