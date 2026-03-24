@@ -67,11 +67,8 @@ ON CONFLICT(plan_id) DO UPDATE SET
     session_id = excluded.session_id,
     topic = excluded.topic,
     plan_file = excluded.plan_file,
-    kanban_column = excluded.kanban_column,
-    status = excluded.status,
     complexity = excluded.complexity,
     workspace_id = excluded.workspace_id,
-    created_at = excluded.created_at,
     updated_at = excluded.updated_at,
     last_action = excluded.last_action,
     source_type = excluded.source_type

@@ -286,8 +286,13 @@ export class KanbanProvider implements vscode.Disposable {
         const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
         if (!resolvedWorkspaceRoot) return;
 
+        const completedLimit = Math.max(1, Math.min(
+            vscode.workspace.getConfiguration('switchboard').get<number>('kanban.completedLimit', 100) ?? 100,
+            500
+        ));
+
         try {
-            const activeSheets = await this._getActiveSheets(resolvedWorkspaceRoot);
+            const { activeSheets, completedSessionIds } = await this._getActiveSheets(resolvedWorkspaceRoot);
             const customAgents = await this._getCustomAgents(resolvedWorkspaceRoot);
             const columns = buildKanbanColumns(customAgents);
             const workspaceId = await this._readWorkspaceId(resolvedWorkspaceRoot);
@@ -331,34 +336,66 @@ export class KanbanProvider implements vscode.Disposable {
                     ? await KanbanMigration.syncNewPlansOnly(db, workspaceId, snapshotRows)
                     : false;
                 if (synced) {
-                    const dbRows = await db.getBoard(workspaceId);
-                    const snapshotBySession = new Map(snapshotRows.map(row => [row.sessionId, row]));
-                    const snapshotByPlanId = new Map(snapshotRows.map(row => [row.planId, row]));
-                    // Use DB rows as primary source — resilient when file-based pipeline returns empty
-                    if (dbRows.length > 0) {
-                        cards = dbRows.map(dbRow => {
-                            const snap = snapshotBySession.get(dbRow.sessionId) || snapshotByPlanId.get(dbRow.planId);
-                            return {
-                                sessionId: dbRow.sessionId,
-                                topic: dbRow.topic || snap?.topic || dbRow.planFile || 'Untitled',
-                                planFile: dbRow.planFile || snap?.planFile || '',
-                                column: this._normalizeLegacyKanbanColumn(dbRow.kanbanColumn) || 'CREATED',
-                                lastActivity: dbRow.updatedAt || snap?.updatedAt || dbRow.createdAt || '',
-                                complexity: dbRow.complexity || snap?.complexity || 'Unknown',
-                                workspaceRoot: resolvedWorkspaceRoot
-                            };
-                        });
-                    } else if (snapshotRows.length > 0) {
-                        cards = snapshotRows.map(row => ({
-                            sessionId: row.sessionId,
-                            topic: row.topic || row.planFile || 'Untitled',
-                            planFile: row.planFile || '',
-                            column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
-                            lastActivity: row.updatedAt || row.createdAt || '',
-                            complexity: row.complexity,
-                            workspaceRoot: resolvedWorkspaceRoot
-                        }));
+                    let dbRows = await db.getBoard(workspaceId);
+
+                    // Reconcile: force-complete any DB records that the filesystem shows as completed.
+                    if (completedSessionIds.size > 0) {
+                        for (const row of dbRows) {
+                            if (row.status !== 'completed' && completedSessionIds.has(row.sessionId)) {
+                                try {
+                                    await db.updateStatus(row.sessionId, 'completed');
+                                    await db.updateColumn(row.sessionId, 'COMPLETED');
+                                    console.log(`[KanbanProvider] Reconciled stale DB entry: ${row.sessionId} -> completed`);
+                                } catch (e) {
+                                    console.warn(`[KanbanProvider] Failed to reconcile stale DB entry ${row.sessionId}:`, e);
+                                }
+                            }
+                        }
+                        dbRows = dbRows.filter(row => !completedSessionIds.has(row.sessionId));
                     }
+
+                    // Reconcile orphaned active DB rows whose session files no longer exist
+                    // (e.g. archived/deleted without DB status being updated).
+                    // Safety: only run when the snapshot pipeline returned results — an empty
+                    // snapshot may indicate a transient read failure and must not nuke DB rows.
+                    if (snapshotRows.length > 0) {
+                        const snapshotSessionIds = new Set(snapshotRows.map(row => row.sessionId));
+                        const snapshotPlanIds = new Set(snapshotRows.map(row => row.planId));
+                        const orphanedRows = dbRows.filter(row =>
+                            !snapshotSessionIds.has(row.sessionId) && !snapshotPlanIds.has(row.planId)
+                        );
+                        if (orphanedRows.length > 0) {
+                            for (const row of orphanedRows) {
+                                try {
+                                    await db.updateStatus(row.sessionId, 'completed');
+                                    await db.updateColumn(row.sessionId, 'COMPLETED');
+                                    console.log(`[KanbanProvider] Reconciled orphaned DB entry: ${row.sessionId} -> completed`);
+                                } catch (e) {
+                                    console.warn(`[KanbanProvider] Failed to reconcile orphaned DB entry ${row.sessionId}:`, e);
+                                }
+                            }
+                            dbRows = dbRows.filter(row =>
+                                snapshotSessionIds.has(row.sessionId) || snapshotPlanIds.has(row.planId)
+                            );
+                        }
+                    }
+
+                    // Build cards from snapshot, but ALWAYS prefer DB column over derived column.
+                    // This ensures manual moves persist even if derivation disagrees.
+                    const dbBySession = new Map(dbRows.map(row => [row.sessionId, row]));
+                    const dbByPlanId = new Map(dbRows.map(row => [row.planId, row]));
+                    cards = snapshotRows.map(row => {
+                        const dbRow = dbBySession.get(row.sessionId) || dbByPlanId.get(row.planId);
+                        return {
+                            sessionId: row.sessionId,
+                            topic: dbRow?.topic || row.topic || row.planFile || 'Untitled',
+                            planFile: dbRow?.planFile || row.planFile || '',
+                            column: this._normalizeLegacyKanbanColumn(dbRow?.kanbanColumn || row.kanbanColumn) || 'CREATED',
+                            lastActivity: dbRow?.updatedAt || row.updatedAt || row.createdAt || '',
+                            complexity: dbRow?.complexity || row.complexity || 'Unknown',
+                            workspaceRoot: resolvedWorkspaceRoot
+                        };
+                    });
                 } else {
                     console.warn('[KanbanProvider] Kanban DB sync failed, using file-derived fallback for this refresh.');
                 }
@@ -368,7 +405,7 @@ export class KanbanProvider implements vscode.Disposable {
 
             // Fetch completed plans and append as COMPLETED column cards
             if (workspaceId && await db.ensureReady()) {
-                const completedRecords = await db.getCompletedPlans(workspaceId, 100);
+                const completedRecords = await db.getCompletedPlans(workspaceId, completedLimit);
                 const completedCards: KanbanCard[] = completedRecords.map(rec => ({
                     sessionId: rec.sessionId,
                     topic: rec.topic || rec.planFile || 'Untitled',
@@ -386,7 +423,7 @@ export class KanbanProvider implements vscode.Disposable {
                     const completedSheets = await log.getCompletedRunSheets();
                     const cappedSheets = completedSheets
                         .sort((a: any, b: any) => (b.completedAt || '').localeCompare(a.completedAt || ''))
-                        .slice(0, 100);
+                        .slice(0, completedLimit);
                     const fallbackCompletedCards: KanbanCard[] = cappedSheets.map((sheet: any) => ({
                         sessionId: sheet.sessionId,
                         topic: sheet.topic || sheet.planFile || 'Untitled',
@@ -618,9 +655,10 @@ export class KanbanProvider implements vscode.Disposable {
         return advanced;
     }
 
-    private async _getActiveSheets(workspaceRoot: string): Promise<any[]> {
+    private async _getActiveSheets(workspaceRoot: string): Promise<{ activeSheets: any[], completedSessionIds: Set<string> }> {
         const log = this._getSessionLog(workspaceRoot);
         const sheets = await log.getRunSheets();
+        const completedSessionIds = new Set<string>();
 
         let workspaceId: string | null = null;
         let registry: any = { entries: {} };
@@ -675,7 +713,10 @@ export class KanbanProvider implements vscode.Disposable {
 
         const activeSheets: any[] = [];
         for (const sheet of sheets) {
-            if (sheet.completed) continue;
+            if (sheet.completed) {
+                if (sheet.sessionId) completedSessionIds.add(sheet.sessionId);
+                continue;
+            }
 
             let planId = sheet.sessionId;
             if (sheet.brainSourcePath) {
@@ -696,7 +737,7 @@ export class KanbanProvider implements vscode.Disposable {
                 _kanbanSourceType: sheet.brainSourcePath ? 'brain' : 'local'
             });
         }
-        return activeSheets;
+        return { activeSheets, completedSessionIds };
     }
 
     private async _getCustomAgents(workspaceRoot: string): Promise<CustomAgentConfig[]> {
@@ -1249,20 +1290,54 @@ export class KanbanProvider implements vscode.Disposable {
                 if (columnId && (mode === 'cli' || mode === 'prompt')) {
                     this._columnDragDropModes[columnId] = mode;
                     await this._context.workspaceState.update('kanban.columnDragDropModes', this._columnDragDropModes);
-                    // Recompute effective modes (merge persisted overrides with column defaults)
-                    const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
-                    if (workspaceRoot) {
-                        const customAgents = await this._getCustomAgents(workspaceRoot);
-                        const cols = buildKanbanColumns(customAgents);
-                        const effectiveModes: Record<string, 'cli' | 'prompt'> = {};
-                        for (const col of cols) {
-                            effectiveModes[col.id] = this._columnDragDropModes[col.id] || col.dragDropMode || 'cli';
-                        }
-                        this._panel?.webview.postMessage({ type: 'updateColumnDragDropModes', modes: effectiveModes });
-                    }
                 }
                 break;
             }
+            case 'recoverSelected': {
+                const sessionIds: string[] = msg.sessionIds || [];
+                let recovered = 0;
+                for (const sid of sessionIds) {
+                    try {
+                        await vscode.commands.executeCommand('switchboard.restorePlanFromKanban', sid);
+                        recovered++;
+                    } catch (e) {
+                        console.error(`[KanbanProvider] Failed to recover plan ${sid}:`, e);
+                    }
+                }
+                if (recovered > 0) {
+                    vscode.window.showInformationMessage(`↩ Recovered ${recovered} plan(s).`);
+                    await this._refreshBoard(msg.workspaceRoot);
+                }
+                break;
+            }
+            case 'recoverAll': {
+                const count = msg.count || 0;
+                const confirm = await vscode.window.showWarningMessage(
+                    `Recover ${count} completed plan(s) back to the active board?`,
+                    'Recover', 'Cancel'
+                );
+                if (confirm !== 'Recover') break;
+                const sessionIds: string[] = msg.sessionIds || [];
+                let recovered = 0;
+                for (const sid of sessionIds) {
+                    try {
+                        await vscode.commands.executeCommand('switchboard.restorePlanFromKanban', sid);
+                        recovered++;
+                    } catch (e) {
+                        console.error(`[KanbanProvider] Failed to recover plan ${sid}:`, e);
+                    }
+                }
+                if (recovered > 0) {
+                    vscode.window.showInformationMessage(`↩ Recovered ${recovered} plan(s).`);
+                    await this._refreshBoard(msg.workspaceRoot);
+                }
+                break;
+            }
+            case 'showInfo':
+                if (typeof msg.message === 'string') {
+                    vscode.window.showInformationMessage(msg.message);
+                }
+                break;
             case 'promptOnDrop': {
                 // Complex: Drag-and-drop in "prompt" mode — copy prompt to clipboard and advance visually (no CLI dispatch).
                 // Mirrors the logic of 'promptSelected' but triggered by the drop handler when column mode is 'prompt'.
@@ -1628,13 +1703,19 @@ export class KanbanProvider implements vscode.Disposable {
                     if (!planId) {
                         planId = sessionId.startsWith('antigravity_') ? sessionId.replace('antigravity_', '') : sessionId;
                     }
+                    // Update DB status+column FIRST to prevent race conditions:
+                    // restorePlanFromKanban may trigger intermediate refreshes (via _mirrorBrainPlan)
+                    // that could see stale 'completed' status and re-sync a duplicate entry.
+                    await db.updateStatus(sessionId, 'active');
+                    await db.updateColumn(sessionId, targetColumn);
                     const ok = await vscode.commands.executeCommand<boolean>('switchboard.restorePlanFromKanban', planId, workspaceRoot);
                     if (ok) {
-                        // Reset DB status to 'active' — _handleRestorePlan only updates the plan registry,
-                        // not the Kanban DB. Without this, getBoard() (WHERE status='active') won't find the card.
-                        await db.updateStatus(sessionId, 'active');
                         await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', [sessionId], targetColumn, workspaceRoot);
                         successCount++;
+                    } else {
+                        // Rollback DB changes if restore failed
+                        await db.updateStatus(sessionId, 'completed');
+                        await db.updateColumn(sessionId, 'COMPLETED');
                     }
                 }
                 await this._refreshBoard(workspaceRoot);
@@ -1806,7 +1887,7 @@ export class KanbanProvider implements vscode.Disposable {
             '{{ICON_115}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-115.png')).toString(),
             '{{ICON_ANALYST_MAP}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-42.png')).toString(),
             '{{ICON_IMPORT_CLIPBOARD}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-121.png')).toString(),
-            '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-66.png')).toString(),
+            '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-53.png')).toString(),
             '{{ICON_PROMPT}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-22.png')).toString(),
         };
         for (const [placeholder, uri] of Object.entries(iconMap)) {

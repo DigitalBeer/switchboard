@@ -67,6 +67,8 @@ function deriveKanbanColumn(events, customAgents) {
                 return 'CREATED';
 
             case 'improve-plan':
+            case 'improved plan':
+            case 'enhanced plan':
             case 'sidebar-review':
                 return 'PLAN REVIEWED';
 
@@ -74,6 +76,7 @@ function deriveKanbanColumn(events, customAgents) {
             case 'handoff-lead':
             case 'handoff-chat':
             case 'handoff-relay':
+            case 'implementation':
                 return 'CODED';
 
             case 'review':
