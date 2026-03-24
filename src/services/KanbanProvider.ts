@@ -827,6 +827,36 @@ export class KanbanProvider implements vscode.Disposable {
                 return 'Unknown';
             }
 
+            // Secondary priority: plan_registry.json
+            try {
+                const switchboardDir = path.join(workspaceRoot, '.switchboard');
+                const registryPath = path.join(switchboardDir, 'plan_registry.json');
+                if (fs.existsSync(registryPath)) {
+                    const registryContent = await fs.promises.readFile(registryPath, 'utf8');
+                    const registry = JSON.parse(registryContent);
+
+                    // Derive planId using the same hashing as _getActiveSheets
+                    const normalized = path.normalize(resolvedPlanPath);
+                    const stable = process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+                    const rootPiece = path.parse(stable).root;
+                    const stablePath = stable.length > rootPiece.length ? stable.replace(/[\\\/]+$/, '') : stable;
+                    const getBaseBrainPath = (p: string) => p.replace(/\.resolved(\.\d+)?$/i, '');
+
+                    const finalStablePath = getBaseBrainPath(stablePath);
+                    const planId = crypto.createHash('sha256').update(finalStablePath).digest('hex');
+
+                    if (registry.entries && registry.entries[planId] && registry.entries[planId].complexity) {
+                        const regComp = registry.entries[planId].complexity;
+                        if (regComp === 'Low' || regComp === 'High') {
+                            return regComp;
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('[KanbanProvider] Failed to read complexity from registry:', err);
+                // Fallthrough to markdown parsing
+            }
+
             // Primary signal: Agent Recommendation section.
             // The improve-plan workflow always adds an explicit recommendation
             // like "Send it to the Lead Coder" or "Send it to the Coder agent".
