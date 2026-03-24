@@ -1630,6 +1630,9 @@ export class KanbanProvider implements vscode.Disposable {
                     }
                     const ok = await vscode.commands.executeCommand<boolean>('switchboard.restorePlanFromKanban', planId, workspaceRoot);
                     if (ok) {
+                        // Reset DB status to 'active' — _handleRestorePlan only updates the plan registry,
+                        // not the Kanban DB. Without this, getBoard() (WHERE status='active') won't find the card.
+                        await db.updateStatus(sessionId, 'active');
                         await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', [sessionId], targetColumn, workspaceRoot);
                         successCount++;
                     }

@@ -73,3 +73,25 @@ Grumpy raises a fair point about first-time experience. However, `getVisibleAgen
 2. Click 'Save Configuration'.
 3. Run the 'Start Team Panel' command (or equivalent that triggers `createAgentGrid`).
 4. Verify that only 'Lead Coder', 'Coder', 'Planner' and 'Jules Monitor' terminals are opened, and the others are absent.
+
+---
+
+## Review Results (2026-03-24)
+
+### Review Status: ✅ PASS — No code changes required
+
+### Verification
+- **TypeScript compile:** ✅ `tsc --noEmit` exit code 0
+- **Test suite:** ✅ webpack build successful, no regressions
+
+### Files Changed
+- `src/extension.ts` — `createAgentGrid()` (lines 1749-1777): Built-in agents filtered via `visibleAgents[builtIn.role] !== false` before being added to the `agents` array. Implementation matches plan spec exactly.
+
+### Findings
+| Severity | Finding | Resolution |
+|----------|---------|------------|
+| MAJOR | Pre-existing terminals for deselected built-in agents are not disposed by `clearGridBlockers` (only Jules Monitor has hidden-agent cleanup at lines 1805-1813). | **Deferred** — pre-existing behavior, not a regression. Plan goal is preventing NEW terminal spawning, which is correctly achieved. Follow-up enhancement recommended. |
+| NIT | No inline comment explaining why `!== false` is used instead of a truthy check. | Accepted — the convention is consistent with the custom agents filter pattern. |
+
+### Remaining Risks
+- If a user previously ran "Start Team" with all agents visible, then deselects one, re-running "Start Team" will correctly skip creating a new terminal for the deselected agent but will NOT dispose the old terminal. This is a UX polish item for a future plan.

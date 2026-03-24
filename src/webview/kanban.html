@@ -765,7 +765,8 @@
             { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', autobanEnabled: true },
             { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', autobanEnabled: true },
             { id: 'CODER CODED', label: 'Coder', role: 'coder', autobanEnabled: true },
-            { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: false }
+            { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: false },
+            { id: 'COMPLETED', label: 'Completed', kind: 'completed', autobanEnabled: false }
         ];
         let columns = columnDefinitions.map(col => col.id);
         let currentCards = [];
@@ -1397,8 +1398,30 @@
 
             // Special handling: forward drops INTO COMPLETED trigger archive, not dispatch
             if (targetColumn === 'COMPLETED' && forwardIds.length > 0) {
-                forwardIds.forEach(id => {
+                const completingIds = forwardIds.slice();
+                // Optimistic DOM move: relocate cards to COMPLETED column with animation
+                const targetBody = document.getElementById('col-' + targetColumn);
+                completingIds.forEach(id => {
                     const card = currentCards.find(c => c.sessionId === id);
+                    const cardEl = document.querySelector(`.kanban-card[data-session="${id}"]`);
+                    if (cardEl && targetBody) {
+                        const emptyState = targetBody.querySelector('.empty-state');
+                        if (emptyState) emptyState.remove();
+                        cardEl.classList.add('card-completing');
+                        targetBody.appendChild(cardEl);
+                        // Update source column empty state
+                        if (card) {
+                            const sourceBody = document.getElementById('col-' + card.column);
+                            if (sourceBody && sourceBody.querySelectorAll('.kanban-card').length === 0) {
+                                sourceBody.innerHTML = '<div class="empty-state">No plans</div>';
+                            }
+                            const srcCount = document.getElementById('count-' + card.column);
+                            if (srcCount) srcCount.textContent = String(Math.max(0, parseInt(srcCount.textContent) - 1));
+                            card.column = targetColumn;
+                        }
+                        const tgtCount = document.getElementById('count-' + targetColumn);
+                        if (tgtCount) tgtCount.textContent = String(parseInt(tgtCount.textContent) + 1);
+                    }
                     postKanbanMessage({ type: 'completePlan', sessionId: id, workspaceRoot: card?.workspaceRoot || workspaceRoot });
                 });
                 forwardIds.length = 0;

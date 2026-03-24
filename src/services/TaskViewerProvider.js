@@ -1061,6 +1061,9 @@ class TaskViewerProvider {
     async handleKanbanCompletePlan(sessionId, workspaceRoot) {
         return await this._handleCompletePlan(sessionId, workspaceRoot);
     }
+    async handleKanbanRestorePlan(planId, _workspaceRoot) {
+        return await this._handleRestorePlan(planId);
+    }
     async handleDeletePlanFromReview(sessionId, workspaceRoot) {
         return await this._handleDeletePlan(sessionId, workspaceRoot);
     }

@@ -937,6 +937,10 @@ async function activate(context) {
         return taskViewerProvider.handleKanbanCompletePlan(sessionId, workspaceRoot);
     });
     context.subscriptions.push(completePlanFromKanbanDisposable);
+    const restorePlanFromKanbanDisposable = vscode.commands.registerCommand('switchboard.restorePlanFromKanban', async (planId, workspaceRoot) => {
+        return taskViewerProvider.handleKanbanRestorePlan(planId, workspaceRoot);
+    });
+    context.subscriptions.push(restorePlanFromKanbanDisposable);
     const deletePlanFromReviewDisposable = vscode.commands.registerCommand('switchboard.deletePlanFromReview', async (sessionId, workspaceRoot) => {
         return taskViewerProvider.handleDeletePlanFromReview(sessionId, workspaceRoot);
     });

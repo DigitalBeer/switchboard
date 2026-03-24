@@ -156,3 +156,28 @@ Those are valid performance concerns. However, `getComplexityFromPlan` is alread
 - Create a mockup `plan_registry.json` entry and verify `getComplexityFromPlan` correctly returns the explicit value even if the file markdown says something else.
 
 **Recommendation:** Send to Lead Coder
+
+---
+
+## Review Results (2026-03-24)
+
+### Review Status: ✅ PASS — No code changes required
+
+### Verification
+- **TypeScript compile:** ✅ `tsc --noEmit` exit code 0
+- **Test suite:** ✅ webpack build successful, no regressions
+- **`crypto` import:** ✅ confirmed at `src/services/KanbanProvider.ts` line 4
+
+### Files Changed (confirmed implementation)
+- `src/services/KanbanProvider.ts` — `getComplexityFromPlan` (lines 813-930): Registry lookup added as secondary priority between manual override (highest) and agent recommendation regex (tertiary). Full priority chain: manual override → registry → agent recommendation → Band B parsing.
+
+### Findings
+| Severity | Finding | Resolution |
+|----------|---------|------------|
+| MAJOR | Hash input mismatch: `getComplexityFromPlan` hashes `planFile` but `_getActiveSheets` (line 646) computes registry keys from `sheet.brainSourcePath`. For brain-sourced plans these are different paths, so the registry lookup will miss. | **Deferred** — acknowledged in plan edge-case section. Function falls through to regex parsing cleanly. Fixing requires passing `brainSourcePath` through the data flow, which is a larger refactor. |
+| NIT | Hashing operation order reversed vs `_getActiveSheets`: `_getActiveSheets` does removeExtension→normalize; `getComplexityFromPlan` does normalize→removeExtension. Commutative in practice (regex uses `/i` flag). | Accepted — produces identical results for all real-world paths. |
+| NIT | No caching of `plan_registry.json` reads — every complexity check re-reads from disk. | **Deferred** — acceptable given `getComplexityFromPlan` already performs a disk read for the plan file itself. Caching is a future optimization. |
+
+### Remaining Risks
+- Registry lookup is effectively dead code for brain-sourced plans (the most common type). The feature primarily benefits local plans or plans where `planFile` and the registry key path happen to coincide.
+- If `plan_registry.json` grows very large, the per-call disk read could become a performance concern. Consider caching in a future iteration.

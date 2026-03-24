@@ -48,3 +48,8 @@ old\ skills/**
 # Test artifacts
 .test-workspace/**
 .tmp-codex-home/**
+
+# Extracted artifacts & root clutter
+vsix-extracted/**
+.mcp.json
+0

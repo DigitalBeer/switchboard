@@ -38,7 +38,7 @@ const DEFAULT_KANBAN_COLUMNS: KanbanColumnDefinition[] = [
     { id: 'COMPLETED', label: 'Completed', order: 9999, kind: 'completed', autobanEnabled: false, dragDropMode: 'cli' },
 ];
 
-const DEFAULT_CUSTOM_AGENT_KANBAN_ORDER = Math.max(300, ...DEFAULT_KANBAN_COLUMNS.map(c => c.order)) + 100;
+const DEFAULT_CUSTOM_AGENT_KANBAN_ORDER = Math.max(300, ...DEFAULT_KANBAN_COLUMNS.filter(c => c.kind !== 'completed').map(c => c.order)) + 100;
 
 function sanitizeId(raw: unknown): string {
     const normalized = String(raw || '')
