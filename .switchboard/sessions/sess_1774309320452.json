@@ -1,0 +1,24 @@
+{
+  "sessionId": "sess_1774309320452",
+  "planFile": ".switchboard/plans/feature_plan_20260324_104200_deselected_agent_terminals_are_still_opened.md",
+  "topic": "Deselected agent terminals are still opened",
+  "createdAt": "2026-03-23T23:42:00.451Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-23T23:42:00.451Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-24T00:20:19.007Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-coder-coded",
+      "timestamp": "2026-03-24T01:12:37.032Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    }
+  ]
+}

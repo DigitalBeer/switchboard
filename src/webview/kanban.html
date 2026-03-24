@@ -1230,9 +1230,9 @@
             if (card.column === 'CREATED') {
                 copyLabel = 'Copy planning prompt';
             } else if (card.column === 'PLAN REVIEWED') {
-                copyLabel = complexity === 'Low' ? 'Copy coder prompt' : 'Copy Lead Coder prompt';
+                copyLabel = 'Copy coder prompt';
             } else if (card.column === 'LEAD CODED' || card.column === 'CODER CODED') {
-                copyLabel = 'Copy code review prompt';
+                copyLabel = 'Copy review prompt';
             }
             const coderMode = columnDragDropModes['CODER CODED'] || 'cli';
             const pairTitle = coderMode === 'prompt' 

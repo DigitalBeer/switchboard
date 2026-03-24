@@ -1,0 +1,23 @@
+{
+  "sessionId": "sess_1774312471826",
+  "planFile": ".switchboard/plans/feature_plan_20260324_113431_shorten_copy_prompt_button_labels.md",
+  "topic": "Shorten copy prompt button labels",
+  "createdAt": "2026-03-24T00:34:31.825Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-24T00:34:31.825Z",
+      "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-24T00:44:31.483Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-24T01:11:32.123Z",
+      "action": "start"
+    }
+  ]
+}

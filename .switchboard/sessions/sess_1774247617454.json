@@ -8,6 +8,16 @@
       "workflow": "initiate-plan",
       "timestamp": "2026-03-23T06:33:37.448Z",
       "action": "start"
+    },
+    {
+      "workflow": "improve-plan",
+      "timestamp": "2026-03-24T01:14:08.906Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff-lead",
+      "timestamp": "2026-03-24T01:18:39.625Z",
+      "action": "start"
     }
   ]
 }

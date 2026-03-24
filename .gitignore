@@ -47,3 +47,6 @@ list_output.txt
 .tmp-codex-home/
 
 .web-ai/
+
+# Switchboard local MCP config (machine-specific absolute paths — do not commit)
+mcp_config.json

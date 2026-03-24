@@ -2,18 +2,18 @@
 	"switchboard.silentScaffolding": false,
 	"mcpServers": {
 		"switchboard": {
-			"command": "node",
+			"command": "/Applications/Windsurf.app/Contents/Frameworks/Windsurf Helper (Plugin).app/Contents/MacOS/Windsurf Helper (Plugin)",
 			"args": [
-				"x:/documents/GitHub/switchboard/.switchboard/MCP/mcp-server.js"
+				"/Users/patrickvuleta/Documents/GitHub/switchboard/.switchboard/MCP/mcp-server.js"
 			],
 			"env": {
-				"SWITCHBOARD_WORKSPACE_ROOT": "c:/Users/patvu/Documents/GitHub/switchboard"
+				"SWITCHBOARD_WORKSPACE_ROOT": "/Users/patrickvuleta/Documents/GitHub/switchboard"
 			},
 			"disabled": false,
 			"alwaysAllow": []
 		}
 	},
-	"switchboard.accurateCoding.enabled": true,
+	"switchboard.accurateCoding.enabled": false,
 	"switchboard.review.strictPrompts": false,
 	"switchboard.planner.strictPrompts": false,
 	"switchboard.workspaceBrainPaths": [
@@ -21,5 +21,6 @@
 	],
 	"switchboard.team.strictPrompts": false,
 	"switchboard.leadCoder.inlineChallenge": false,
-	"switchboard.jules.autoSync": false
+	"switchboard.jules.autoSync": false,
+	"switchboard.pairProgramming.aggressive": false
 }

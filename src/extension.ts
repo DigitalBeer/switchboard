@@ -59,12 +59,22 @@ async function setupGlobalAntigravityMcpConfig(workspaceRoot: string): Promise<v
         return;
     }
 
-    // Check if Antigravity config directory exists
+    // Auto-create ~/.gemini/antigravity/ if it doesn't exist.
+    // This handles new machines where Gemini Desktop has not yet been run.
+    // NOTE: The key written here is the literal string 'switchboard'. The standalone
+    // register-mcp.js script writes a hashed key (e.g. 'switchboard-ab12cd34').
+    // Both can coexist in mcpServers; this is intentional per current architecture.
     if (!fs.existsSync(configDir)) {
-        vscode.window.showWarningMessage(
-            `Antigravity config directory not found at ~/.gemini/antigravity/. Is Gemini Desktop installed?`
-        );
-        return;
+        try {
+            fs.mkdirSync(configDir, { recursive: true });
+            mcpOutputChannel?.appendLine(`[Antigravity] Created config directory: ${configDir}`);
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            vscode.window.showWarningMessage(
+                `Could not create Antigravity config directory at ${configDir}: ${msg}. Please create it manually.`
+            );
+            return;
+        }
     }
 
     // Use forward slashes for cross-platform compatibility in JSON
@@ -1739,19 +1749,29 @@ export async function activate(context: vscode.ExtensionContext) {
         const visibleAgents = await taskViewerProvider.getVisibleAgents();
         const includeJulesMonitor = visibleAgents.jules !== false;
         const customAgents = await taskViewerProvider.getCustomAgents();
-        const agents: { name: string; role: string }[] = [
+        const allBuiltInAgents = [
             { name: 'Lead Coder', role: 'lead' },
             { name: 'Coder', role: 'coder' },
             { name: 'Planner', role: 'planner' },
             { name: 'Reviewer', role: 'reviewer' },
             { name: 'Analyst', role: 'analyst' }
         ];
+
+        const agents: { name: string; role: string }[] = [];
+        
+        for (const builtIn of allBuiltInAgents) {
+            if (visibleAgents[builtIn.role] !== false) {
+                agents.push(builtIn);
+            }
+        }
+
         for (const agent of customAgents) {
             if (visibleAgents[agent.role] === false) {
                 continue;
             }
             agents.push({ name: agent.name, role: agent.role });
         }
+
         if (includeJulesMonitor) {
             agents.push({ name: 'Jules Monitor', role: 'jules_monitor' });
         }
@@ -2830,8 +2850,11 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
             mcpOutputChannel?.appendLine(`[Setup] MCP auto-configuration failed: ${e}`);
         }
 
-        // Configure global Antigravity MCP config when Gemini is a target
-        if (targets.includes('gemini') && workspaceRoot) {
+        // Always attempt to configure global Antigravity MCP config when a workspace root
+        // is available. The function auto-creates ~/.gemini/antigravity/ if missing and
+        // is idempotent (no-op if already configured). This ensures new-machine clones
+        // do not require the user to manually select 'Gemini' as a setup target.
+        if (workspaceRoot) {
             try {
                 await setupGlobalAntigravityMcpConfig(workspaceRoot);
             } catch (e) {
