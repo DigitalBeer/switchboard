@@ -1398,15 +1398,30 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Connect MCP command
     const connectMcpDisposable = vscode.commands.registerCommand('switchboard.connectMcp', async () => {
         if (workspaceRoot) {
+            // 1. Write VS Code workspace settings (mcpServers in .vscode/settings.json)
+            try {
+                await handleMcpSetup(context, taskViewerProvider);
+            } catch (e) {
+                mcpOutputChannel?.appendLine(`[ConnectMCP] handleMcpSetup failed: ${e}`);
+            }
+
+            // 2. Restart the in-process MCP server
             await restartLocalMcpServer(context, workspaceRoot, taskViewerProvider);
 
-            // Always attempt to write the global Antigravity MCP config.
-            // This is the primary action users expect from "Connect MCP" — without it,
-            // the Gemini Desktop / Antigravity client has no config file to discover.
+            // 3. Write global Antigravity MCP config (~/.gemini/antigravity/mcp_config.json)
             try {
                 await setupGlobalAntigravityMcpConfig(workspaceRoot);
             } catch (e) {
                 mcpOutputChannel?.appendLine(`[ConnectMCP] Global Antigravity config failed: ${e}`);
+            }
+
+            // 4. Write IDE-specific MCP configs from templates.
+            // This ensures all IDE config files (Windsurf, Cursor, Claude, Gemini, Kiro)
+            // have a valid MCP entry with the correct workspace root.
+            try {
+                await writeAllIdeMcpConfigs(context, workspaceRoot);
+            } catch (e) {
+                mcpOutputChannel?.appendLine(`[ConnectMCP] IDE MCP config write failed: ${e}`);
             }
         } else {
             // Fallback for non-workspace context if needed
@@ -2923,6 +2938,109 @@ function getConfigFilesForIDE(ide: string): { template: string; destination: str
     };
 
     return configs[ide] || [];
+}
+
+/**
+ * Get only the MCP config file entries (JSON configs, not instruction markdown) for each IDE.
+ */
+function getMcpConfigFilesForIDE(ide: string): { template: string; destination: string }[] {
+    const mcpConfigs: Record<string, { template: string; destination: string }[]> = {
+        windsurf: [{ template: 'mcp_config.json.template', destination: 'mcp_config.json' }],
+        cursor: [{ template: 'mcp.json.template', destination: '.cursor/mcp.json' }],
+        claude: [{ template: '.mcp.json.template', destination: '.mcp.json' }],
+        gemini: [{ template: 'settings.json.template', destination: '.gemini/settings.json' }],
+        kiro: [{ template: 'mcp.json.template', destination: '.kiro/settings/mcp.json' }]
+    };
+    return mcpConfigs[ide] || [];
+}
+
+/**
+ * Write/update MCP config files for ALL supported IDEs.
+ * Uses templates with {{WORKSPACE_ROOT}} replacement. Merges into existing configs
+ * (preserves non-switchboard MCP server entries). Creates directories as needed.
+ * Called from "Connect MCP" to ensure all IDE config files are current.
+ */
+async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
+    const serverPath = path.join(workspaceRoot, '.switchboard', 'MCP', 'mcp-server.js');
+    if (!fs.existsSync(serverPath)) {
+        mcpOutputChannel?.appendLine('[ConnectMCP] MCP server not found, skipping IDE config writes.');
+        return;
+    }
+
+    const templatesBaseUri = vscode.Uri.joinPath(context.extensionUri, 'templates');
+    const absWorkspaceRoot = workspaceRoot.replace(/\\/g, '/');
+    const ideKeys = ['windsurf', 'cursor', 'claude', 'gemini', 'kiro'];
+    let written = 0;
+
+    for (const ide of ideKeys) {
+        const mcpFiles = getMcpConfigFilesForIDE(ide);
+        for (const configFile of mcpFiles) {
+            try {
+                const destPath = path.join(workspaceRoot, configFile.destination);
+                const destDir = path.dirname(destPath);
+
+                // Ensure destination directory exists
+                if (!fs.existsSync(destDir)) {
+                    fs.mkdirSync(destDir, { recursive: true });
+                }
+
+                // Build the correct MCP entry
+                const newEntry = {
+                    command: 'node',
+                    args: [path.join(absWorkspaceRoot, '.switchboard', 'MCP', 'mcp-server.js')],
+                    env: {
+                        SWITCHBOARD_WORKSPACE_ROOT: absWorkspaceRoot
+                    }
+                };
+
+                // Read existing config to merge (preserve other MCP server entries)
+                let existingConfig: Record<string, any> = {};
+                if (fs.existsSync(destPath)) {
+                    try {
+                        const raw = fs.readFileSync(destPath, 'utf8');
+                        existingConfig = JSON.parse(raw);
+                    } catch {
+                        // Corrupt or non-JSON file — overwrite entirely
+                        existingConfig = {};
+                    }
+                }
+
+                if (!existingConfig.mcpServers) {
+                    existingConfig.mcpServers = {};
+                }
+
+                const updatedConfig = {
+                    ...existingConfig,
+                    mcpServers: {
+                        ...existingConfig.mcpServers,
+                        switchboard: newEntry
+                    }
+                };
+
+                const newJson = JSON.stringify(updatedConfig, null, 2) + '\n';
+
+                // Check if update is needed
+                let currentJson = '';
+                if (fs.existsSync(destPath)) {
+                    currentJson = fs.readFileSync(destPath, 'utf8');
+                }
+                if (currentJson.trim() === newJson.trim()) {
+                    mcpOutputChannel?.appendLine(`[ConnectMCP] ${configFile.destination} already up to date.`);
+                    continue;
+                }
+
+                fs.writeFileSync(destPath, newJson, 'utf8');
+                written++;
+                mcpOutputChannel?.appendLine(`[ConnectMCP] Wrote ${configFile.destination}`);
+            } catch (e) {
+                mcpOutputChannel?.appendLine(`[ConnectMCP] Failed to write ${configFile.destination}: ${e}`);
+            }
+        }
+    }
+
+    if (written > 0) {
+        mcpOutputChannel?.appendLine(`[ConnectMCP] Updated ${written} IDE MCP config(s).`);
+    }
 }
 
 /**
