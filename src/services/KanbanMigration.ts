@@ -114,6 +114,12 @@ export class KanbanMigration {
                 // Existing plan: update metadata only, never touch kanban_column or status
                 await db.updateTopic(row.sessionId, row.topic);
                 await db.updatePlanFile(row.sessionId, row.planFile);
+                // Always sync complexity from the freshly-parsed plan file so cards
+                // that were first indexed before their Complexity Audit was filled in
+                // pick up the correct value once the plan is improved.
+                if (row.complexity === 'Low' || row.complexity === 'High') {
+                    await db.updateComplexity(row.sessionId, row.complexity);
+                }
             }
         }
 
