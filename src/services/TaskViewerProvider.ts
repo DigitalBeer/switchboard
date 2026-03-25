@@ -1067,6 +1067,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         await this._updateSessionRunSheet(sessionId, workflowName, outcome, true, resolvedWorkspaceRoot);
         await this._updateKanbanColumnForSession(resolvedWorkspaceRoot, sessionId, normalizedTargetColumn);
+
+        if (normalizedTargetColumn === 'COMPLETED') {
+            return await this._handleCompletePlan(sessionId, resolvedWorkspaceRoot);
+        }
+
         return true;
     }
 
