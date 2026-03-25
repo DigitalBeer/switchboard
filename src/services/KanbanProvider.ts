@@ -297,106 +297,97 @@ export class KanbanProvider implements vscode.Disposable {
             const columns = buildKanbanColumns(customAgents);
             const workspaceId = await this._readWorkspaceId(resolvedWorkspaceRoot);
 
-            const legacySnapshot = await Promise.all(
-                activeSheets.map(async (sheet: any) => {
-                    const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
-                    const planFile = typeof sheet.planFile === 'string' ? sheet.planFile : '';
-                    const complexity = await this.getComplexityFromPlan(resolvedWorkspaceRoot, planFile);
-                    return {
-                        planId: String(sheet._kanbanPlanId || sheet.sessionId || ''),
-                        sessionId: String(sheet.sessionId || ''),
-                        topic: String(sheet.topic || sheet.planFile || 'Untitled'),
-                        planFile,
-                        kanbanColumn: deriveKanbanColumn(events, customAgents),
-                        complexity,
-                        workspaceId: workspaceId || '',
-                        createdAt: String(sheet.createdAt || ''),
-                        updatedAt: String(events[events.length - 1]?.timestamp || sheet.createdAt || ''),
-                        lastAction: this._deriveLastAction(events),
-                        sourceType: (sheet._kanbanSourceType === 'brain' ? 'brain' : 'local') as 'local' | 'brain'
-                    };
-                })
-            );
-
-            let cards: KanbanCard[] = legacySnapshot.map(row => ({
-                sessionId: row.sessionId,
-                topic: row.topic,
-                planFile: row.planFile,
-                column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
-                lastActivity: row.updatedAt || row.createdAt,
-                complexity: row.complexity,
-                workspaceRoot: resolvedWorkspaceRoot
-            }));
+            let cards: KanbanCard[] = [];
             let dbUnavailable = false;
 
             const db = this._getKanbanDb(resolvedWorkspaceRoot);
-            const snapshotRows = legacySnapshot.filter(row => row.planId && row.sessionId && row.workspaceId);
             if (workspaceId && await db.ensureReady()) {
-                const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, snapshotRows);
+                // --- DB-FIRST FLOW ---
+                // 1. Get existing DB session IDs in one query (avoids N hasPlan calls)
+                const existingSessionIds = await db.getSessionIdSet();
+
+                // 2. Build snapshot rows — only parse complexity + derive column for NEW plans
+                const snapshotRows = await Promise.all(
+                    activeSheets.map(async (sheet: any) => {
+                        const sessionId = String(sheet.sessionId || '');
+                        const isNew = !existingSessionIds.has(sessionId);
+                        const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
+                        const planFile = typeof sheet.planFile === 'string' ? sheet.planFile : '';
+                        return {
+                            planId: String(sheet._kanbanPlanId || sessionId || ''),
+                            sessionId,
+                            topic: String(sheet.topic || sheet.planFile || 'Untitled'),
+                            planFile,
+                            // Only do expensive I/O for new plans; existing plans use cached DB values
+                            kanbanColumn: isNew ? deriveKanbanColumn(events, customAgents) : '',
+                            complexity: isNew
+                                ? await this.getComplexityFromPlan(resolvedWorkspaceRoot, planFile)
+                                : ('Unknown' as 'Unknown' | 'Low' | 'High'),
+                            workspaceId: workspaceId || '',
+                            createdAt: String(sheet.createdAt || ''),
+                            updatedAt: String(events[events.length - 1]?.timestamp || sheet.createdAt || ''),
+                            lastAction: this._deriveLastAction(events),
+                            sourceType: (sheet._kanbanSourceType === 'brain' ? 'brain' : 'local') as 'local' | 'brain'
+                        };
+                    })
+                );
+
+                const validRows = snapshotRows.filter(row => row.planId && row.sessionId && row.workspaceId);
+
+                // 3. Sync to DB using batch operations (2 persists max)
+                const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, validRows);
                 const synced = bootstrapped
-                    ? await KanbanMigration.syncPlansMetadata(db, workspaceId, snapshotRows)
+                    ? await KanbanMigration.syncPlansMetadata(db, workspaceId, validRows)
                     : false;
+
                 if (synced) {
+                    // 4. Read authoritative board from DB
                     let dbRows = await db.getBoard(workspaceId);
 
-                    // Reconcile: force-complete any DB records that the filesystem shows as completed.
+                    // 5. Reconcile completed sessions (batch: 1 persist)
                     if (completedSessionIds.size > 0) {
-                        for (const row of dbRows) {
-                            if (row.status !== 'completed' && completedSessionIds.has(row.sessionId)) {
-                                try {
-                                    await db.updateStatus(row.sessionId, 'completed');
-                                    await db.updateColumn(row.sessionId, 'COMPLETED');
-                                    console.log(`[KanbanProvider] Reconciled stale DB entry: ${row.sessionId} -> completed`);
-                                } catch (e) {
-                                    console.warn(`[KanbanProvider] Failed to reconcile stale DB entry ${row.sessionId}:`, e);
-                                }
-                            }
+                        const toComplete = dbRows
+                            .filter(row => row.status !== 'completed' && completedSessionIds.has(row.sessionId))
+                            .map(row => row.sessionId);
+                        if (toComplete.length > 0) {
+                            await db.completeMultiple(toComplete);
+                            console.log(`[KanbanProvider] Batch-reconciled ${toComplete.length} stale DB entries -> completed`);
                         }
                         dbRows = dbRows.filter(row => !completedSessionIds.has(row.sessionId));
                     }
 
-                    // Reconcile orphaned active DB rows whose session files no longer exist
-                    // (e.g. archived/deleted without DB status being updated).
-                    // Safety: only run when the snapshot pipeline returned results — an empty
-                    // snapshot may indicate a transient read failure and must not nuke DB rows.
-                    if (snapshotRows.length > 0) {
-                        const snapshotSessionIds = new Set(snapshotRows.map(row => row.sessionId));
-                        const snapshotPlanIds = new Set(snapshotRows.map(row => row.planId));
+                    // 6. Orphan reconciliation with safety threshold
+                    if (validRows.length > 0) {
+                        const activeSessionIds = new Set(validRows.map(row => row.sessionId));
+                        const activePlanIds = new Set(validRows.map(row => row.planId));
                         const orphanedRows = dbRows.filter(row =>
-                            !snapshotSessionIds.has(row.sessionId) && !snapshotPlanIds.has(row.planId)
+                            !activeSessionIds.has(row.sessionId) && !activePlanIds.has(row.planId)
                         );
                         if (orphanedRows.length > 0) {
-                            for (const row of orphanedRows) {
-                                try {
-                                    await db.updateStatus(row.sessionId, 'completed');
-                                    await db.updateColumn(row.sessionId, 'COMPLETED');
-                                    console.log(`[KanbanProvider] Reconciled orphaned DB entry: ${row.sessionId} -> completed`);
-                                } catch (e) {
-                                    console.warn(`[KanbanProvider] Failed to reconcile orphaned DB entry ${row.sessionId}:`, e);
-                                }
+                            // Safety: don't auto-complete more than half the remaining board
+                            const safeThreshold = Math.max(Math.ceil(dbRows.length * 0.5), 5);
+                            if (orphanedRows.length <= safeThreshold) {
+                                await db.completeMultiple(orphanedRows.map(row => row.sessionId));
+                                console.log(`[KanbanProvider] Batch-reconciled ${orphanedRows.length} orphaned DB entries -> completed`);
+                                dbRows = dbRows.filter(row =>
+                                    activeSessionIds.has(row.sessionId) || activePlanIds.has(row.planId)
+                                );
+                            } else {
+                                console.warn(`[KanbanProvider] Skipped orphan reconciliation: ${orphanedRows.length} orphans exceeds safety threshold of ${safeThreshold}. Possible transient read failure.`);
                             }
-                            dbRows = dbRows.filter(row =>
-                                snapshotSessionIds.has(row.sessionId) || snapshotPlanIds.has(row.planId)
-                            );
                         }
                     }
 
-                    // Build cards from snapshot, but ALWAYS prefer DB column over derived column.
-                    // This ensures manual moves persist even if derivation disagrees.
-                    const dbBySession = new Map(dbRows.map(row => [row.sessionId, row]));
-                    const dbByPlanId = new Map(dbRows.map(row => [row.planId, row]));
-                    cards = snapshotRows.map(row => {
-                        const dbRow = dbBySession.get(row.sessionId) || dbByPlanId.get(row.planId);
-                        return {
-                            sessionId: row.sessionId,
-                            topic: dbRow?.topic || row.topic || row.planFile || 'Untitled',
-                            planFile: dbRow?.planFile || row.planFile || '',
-                            column: this._normalizeLegacyKanbanColumn(dbRow?.kanbanColumn || row.kanbanColumn) || 'CREATED',
-                            lastActivity: dbRow?.updatedAt || row.updatedAt || row.createdAt || '',
-                            complexity: dbRow?.complexity || row.complexity || 'Unknown',
-                            workspaceRoot: resolvedWorkspaceRoot
-                        };
-                    });
+                    // 7. Build cards directly from DB — DB is the authority
+                    cards = dbRows.map(row => ({
+                        sessionId: row.sessionId,
+                        topic: row.topic || row.planFile || 'Untitled',
+                        planFile: row.planFile || '',
+                        column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
+                        lastActivity: row.updatedAt || row.createdAt || '',
+                        complexity: row.complexity || 'Unknown',
+                        workspaceRoot: resolvedWorkspaceRoot
+                    }));
                 } else {
                     console.warn('[KanbanProvider] Kanban DB sync failed, using file-derived fallback for this refresh.');
                     dbUnavailable = true;
@@ -404,6 +395,35 @@ export class KanbanProvider implements vscode.Disposable {
             } else if (workspaceId) {
                 console.warn(`[KanbanProvider] Kanban DB unavailable, using file-derived fallback: ${db.lastInitError || 'unknown error'}`);
                 dbUnavailable = true;
+            }
+
+            // File-derived fallback when DB is unavailable
+            if (dbUnavailable) {
+                const fallbackSnapshot = await Promise.all(
+                    activeSheets.map(async (sheet: any) => {
+                        const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
+                        const planFile = typeof sheet.planFile === 'string' ? sheet.planFile : '';
+                        const complexity = await this.getComplexityFromPlan(resolvedWorkspaceRoot, planFile);
+                        return {
+                            sessionId: String(sheet.sessionId || ''),
+                            topic: String(sheet.topic || sheet.planFile || 'Untitled'),
+                            planFile,
+                            kanbanColumn: deriveKanbanColumn(events, customAgents),
+                            complexity,
+                            createdAt: String(sheet.createdAt || ''),
+                            updatedAt: String(events[events.length - 1]?.timestamp || sheet.createdAt || ''),
+                        };
+                    })
+                );
+                cards = fallbackSnapshot.map(row => ({
+                    sessionId: row.sessionId,
+                    topic: row.topic,
+                    planFile: row.planFile,
+                    column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
+                    lastActivity: row.updatedAt || row.createdAt,
+                    complexity: row.complexity,
+                    workspaceRoot: resolvedWorkspaceRoot
+                }));
             }
 
             // Fetch completed plans and append as COMPLETED column cards
@@ -637,6 +657,7 @@ export class KanbanProvider implements vscode.Disposable {
                 continue;
             }
 
+            let didAdvance = false;
             await log.updateRunSheet(sessionId, (runSheet: any) => {
                 if (!Array.isArray(runSheet.events)) {
                     runSheet.events = [];
@@ -650,9 +671,20 @@ export class KanbanProvider implements vscode.Disposable {
                     action: 'start',
                     timestamp: new Date().toISOString()
                 });
+                didAdvance = true;
                 return runSheet;
             });
-            advanced.push(sessionId);
+
+            if (didAdvance) {
+                // events array was mutated by the callback; derive the new column and persist to DB
+                const newColumn = deriveKanbanColumn(events, customAgents);
+                const normalizedColumn = this._normalizeLegacyKanbanColumn(newColumn);
+                if (normalizedColumn) {
+                    const db = this._getKanbanDb(resolvedWorkspaceRoot);
+                    await db.updateColumn(sessionId, normalizedColumn);
+                }
+                advanced.push(sessionId);
+            }
         }
 
         return advanced;

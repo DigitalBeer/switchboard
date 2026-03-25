@@ -308,6 +308,78 @@ export class KanbanDatabase {
         return rows.length > 0 ? rows[0] : null;
     }
 
+    /** Returns all session IDs in the DB (any status) in a single query. */
+    public async getSessionIdSet(): Promise<Set<string>> {
+        if (!(await this.ensureReady()) || !this._db) return new Set();
+        const stmt = this._db.prepare('SELECT session_id FROM plans');
+        const ids = new Set<string>();
+        try {
+            while (stmt.step()) {
+                ids.add(String(stmt.getAsObject().session_id));
+            }
+        } finally {
+            stmt.free();
+        }
+        return ids;
+    }
+
+    /** Batch-update topic, planFile, and (optionally) complexity for multiple plans in one transaction + persist. */
+    public async updateMetadataBatch(updates: Array<{
+        sessionId: string;
+        topic: string;
+        planFile: string;
+        complexity?: 'Unknown' | 'Low' | 'High';
+    }>): Promise<boolean> {
+        if (!(await this.ensureReady()) || !this._db) return false;
+        if (updates.length === 0) return true;
+
+        const now = new Date().toISOString();
+        this._db.run('BEGIN');
+        try {
+            for (const u of updates) {
+                this._db.run(
+                    'UPDATE plans SET topic = ?, plan_file = ?, updated_at = ? WHERE session_id = ?',
+                    [u.topic, u.planFile, now, u.sessionId]
+                );
+                if (u.complexity === 'Low' || u.complexity === 'High') {
+                    this._db.run(
+                        'UPDATE plans SET complexity = ? WHERE session_id = ?',
+                        [u.complexity, u.sessionId]
+                    );
+                }
+            }
+            this._db.run('COMMIT');
+        } catch (error) {
+            try { this._db.run('ROLLBACK'); } catch { }
+            console.error('[KanbanDatabase] Failed to batch update metadata:', error);
+            return false;
+        }
+        return this._persist();
+    }
+
+    /** Batch-complete multiple plans in one transaction + persist. */
+    public async completeMultiple(sessionIds: string[]): Promise<boolean> {
+        if (!(await this.ensureReady()) || !this._db) return false;
+        if (sessionIds.length === 0) return true;
+
+        const now = new Date().toISOString();
+        this._db.run('BEGIN');
+        try {
+            for (const sessionId of sessionIds) {
+                this._db.run(
+                    'UPDATE plans SET status = ?, kanban_column = ?, updated_at = ? WHERE session_id = ?',
+                    ['completed', 'COMPLETED', now, sessionId]
+                );
+            }
+            this._db.run('COMMIT');
+        } catch (error) {
+            try { this._db.run('ROLLBACK'); } catch { }
+            console.error('[KanbanDatabase] Failed to batch-complete plans:', error);
+            return false;
+        }
+        return this._persist();
+    }
+
     private async _initialize(): Promise<boolean> {
         try {
             await fs.promises.mkdir(path.dirname(this._dbPath), { recursive: true });

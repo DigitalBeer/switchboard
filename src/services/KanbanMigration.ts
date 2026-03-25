@@ -88,8 +88,11 @@ export class KanbanMigration {
 
     /**
      * Sync snapshot rows into the DB. New plans are inserted with their derived
-     * column; existing plans only get metadata updates (topic, plan_file) —
+     * column; existing plans only get metadata updates (topic, plan_file, complexity) —
      * kanban_column and status are NEVER overwritten for existing records.
+     *
+     * Uses batch operations: one `upsertPlans` for new plans, one `updateMetadataBatch`
+     * for existing plans — 2 persists max instead of N*3.
      */
     public static async syncPlansMetadata(
         db: KanbanDatabase,
@@ -99,27 +102,40 @@ export class KanbanMigration {
         const ready = await db.ensureReady();
         if (!ready) return false;
 
-        for (const row of snapshotRows) {
-            const exists = await db.hasPlan(row.sessionId);
-            if (!exists) {
-                // New plan: insert with derived column (correct for first-time creation)
-                const record: KanbanPlanRecord = {
-                    ...row,
-                    kanbanColumn: KanbanMigration._normalizeLegacyCodedColumn(row.kanbanColumn, row.lastAction),
-                    status: 'active'
-                };
-                const inserted = await db.upsertPlans([record]);
-                if (!inserted) return false;
-            } else {
-                // Existing plan: update metadata only, never touch kanban_column or status
-                await db.updateTopic(row.sessionId, row.topic);
-                await db.updatePlanFile(row.sessionId, row.planFile);
-                // Always sync complexity from the freshly-parsed plan file so cards
-                // that were first indexed before their Complexity Audit was filled in
-                // pick up the correct value once the plan is improved.
-                if (row.complexity === 'Low' || row.complexity === 'High') {
-                    await db.updateComplexity(row.sessionId, row.complexity);
+        if (snapshotRows.length > 0) {
+            const existingIds = await db.getSessionIdSet();
+            const newRows: LegacyKanbanSnapshotRow[] = [];
+            const metadataUpdates: Array<{
+                sessionId: string;
+                topic: string;
+                planFile: string;
+                complexity?: 'Unknown' | 'Low' | 'High';
+            }> = [];
+
+            for (const row of snapshotRows) {
+                if (!existingIds.has(row.sessionId)) {
+                    newRows.push(row);
+                } else {
+                    metadataUpdates.push({
+                        sessionId: row.sessionId,
+                        topic: row.topic,
+                        planFile: row.planFile,
+                        complexity: (row.complexity === 'Low' || row.complexity === 'High')
+                            ? row.complexity
+                            : undefined
+                    });
                 }
+            }
+
+            if (newRows.length > 0) {
+                const records = KanbanMigration._toKanbanPlanRecords(newRows);
+                const inserted = await db.upsertPlans(records);
+                if (!inserted) return false;
+            }
+
+            if (metadataUpdates.length > 0) {
+                const updated = await db.updateMetadataBatch(metadataUpdates);
+                if (!updated) return false;
             }
         }
 
