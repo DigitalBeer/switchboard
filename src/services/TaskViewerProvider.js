@@ -713,7 +713,7 @@ class TaskViewerProvider {
         const bootstrapped = await KanbanMigration_1.KanbanMigration.bootstrapIfNeeded(db, workspaceId, records);
         if (!bootstrapped)
             return null;
-        const synced = await KanbanMigration_1.KanbanMigration.syncNewPlansOnly(db, workspaceId, records);
+        const synced = await KanbanMigration_1.KanbanMigration.syncPlansMetadata(db, workspaceId, records);
         if (!synced)
             return null;
         return workspaceId;

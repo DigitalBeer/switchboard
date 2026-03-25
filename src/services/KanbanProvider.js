@@ -326,7 +326,7 @@ class KanbanProvider {
             if (workspaceId && await db.ensureReady()) {
                 const bootstrapped = await KanbanMigration_1.KanbanMigration.bootstrapIfNeeded(db, workspaceId, snapshotRows);
                 const synced = bootstrapped
-                    ? await KanbanMigration_1.KanbanMigration.syncNewPlansOnly(db, workspaceId, snapshotRows)
+                    ? await KanbanMigration_1.KanbanMigration.syncPlansMetadata(db, workspaceId, snapshotRows)
                     : false;
                 if (synced) {
                     const dbRows = await db.getBoard(workspaceId);
@@ -1538,13 +1538,19 @@ class KanbanProvider {
                     if (!planId) {
                         planId = sessionId.startsWith('antigravity_') ? sessionId.replace('antigravity_', '') : sessionId;
                     }
+                    // Update DB status+column FIRST to prevent race conditions:
+                    // restorePlanFromKanban may trigger intermediate refreshes (via _mirrorBrainPlan)
+                    // that could see stale 'completed' status and re-sync a duplicate entry.
+                    await db.updateStatus(sessionId, 'active');
+                    await db.updateColumn(sessionId, targetColumn);
                     const ok = await vscode.commands.executeCommand('switchboard.restorePlanFromKanban', planId, workspaceRoot);
                     if (ok) {
-                        // Reset DB status to 'active' — _handleRestorePlan only updates the plan registry,
-                        // not the Kanban DB. Without this, getBoard() (WHERE status='active') won't find the card.
-                        await db.updateStatus(sessionId, 'active');
                         await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', [sessionId], targetColumn, workspaceRoot);
                         successCount++;
+                    } else {
+                        // Rollback DB changes if restore failed
+                        await db.updateStatus(sessionId, 'completed');
+                        await db.updateColumn(sessionId, 'COMPLETED');
                     }
                 }
                 await this._refreshBoard(workspaceRoot);
@@ -1674,7 +1680,7 @@ class KanbanProvider {
             '{{ICON_115}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-115.png')).toString(),
             '{{ICON_ANALYST_MAP}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-42.png')).toString(),
             '{{ICON_IMPORT_CLIPBOARD}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-121.png')).toString(),
-            '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-66.png')).toString(),
+            '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-53.png')).toString(),
             '{{ICON_PROMPT}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-22.png')).toString(),
         };
         for (const [placeholder, uri] of Object.entries(iconMap)) {

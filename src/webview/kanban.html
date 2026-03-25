@@ -226,6 +226,7 @@
             display: flex;
             gap: 12px;
             padding: 16px;
+            padding-top: 36px;
             flex: 1;
             min-height: 0;
             overflow-x: auto;
@@ -240,7 +241,15 @@
             background: var(--panel-bg);
             border: 1px solid var(--vscode-contrastBorder, var(--border-color));
             border-radius: 4px;
-            overflow: hidden;
+            /* overflow: visible allows tooltips to escape the column without clipping */
+            overflow: visible;
+            position: relative;
+            transition: z-index 0s;
+        }
+
+        .kanban-column:hover {
+            /* Elevate hovered column to ensure tooltips appear above neighboring columns */
+            z-index: 100;
         }
 
         .column-header {
@@ -251,6 +260,10 @@
             border-bottom: 1px solid var(--border-color);
             background: var(--panel-bg2);
             min-height: 52px;
+            /* Add radii here since parent no longer clips overflow */
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            z-index: 20;
         }
 
         .column-name {
@@ -315,6 +328,8 @@
             overflow-y: auto;
             min-height: 120px;
             transition: background 0.15s;
+            /* Ensure body is below header/button area for tooltip stacking */
+            z-index: 1;
         }
 
         .column-body.drag-over {
@@ -346,6 +361,8 @@
             border-left-color: var(--accent-teal);
             /* Replace black shadow with a glowing teal bloom */
             box-shadow: 0 4px 12px color-mix(in srgb, var(--accent-teal) 20%, transparent);
+            /* Elevate hovered card so its tooltip is above other cards */
+            z-index: 50;
         }
 
         .kanban-card.dragging {
@@ -542,12 +559,28 @@
             background: var(--panel-bg2);
             border-bottom: 1px solid var(--border-color);
             min-height: 32px;
+            /* Prioritize button area in stacking context for tooltips */
+            z-index: 10;
         }
 
-        /* Ensure last column (Reviewed) has same header height */
+        /* Ensure last column (Completed) has same header height */
         .kanban-column:last-child .column-button-area {
             height: 32px;
             min-height: 32px;
+        }
+
+        /* Recover buttons in Completed column — visible text-style buttons */
+        .recover-selected-btn,
+        .recover-all-btn {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary, #888888);
+            padding: 3px 8px !important;
+        }
+        .recover-selected-btn:hover,
+        .recover-all-btn:hover {
+            color: var(--accent-teal);
         }
 
         .column-icon-btn {
@@ -567,6 +600,8 @@
             border-color: var(--accent-teal-dim);
             background: color-mix(in srgb, var(--accent-teal) 10%, transparent);
             box-shadow: 0 0 6px color-mix(in srgb, var(--accent-teal) 25%, transparent);
+            /* Elevate hovered button to ensure tooltip is on top */
+            z-index: 100;
         }
 
         .column-icon-btn img {
@@ -704,6 +739,7 @@
             border-color: var(--accent-teal-dim);
             background: color-mix(in srgb, var(--accent-teal) 8%, transparent);
             box-shadow: var(--glow-teal);
+            z-index: 100;
         }
 
         .mode-toggle img {
@@ -724,6 +760,34 @@
         .mode-toggle.mode-prompt:hover img {
             filter: sepia(1) saturate(1.5) hue-rotate(0deg) brightness(1.2);
         }
+
+        /* Custom instant tooltips — replaces native title delay */
+        /* Tooltips are ONLY for column header icons/buttons, never for card elements */
+        [data-tooltip] {
+            position: relative;
+        }
+        [data-tooltip]:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: calc(100% + 4px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--bg-tertiary, #1a1a2e);
+            color: var(--text-primary, #e0e0e0);
+            font-size: 10px;
+            font-family: var(--font-mono);
+            padding: 3px 8px;
+            border-radius: 3px;
+            white-space: nowrap;
+            z-index: 1000;
+            pointer-events: none;
+            opacity: 0;
+            animation: tooltipFadeIn 0.1s ease-out forwards;
+            border: 1px solid var(--border-color, #2a2a4a);
+        }
+        @keyframes tooltipFadeIn {
+            to { opacity: 1; }
+        }
     </style>
 </head>
 
@@ -731,29 +795,32 @@
     <div class="kanban-header">
         <div class="kanban-title" id="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to IDE chat agents</div>
         <div class="header-controls">
-            <select id="workspace-select" class="workspace-select" title="Select workspace"></select>
+            <select id="workspace-select" class="workspace-select" data-tooltip="Select workspace"></select>
         </div>
     </div>
     <div class="controls-strip">
-        <button class="strip-btn" id="btn-autoban" title="Start or stop the autoban engine">▶ START AUTOBAN</button>
+        <button class="strip-btn" id="btn-autoban" data-tooltip="Start or stop the autoban engine">▶ START AUTOBAN</button>
         <div class="autoban-timers-inline" id="autoban-timers-inline"></div>
         <span class="controls-spacer"></span>
         <span class="triggers-off-badge" id="triggers-off-badge" hidden>⚠ TRIGGERS OFF</span>
-        <label class="cli-toggle-inline" id="cli-toggle" title="When OFF, moves and prompts do not trigger CLI agent actions">
+        <label class="cli-toggle-inline" id="cli-toggle" data-tooltip="When OFF, moves and prompts do not trigger CLI agent actions">
             <label class="toggle-switch">
                 <input type="checkbox" id="cli-triggers-toggle" checked>
                 <span class="toggle-slider"></span>
             </label>
             <span class="toggle-label">CLI Triggers</span>
         </label>
-        <label class="cli-toggle-inline pair-programming-toggle" id="pair-programming-toggle" title="Pair Programming: Lead does high complexity work, Coder auto-starts low complexity work simultaneously">
+        <label class="cli-toggle-inline pair-programming-toggle" id="pair-programming-toggle" data-tooltip="Pair Programming: Lead does high complexity work, Coder auto-starts low complexity work simultaneously">
             <label class="toggle-switch">
                 <input type="checkbox" id="pairProgrammingCheckbox">
                 <span class="toggle-slider"></span>
             </label>
             <span class="toggle-label">Pair Programming</span>
         </label>
-        <button class="strip-btn" id="btn-refresh-strip" title="Sync board with latest backend state">↻ SYNC BOARD</button>
+        <button class="strip-btn" id="btn-refresh-strip" data-tooltip="Sync board with latest backend state">↻ SYNC BOARD</button>
+    </div>
+    <div id="db-warning-banner" style="display:none; background:#3a2a00; color:#ffcc00; padding:6px 12px; font-size:12px; text-align:center; border-bottom:1px solid #554400;">
+        ⚠️ Database unavailable — card positions may not reflect manual moves
     </div>
     <div class="kanban-board" id="kanban-board"></div>
 
@@ -903,28 +970,30 @@
         }
 
         function renderColumns() {
-            const lastColumnId = columnDefinitions.length > 0 ? columnDefinitions[columnDefinitions.length - 1].id : null;
 
             kanbanBoard.innerHTML = columnDefinitions.map(def => {
                 const isCreated = def.id === 'CREATED';
                 const isPlanReviewed = def.id === 'PLAN REVIEWED';
-                const isLastColumn = def.id === lastColumnId;
                 const isCompleted = def.kind === 'completed';
+                // Last working column = the column immediately before the completed column
+                const completedIndex = columnDefinitions.findIndex(d => d.kind === 'completed');
+                const defIndex = columnDefinitions.indexOf(def);
+                const isLastWorkingColumn = !isCompleted && completedIndex > 0 && defIndex === completedIndex - 1;
                 const hasAgent = !isCreated && !isCompleted;
                 
                 const mode = columnDragDropModes[def.id] || 'cli';
                 const modeIcon = mode === 'prompt' ? ICON_PROMPT : ICON_CLI;
                 const modeTitle = mode === 'prompt' ? 'Mode: Copy Prompt (drag cards to copy prompt to clipboard)' : 'Mode: CLI Dispatch (drag cards to trigger CLI agent)';
-                const modeToggle = (!isCreated && !isLastColumn && !isCompleted) 
-                    ? `<div class="mode-toggle mode-${mode}" data-column="${escapeAttr(def.id)}" title="${escapeAttr(modeTitle)}">
+                const modeToggle = (!isCreated && !isLastWorkingColumn && !isCompleted) 
+                    ? `<div class="mode-toggle mode-${mode}" data-column="${escapeAttr(def.id)}" data-tooltip="${escapeAttr(modeTitle)}">
                            <img src="${modeIcon}" alt="${mode}">
                        </div>` 
                     : '';
 
                 const rightSide = isCreated
                     ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
-                            <button class="btn-add-plan" id="btn-add-plan" title="Add Plan">+</button>
-                            <button class="btn-add-plan" id="btn-import-clipboard" title="Import plan from clipboard"><img src="${ICON_IMPORT_CLIPBOARD}" alt="Import" style="width: 16px; height: 16px;"></button>
+                            <button class="btn-add-plan" id="btn-add-plan" data-tooltip="Add Plan">+</button>
+                            <button class="btn-add-plan" id="btn-import-clipboard" data-tooltip="Import plan from clipboard"><img src="${ICON_IMPORT_CLIPBOARD}" alt="Import" style="width: 16px; height: 16px;"></button>
                             <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
                        </div>`
                     : `<div style="display: flex; align-items: center; gap: 4px;">
@@ -937,44 +1006,47 @@
 
                 // Column button area (with buttons for all columns except last/completed, empty strip for last)
                 let buttonArea = '';
-                if (isCompleted || isLastColumn) {
+                if (isCompleted) {
                     buttonArea = `<div class="column-button-area">
-                        <button class="column-icon-btn" style="visibility: hidden; pointer-events: none;" tabindex="-1" aria-hidden="true">
-                            <img src="${ICON_MOVE_SELECTED}" alt="">
+                        <button class="column-icon-btn recover-selected-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Recover selected plans back to active board">
+                             ↩ Selected
+                        </button>
+                        <button class="column-icon-btn recover-all-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Recover all completed plans back to active board">
+                             ↩ All
                         </button>
                     </div>`;
-                } else if (def.kind === 'reviewed') {
+                } else if (isLastWorkingColumn) {
                     // Reviewed column: Complete Selected / Complete All buttons only (no prompt/CLI dispatch)
                     buttonArea = `<div class="column-button-area">
-                        <button class="column-icon-btn" data-action="completeSelected" data-column="${escapeAttr(def.id)}" title="Complete selected plans (archive)">
+                        <button class="column-icon-btn" data-action="completeSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Complete selected plans (archive)">
                             <img src="${ICON_MOVE_SELECTED}" alt="Complete Selected">
                         </button>
-                        <button class="column-icon-btn" data-action="completeAll" data-column="${escapeAttr(def.id)}" title="Complete all plans in this column (archive)">
+                        <button class="column-icon-btn" data-action="completeAll" data-column="${escapeAttr(def.id)}" data-tooltip="Complete all plans in this column (archive)">
                             <img src="${ICON_MOVE_ALL}" alt="Complete All">
                         </button>
                     </div>`;
                 } else {
                     const julesBtn = (isPlanReviewed && lastVisibleAgents.jules !== false)
-                        ? `<button class="column-icon-btn" data-action="julesSelected" data-column="${escapeAttr(def.id)}" title="Send selected plans to Jules">
+                        ? `<button class="column-icon-btn" data-action="julesSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Send selected plans to Jules">
                                <img src="${ICON_JULES}" alt="Jules">
                            </button>`
                         : '';
                     const analystMapBtn = (isPlanReviewed && lastVisibleAgents.analyst !== false)
-                        ? `<button class="column-icon-btn" data-action="analystMapSelected" data-column="${escapeAttr(def.id)}" title="Generate context map for selected plans">
+                        ? `<button class="column-icon-btn" data-action="analystMapSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Generate context map for selected plans">
                                <img src="${ICON_ANALYST_MAP}" alt="Analyst Map">
                            </button>`
                         : '';
                     buttonArea = `<div class="column-button-area">
-                        <button class="column-icon-btn" data-action="moveSelected" data-column="${escapeAttr(def.id)}" title="Move selected plans to next stage (triggers CLI if enabled)">
+                        <button class="column-icon-btn" data-action="moveSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Move selected plans to next stage (triggers CLI if enabled)">
                             <img src="${ICON_MOVE_SELECTED}" alt="Move Selected">
                         </button>
-                        <button class="column-icon-btn" data-action="moveAll" data-column="${escapeAttr(def.id)}" title="Move all plans in this column to next stage">
+                        <button class="column-icon-btn" data-action="moveAll" data-column="${escapeAttr(def.id)}" data-tooltip="Move all plans in this column to next stage">
                             <img src="${ICON_MOVE_ALL}" alt="Move All">
                         </button>
-                        <button class="column-icon-btn" data-action="promptSelected" data-column="${escapeAttr(def.id)}" title="Copy prompt for selected plans and advance to next stage">
+                        <button class="column-icon-btn" data-action="promptSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Copy prompt for selected plans and advance to next stage">
                             <img src="${ICON_PROMPT_SELECTED}" alt="Prompt Selected">
                         </button>
-                        <button class="column-icon-btn" data-action="promptAll" data-column="${escapeAttr(def.id)}" title="Copy prompt for all plans in this column and advance">
+                        <button class="column-icon-btn" data-action="promptAll" data-column="${escapeAttr(def.id)}" data-tooltip="Copy prompt for all plans in this column and advance">
                             <img src="${ICON_PROMPT_ALL}" alt="Prompt All">
                         </button>
                         ${julesBtn}
@@ -1278,35 +1350,32 @@
             } else if (card.column === 'LEAD CODED' || card.column === 'CODER CODED') {
                 copyLabel = 'Copy review prompt';
             }
-            const coderMode = columnDragDropModes['CODER CODED'] || 'cli';
-            const pairTitle = coderMode === 'prompt' 
-                ? 'Pair Program (Clipboard Relay): copy high complexity prompt to clipboard, then click notification for low complexity prompt' 
-                : 'Pair Program: copy high complexity prompt to clipboard, auto-send low complexity to Coder terminal';
             const pairProgramBtn = (card.column === 'PLAN REVIEWED' && complexity === 'High')
-                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" title="${escapeAttr(pairTitle)}">Pair</button>`
+                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}">Pair</button>`
                 : '';
             const completeOrDoneBtn = isCompleted
-                ? '<span class="card-done-badge" title="Plan completed">✓ Done</span>'
-                : `<button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Complete Plan">
+                ? `<span class="card-done-badge">✓ Done</span>`
+                : `<button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>
                    </button>`;
             return `
                 <div class="kanban-card${completedClass}" draggable="true" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
-                    <div class="card-topic" title="${escapeHtml(card.topic)}">${escapeHtml(shortTopic)}</div>
-                    <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}" title="${complexity.toLowerCase()} complexity">${complexity}</span> · ${timeAgo}</div>
+                    <div class="card-topic">${escapeHtml(shortTopic)}</div>
+                    <div class="card-meta">Complexity: <span class="complexity-indicator ${complexityClass}">${complexity}</span> · ${timeAgo}</div>
                     <div class="card-actions" style="display: flex; justify-content: space-between; align-items: center;">
                         <div style="display: flex; gap: 4px;">
                             ${pairProgramBtn}
-                            <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="${escapeAttr(copyLabel)}">${copyLabel}</button>
+                            <button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">${copyLabel}</button>
                         </div>
                         <div style="display: flex; gap: 4px;">
-                            <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" title="Review Plan Ticket">
+                            <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
                             </button>
                             ${completeOrDoneBtn}
                         </div>
                     </div>
-                </div>`;
+                </div>
+            `;
         }
 
         function escapeHtml(str) {
@@ -1325,6 +1394,27 @@
             if (hrs < 24) return hrs + 'h ago';
             return Math.floor(hrs / 24) + 'd ago';
         }
+
+        // Recover Selected handler
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.recover-selected-btn');
+            if (!btn) return;
+            const selected = getSelectedInColumn('COMPLETED');
+            if (selected.length === 0) {
+                vscode.postMessage({ type: 'showInfo', message: 'No cards selected. Use checkboxes to select cards to recover.' });
+                return;
+            }
+            postKanbanMessage({ type: 'recoverSelected', sessionIds: selected });
+        });
+
+        // Recover All handler
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.recover-all-btn');
+            if (!btn) return;
+            const allCompleted = getAllInColumn('COMPLETED');
+            if (allCompleted.length === 0) return;
+            postKanbanMessage({ type: 'recoverAll', sessionIds: allCompleted, count: allCompleted.length });
+        });
 
         // Drag & Drop handlers
         let draggedSessionId = null;
@@ -1542,6 +1632,10 @@
                 case 'updateBoard':
                     const nextCards = Array.isArray(msg.cards) ? msg.cards : [];
                     const nextBoardSignature = buildBoardSignature(nextCards);
+                    const dbWarningBanner = document.getElementById('db-warning-banner');
+                    if (dbWarningBanner) {
+                        dbWarningBanner.style.display = msg.dbUnavailable ? '' : 'none';
+                    }
                     if (nextBoardSignature !== lastBoardSignature) {
                         lastBoardSignature = nextBoardSignature;
                         renderBoard(nextCards);

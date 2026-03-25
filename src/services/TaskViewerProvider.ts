@@ -866,7 +866,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, records);
         if (!bootstrapped) return null;
-        const synced = await KanbanMigration.syncNewPlansOnly(db, workspaceId, records);
+        const synced = await KanbanMigration.syncPlansMetadata(db, workspaceId, records);
         if (!synced) return null;
         return workspaceId;
     }
@@ -2825,6 +2825,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'recheckMcpConnection':
                         vscode.commands.executeCommand('switchboard.recheckMcp');
+                        break;
+                    case 'copyMcpConfig':
+                        vscode.commands.executeCommand('switchboard.copyMcpConfig');
                         break;
                     case 'setTerminalRole':
                         if (data.terminalName && data.role) {

@@ -1,3 +1,4 @@
+// This file is a hand-maintained JS mirror of KanbanMigration.ts — keep in sync.
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.KanbanMigration = void 0;
@@ -41,10 +42,15 @@ class KanbanMigration {
         const currentVersion = await db.getMigrationVersion();
         const hasActivePlans = await db.hasActivePlans(workspaceId);
         if (!hasActivePlans) {
-            const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
-            const upserted = await db.upsertPlans(rows);
-            if (!upserted)
-                return false;
+            // Guard: if the DB already has completed plans for this workspace,
+            // the user finished all cards — don't re-bootstrap with derived columns.
+            const completedPlans = await db.getCompletedPlans(workspaceId, 1);
+            if (completedPlans.length === 0) {
+                const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
+                const upserted = await db.upsertPlans(rows);
+                if (!upserted)
+                    return false;
+            }
         }
         if (currentVersion < KanbanMigration.SCHEMA_VERSION) {
             const migrated = await KanbanMigration._migrateLegacyCodedRows(db, workspaceId);
@@ -54,14 +60,32 @@ class KanbanMigration {
         }
         return true;
     }
-    static async syncNewPlansOnly(db, workspaceId, snapshotRows) {
+    /**
+     * Sync snapshot rows into the DB. New plans are inserted with their derived
+     * column; existing plans only get metadata updates (topic, plan_file) —
+     * kanban_column and status are NEVER overwritten for existing records.
+     */
+    static async syncPlansMetadata(db, workspaceId, snapshotRows) {
         const ready = await db.ensureReady();
         if (!ready)
             return false;
-        const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
-        const upserted = await db.upsertPlans(rows);
-        if (!upserted)
-            return false;
+        for (const row of snapshotRows) {
+            const exists = await db.hasPlan(row.sessionId);
+            if (!exists) {
+                const record = {
+                    ...row,
+                    kanbanColumn: KanbanMigration._normalizeLegacyCodedColumn(row.kanbanColumn, row.lastAction),
+                    status: 'active'
+                };
+                const inserted = await db.upsertPlans([record]);
+                if (!inserted)
+                    return false;
+            }
+            else {
+                await db.updateTopic(row.sessionId, row.topic);
+                await db.updatePlanFile(row.sessionId, row.planFile);
+            }
+        }
         const currentVersion = await db.getMigrationVersion();
         if (currentVersion < KanbanMigration.SCHEMA_VERSION) {
             const migrated = await KanbanMigration._migrateLegacyCodedRows(db, workspaceId);
@@ -73,4 +97,3 @@ class KanbanMigration {
     }
 }
 exports.KanbanMigration = KanbanMigration;
-//# sourceMappingURL=KanbanMigration.js.map

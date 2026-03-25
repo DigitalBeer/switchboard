@@ -327,13 +327,14 @@ export class KanbanProvider implements vscode.Disposable {
                 complexity: row.complexity,
                 workspaceRoot: resolvedWorkspaceRoot
             }));
+            let dbUnavailable = false;
 
             const db = this._getKanbanDb(resolvedWorkspaceRoot);
             const snapshotRows = legacySnapshot.filter(row => row.planId && row.sessionId && row.workspaceId);
             if (workspaceId && await db.ensureReady()) {
                 const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, snapshotRows);
                 const synced = bootstrapped
-                    ? await KanbanMigration.syncNewPlansOnly(db, workspaceId, snapshotRows)
+                    ? await KanbanMigration.syncPlansMetadata(db, workspaceId, snapshotRows)
                     : false;
                 if (synced) {
                     let dbRows = await db.getBoard(workspaceId);
@@ -398,9 +399,11 @@ export class KanbanProvider implements vscode.Disposable {
                     });
                 } else {
                     console.warn('[KanbanProvider] Kanban DB sync failed, using file-derived fallback for this refresh.');
+                    dbUnavailable = true;
                 }
             } else if (workspaceId) {
                 console.warn(`[KanbanProvider] Kanban DB unavailable, using file-derived fallback: ${db.lastInitError || 'unknown error'}`);
+                dbUnavailable = true;
             }
 
             // Fetch completed plans and append as COMPLETED column cards
@@ -453,7 +456,7 @@ export class KanbanProvider implements vscode.Disposable {
                 workspaces: this._getWorkspaceItems()
             });
             this._lastCards = cards;
-            this._panel.webview.postMessage({ type: 'updateBoard', cards });
+            this._panel.webview.postMessage({ type: 'updateBoard', cards, dbUnavailable });
             this._panel.webview.postMessage({ type: 'cliTriggersState', enabled: this._cliTriggersEnabled });
             this._panel.webview.postMessage({ type: 'updateAgentNames', agentNames });
             this._panel.webview.postMessage({ type: 'visibleAgents', agents: visibleAgents });

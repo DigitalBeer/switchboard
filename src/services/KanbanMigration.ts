@@ -67,9 +67,14 @@ export class KanbanMigration {
         const hasActivePlans = await db.hasActivePlans(workspaceId);
 
         if (!hasActivePlans) {
-            const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
-            const upserted = await db.upsertPlans(rows);
-            if (!upserted) return false;
+            // Guard: if the DB already has completed plans for this workspace,
+            // the user finished all cards — don't re-bootstrap with derived columns.
+            const completedPlans = await db.getCompletedPlans(workspaceId, 1);
+            if (completedPlans.length === 0) {
+                const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
+                const upserted = await db.upsertPlans(rows);
+                if (!upserted) return false;
+            }
         }
 
         if (currentVersion < KanbanMigration.SCHEMA_VERSION) {
@@ -81,7 +86,12 @@ export class KanbanMigration {
         return true;
     }
 
-    public static async syncNewPlansOnly(
+    /**
+     * Sync snapshot rows into the DB. New plans are inserted with their derived
+     * column; existing plans only get metadata updates (topic, plan_file) —
+     * kanban_column and status are NEVER overwritten for existing records.
+     */
+    public static async syncPlansMetadata(
         db: KanbanDatabase,
         workspaceId: string,
         snapshotRows: LegacyKanbanSnapshotRow[]
@@ -89,10 +99,23 @@ export class KanbanMigration {
         const ready = await db.ensureReady();
         if (!ready) return false;
 
-        const rows = KanbanMigration._toKanbanPlanRecords(snapshotRows);
-
-        const upserted = await db.upsertPlans(rows);
-        if (!upserted) return false;
+        for (const row of snapshotRows) {
+            const exists = await db.hasPlan(row.sessionId);
+            if (!exists) {
+                // New plan: insert with derived column (correct for first-time creation)
+                const record: KanbanPlanRecord = {
+                    ...row,
+                    kanbanColumn: KanbanMigration._normalizeLegacyCodedColumn(row.kanbanColumn, row.lastAction),
+                    status: 'active'
+                };
+                const inserted = await db.upsertPlans([record]);
+                if (!inserted) return false;
+            } else {
+                // Existing plan: update metadata only, never touch kanban_column or status
+                await db.updateTopic(row.sessionId, row.topic);
+                await db.updatePlanFile(row.sessionId, row.planFile);
+            }
+        }
 
         const currentVersion = await db.getMigrationVersion();
         if (currentVersion < KanbanMigration.SCHEMA_VERSION) {
