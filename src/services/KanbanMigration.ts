@@ -99,7 +99,8 @@ export class KanbanMigration {
     public static async syncPlansMetadata(
         db: KanbanDatabase,
         workspaceId: string,
-        snapshotRows: LegacyKanbanSnapshotRow[]
+        snapshotRows: LegacyKanbanSnapshotRow[],
+        resolveComplexity?: (planFile: string) => Promise<'Unknown' | 'Low' | 'High'>
     ): Promise<boolean> {
         const ready = await db.ensureReady();
         if (!ready) return false;
@@ -118,13 +119,18 @@ export class KanbanMigration {
                 if (!existingIds.has(row.sessionId)) {
                     newRows.push(row);
                 } else {
+                    let resolvedComplexity: 'Unknown' | 'Low' | 'High' | undefined;
+                    if (row.complexity === 'Low' || row.complexity === 'High') {
+                        resolvedComplexity = row.complexity;
+                    } else if (resolveComplexity) {
+                        const parsed = await resolveComplexity(row.planFile);
+                        resolvedComplexity = (parsed === 'Low' || parsed === 'High') ? parsed : undefined;
+                    }
                     metadataUpdates.push({
                         sessionId: row.sessionId,
                         topic: row.topic,
                         planFile: row.planFile,
-                        complexity: (row.complexity === 'Low' || row.complexity === 'High')
-                            ? row.complexity
-                            : undefined
+                        complexity: resolvedComplexity
                     });
                 }
             }

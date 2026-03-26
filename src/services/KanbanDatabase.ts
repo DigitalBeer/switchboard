@@ -127,6 +127,21 @@ export class KanbanDatabase {
         return created;
     }
 
+    /**
+     * Invalidate the cached DB instance for a workspace, forcing re-creation
+     * on the next forWorkspace() call. Used when kanban.dbPath setting changes.
+     */
+    public static invalidateWorkspace(workspaceRoot: string): void {
+        const stable = path.resolve(workspaceRoot);
+        const existing = KanbanDatabase._instances.get(stable);
+        if (existing) {
+            existing._db = null;
+            existing._initPromise = null;
+            KanbanDatabase._instances.delete(stable);
+            console.log(`[KanbanDatabase] Invalidated cached instance for ${stable}`);
+        }
+    }
+
     private readonly _dbPath: string;
     private _db: SqlJsDatabase | null = null;
     private _initPromise: Promise<boolean> | null = null;
@@ -134,11 +149,24 @@ export class KanbanDatabase {
     private _writeTail: Promise<void> = Promise.resolve();
 
     private constructor(private readonly _workspaceRoot: string) {
-        this._dbPath = path.join(this._workspaceRoot, '.switchboard', 'kanban.db');
+        const vscode = require('vscode');
+        const customPath = String(vscode.workspace.getConfiguration('switchboard').get('kanban.dbPath') || '').trim();
+        if (customPath) {
+            const resolved = customPath.startsWith('~')
+                ? path.join(require('os').homedir(), customPath.slice(1))
+                : customPath;
+            this._dbPath = path.isAbsolute(resolved) ? resolved : path.join(this._workspaceRoot, resolved);
+        } else {
+            this._dbPath = path.join(this._workspaceRoot, '.switchboard', 'kanban.db');
+        }
     }
 
     public get lastInitError(): string | null {
         return this._lastInitError;
+    }
+
+    public get dbPath(): string {
+        return this._dbPath;
     }
 
     public async ensureReady(): Promise<boolean> {
@@ -340,6 +368,17 @@ export class KanbanDatabase {
             `SELECT ${PLAN_COLUMNS} FROM plans
              WHERE session_id = ? LIMIT 1`,
             [sessionId]
+        );
+        const rows = this._readRows(stmt);
+        return rows.length > 0 ? rows[0] : null;
+    }
+
+    public async getPlanByPlanFile(planFile: string, workspaceId: string): Promise<KanbanPlanRecord | null> {
+        if (!(await this.ensureReady()) || !this._db) return null;
+        const normalized = this._normalizePath(planFile);
+        const stmt = this._db.prepare(
+            `SELECT ${PLAN_COLUMNS} FROM plans WHERE plan_file = ? AND workspace_id = ? LIMIT 1`,
+            [normalized, workspaceId]
         );
         const rows = this._readRows(stmt);
         return rows.length > 0 ? rows[0] : null;

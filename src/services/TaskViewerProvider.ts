@@ -873,7 +873,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
         const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, records);
         if (!bootstrapped) return null;
-        const synced = await KanbanMigration.syncPlansMetadata(db, workspaceId, records);
+        const synced = await KanbanMigration.syncPlansMetadata(db, workspaceId, records,
+            (planFile) => this._kanbanProvider ? this._kanbanProvider.getComplexityFromPlan(workspaceRoot, planFile) : Promise.resolve('Unknown')
+        );
         if (!synced) return null;
         return workspaceId;
     }
@@ -2938,7 +2940,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         await this._deregisterAllTerminals();
                         break;
                     case 'createAgentGrid':
-                        await vscode.commands.executeCommand('switchboard.createAgentGrid');
+                        try {
+                            await vscode.commands.executeCommand('switchboard.createAgentGrid');
+                            this._view?.webview.postMessage({ type: 'createAgentGridResult', success: true });
+                        } catch (e) {
+                            this._view?.webview.postMessage({ type: 'createAgentGridResult', success: false });
+                        }
                         break;
                     case 'createAgentGridEditor':
                         await vscode.commands.executeCommand('switchboard.createAgentGridEditor');
@@ -3000,9 +3007,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'createDraftPlanTicket':
                         await this.createDraftPlanTicket();
-                        break;
-                    case 'mergeAllPlans':
-                        await this._handleMergeAllPlans();
                         break;
                     case 'getRecoverablePlans': {
                         const plans = this._getRecoverablePlans();
@@ -5265,6 +5269,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             // Create/update runsheet — merge events to protect task history
             if (!fs.existsSync(sessionsDir)) { fs.mkdirSync(sessionsDir, { recursive: true }); }
+
+            // DB-level dedup: if this brain plan's session already exists in kanban.db,
+            // skip session file creation. The mirror .md is still written (content may differ),
+            // but we don't need a new .json runsheet.
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (db) {
+                const alreadyInDb = await db.hasPlan(runSheetId);
+                if (alreadyInDb) {
+                    console.log(`[TaskViewerProvider] Brain plan already in DB (session: ${runSheetId}), skipping runsheet file creation`);
+                    await this._syncFilesAndRefreshRunSheets(resolvedWorkspaceRoot);
+                    return;
+                }
+            }
+
             let existingEvents: any[] = [];
             let originalCreatedAt: string | undefined;
             if (existingRunSheetPath && fs.existsSync(existingRunSheetPath)) {
@@ -5323,6 +5341,19 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             if (existingForPlan) {
                 await this._syncFilesAndRefreshRunSheets(resolvedWorkspaceRoot);
                 return;
+            }
+
+            // DB-level dedup: if kanban.db already knows about this plan, do not create a session file.
+            // This prevents spurious file creation on machines that have the DB but not the session files.
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (db) {
+                const workspaceId = this._workspaceId || await this._getOrCreateWorkspaceId(resolvedWorkspaceRoot);
+                const dbEntry = await db.getPlanByPlanFile(normalizedPlanFileRelative, workspaceId);
+                if (dbEntry) {
+                    console.log(`[TaskViewerProvider] Plan already in DB (session: ${dbEntry.sessionId}), skipping file creation for: ${normalizedPlanFileRelative}`);
+                    await this._syncFilesAndRefreshRunSheets(resolvedWorkspaceRoot);
+                    return;
+                }
             }
 
             // Read current state (best-effort; anonymous session if unavailable)
@@ -5408,13 +5439,41 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (!resolvedWorkspaceRoot) {
             throw new Error('No workspace folder found.');
         }
-        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-        const content = await fs.promises.readFile(runSheetPath, 'utf8');
-        const sheet = JSON.parse(content);
 
-        const planPath = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
-            ? sheet.planFile.trim()
-            : (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
+        // DB-first: resolve plan context from KanbanDatabase (no filesystem dependency)
+        let planPath = '';
+        let topic = '';
+        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+        if (db) {
+            const record = await db.getPlanBySessionId(sessionId);
+            if (record) {
+                planPath = (typeof record.planFile === 'string' && record.planFile.trim())
+                    ? record.planFile.trim()
+                    : (typeof record.brainSourcePath === 'string' && record.brainSourcePath.trim() ? record.brainSourcePath.trim() : '');
+                topic = (typeof record.topic === 'string' && record.topic.trim())
+                    ? record.topic.trim()
+                    : '';
+            }
+        }
+
+        // TECH-DEBT: Filesystem fallback — remove once session-file creation is fully eliminated
+        if (!planPath) {
+            try {
+                const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+                const content = await fs.promises.readFile(runSheetPath, 'utf8');
+                const sheet = JSON.parse(content);
+                planPath = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
+                    ? sheet.planFile.trim()
+                    : (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
+                if (!topic) {
+                    topic = (typeof sheet.topic === 'string' && sheet.topic.trim())
+                        ? sheet.topic.trim()
+                        : '';
+                }
+            } catch {
+                // Session file not found or unreadable — DB was the last hope
+            }
+        }
 
         if (!planPath) {
             throw new Error('No plan file associated with this session.');
@@ -5425,9 +5484,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             throw new Error('Plan file path is outside the workspace boundary.');
         }
 
-        const topic = (typeof sheet.topic === 'string' && sheet.topic.trim())
-            ? sheet.topic.trim()
-            : path.basename(planFileAbsolute);
+        if (!topic) {
+            topic = path.basename(planFileAbsolute);
+        }
 
         return { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot };
     }
@@ -5992,46 +6051,46 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _handleCopyPlanLink(sessionId: string, column?: string, workspaceRoot?: string): Promise<boolean> {
-        const resolvedWorkspaceRoot = workspaceRoot
-            ? this._resolveWorkspaceRoot(workspaceRoot)
-            : await this._resolveWorkspaceRootForSession(sessionId);
-        if (!resolvedWorkspaceRoot) return false;
-        const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-
         try {
-            const content = await fs.promises.readFile(runSheetPath, 'utf8');
-            const sheet = JSON.parse(content);
-            const topic = (sheet.topic || 'Plan').toString().trim() || 'Plan';
+            const { planFileAbsolute, topic, workspaceRoot: resolvedWorkspaceRoot } = await this._resolvePlanContextForSession(sessionId, workspaceRoot);
 
-            let planPathAbsolute: string | undefined;
-            if (typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
-                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.planFile.trim());
-            } else if (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim()) {
-                planPathAbsolute = path.resolve(resolvedWorkspaceRoot, sheet.brainSourcePath.trim());
+            // Resolve kanban column: explicit param > DB record > default
+            let effectiveColumn = column || '';
+            if (!effectiveColumn) {
+                const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+                if (db) {
+                    const record = await db.getPlanBySessionId(sessionId);
+                    if (record && record.kanbanColumn) {
+                        effectiveColumn = record.kanbanColumn;
+                    }
+                }
             }
-
-            if (!planPathAbsolute) {
-                throw new Error('No plan file path is available for this session.');
+            // TECH-DEBT: Filesystem fallback for kanban column — remove once session-file creation is fully eliminated
+            if (!effectiveColumn) {
+                try {
+                    const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
+                    const content = await fs.promises.readFile(runSheetPath, 'utf8');
+                    const sheet = JSON.parse(content);
+                    const customAgentsForColumn = await this.getCustomAgents(resolvedWorkspaceRoot);
+                    effectiveColumn = deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgentsForColumn);
+                } catch {
+                    // Session file not available — use default
+                }
             }
-
-            // F-06 SECURITY: Enforce workspace containment for plan paths
-            if (!this._isPathWithinRoot(planPathAbsolute, resolvedWorkspaceRoot)) {
-                throw new Error('Plan file path is outside the workspace boundary.');
-            }
+            effectiveColumn = this._normalizeLegacyKanbanColumn(effectiveColumn || 'CREATED');
 
             const customAgents = await this.getCustomAgents(resolvedWorkspaceRoot);
-            const effectiveColumn = this._normalizeLegacyKanbanColumn(column || deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgents));
-            
+
             // For PLAN REVIEWED, use complexity-based role selection
             let role: string;
             if (effectiveColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
-                const complexity = await this._kanbanProvider.getComplexityFromPlan(resolvedWorkspaceRoot, planPathAbsolute);
+                const complexity = await this._kanbanProvider.getComplexityFromPlan(resolvedWorkspaceRoot, planFileAbsolute);
                 role = complexity === 'Low' ? 'coder' : 'lead';
             } else {
                 role = columnToPromptRole(effectiveColumn) || 'coder';
             }
-            
-            const plan: BatchPromptPlan = { topic, absolutePath: planPathAbsolute };
+
+            const plan: BatchPromptPlan = { topic, absolutePath: planFileAbsolute };
             const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
             const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
             // Accuracy mode excluded from clipboard prompts — requires MCP tools only in CLI terminals
@@ -6219,134 +6278,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             vscode.window.showInformationMessage(`Claimed plan: ${topic}`);
         } catch (e) {
             vscode.window.showErrorMessage(`Failed to claim plan: ${e}`);
-        }
-    }
-
-
-    private async _handleMergeAllPlans() {
-        const workspaceRoot = this._resolveWorkspaceRoot();
-        if (!workspaceRoot) return;
-        await this._activateWorkspaceContext(workspaceRoot);
-        const log = this._getSessionLog(workspaceRoot);
-
-        try {
-            const activeSheetsData = await log.getRunSheets();
-            if (activeSheetsData.length === 0) {
-                vscode.window.showInformationMessage('No open plans available to merge.');
-                return;
-            }
-
-            const activeSheets: Array<{ sheet: any; sourcePath?: string }> = [];
-
-            for (const sheet of activeSheetsData) {
-                if (sheet.completed === true) continue;
-                if (!sheet.sessionId || !sheet.events) continue;
-                if (!this._isOwnedActiveRunSheet(sheet)) continue;
-
-                let sourcePath: string | undefined;
-                if (typeof sheet.planFile === 'string' && sheet.planFile.trim()) {
-                    sourcePath = path.resolve(workspaceRoot, sheet.planFile.trim());
-                } else if (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim()) {
-                    sourcePath = sheet.brainSourcePath.trim();
-                }
-
-                activeSheets.push({ sheet, sourcePath });
-            }
-
-            if (activeSheets.length === 0) {
-                vscode.window.showInformationMessage('No open plans available to merge.');
-                return;
-            }
-
-            const timestamp = new Date();
-            const pad = (n: number) => String(n).padStart(2, '0');
-            const stamp = `${timestamp.getFullYear()}${pad(timestamp.getMonth() + 1)}${pad(timestamp.getDate())}_${pad(timestamp.getHours())}${pad(timestamp.getMinutes())}${pad(timestamp.getSeconds())}`;
-            const mergedRelativePath = path.join('.switchboard', 'plans', `feature_plan_batch_${stamp}.md`);
-            const mergedAbsolutePath = path.join(workspaceRoot, mergedRelativePath);
-            await fs.promises.mkdir(path.dirname(mergedAbsolutePath), { recursive: true });
-
-            const mergedLines: string[] = [];
-            mergedLines.push(`# Batch Plan Merge (${timestamp.toISOString()})`);
-            mergedLines.push('');
-            mergedLines.push('This file merges all currently open plans from the sidebar.');
-            mergedLines.push('');
-
-            for (const { sheet, sourcePath } of activeSheets) {
-                const topic = (sheet.topic || 'Untitled Plan').toString().trim() || 'Untitled Plan';
-                mergedLines.push(`## ${topic}`);
-                if (sourcePath) {
-                    const sourceLabel = path.isAbsolute(sourcePath) ? path.relative(workspaceRoot, sourcePath) || sourcePath : sourcePath;
-                    mergedLines.push(`Source: ${sourceLabel.replace(/\\/g, '/')}`);
-                } else {
-                    mergedLines.push('Source: unavailable');
-                }
-                mergedLines.push('');
-
-                if (sourcePath && fs.existsSync(sourcePath)) {
-                    const planContent = await fs.promises.readFile(sourcePath, 'utf8');
-                    mergedLines.push(planContent.trim());
-                } else {
-                    mergedLines.push('_Plan content unavailable (source file not found)._');
-                }
-
-                mergedLines.push('');
-                mergedLines.push('---');
-                mergedLines.push('');
-            }
-            await fs.promises.writeFile(mergedAbsolutePath, `${mergedLines.join('\n').trim()}\n`);
-
-            const mergedSessionId = `batch_${Date.now()}`;
-            const mergedRunSheet = {
-                sessionId: mergedSessionId,
-                planFile: mergedRelativePath.replace(/\\/g, '/'),
-                topic: `Batch merge (${activeSheets.length} plans)`,
-                createdAt: timestamp.toISOString(),
-                mergedFrom: activeSheets.map(({ sheet }) => sheet.sessionId),
-                events: [{
-                    workflow: 'batch-merge',
-                    timestamp: timestamp.toISOString(),
-                    action: 'start'
-                }]
-            };
-
-            await log.createRunSheet(mergedSessionId, mergedRunSheet);
-            const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
-            await this._registerPlan(workspaceRoot, {
-                planId: mergedSessionId,
-                ownerWorkspaceId: wsId,
-                sourceType: 'local',
-                localPlanPath: mergedRelativePath.replace(/\\/g, '/'),
-                topic: mergedRunSheet.topic,
-                createdAt: mergedRunSheet.createdAt,
-                updatedAt: new Date().toISOString(),
-                status: 'active'
-            });
-
-            const completedAt = new Date().toISOString();
-            for (const { sheet } of activeSheets) {
-                sheet.completed = true;
-                sheet.completedAt = completedAt;
-                sheet.events = Array.isArray(sheet.events) ? sheet.events : [];
-                sheet.events.push({ workflow: 'batch-merge', timestamp: completedAt, action: 'stop', outcome: 'merged' });
-                await log.updateRunSheet(sheet.sessionId, () => sheet);
-                const sourcePlanId = this._getPlanIdForRunSheet(sheet);
-                if (sourcePlanId) {
-                    await this._updatePlanRegistryStatus(workspaceRoot, sourcePlanId, 'archived');
-                }
-            }
-
-            await this._syncFilesAndRefreshRunSheets();
-            this._view?.webview.postMessage({ type: 'selectSession', sessionId: mergedSessionId });
-            await vscode.commands.executeCommand('switchboard.openPlan', vscode.Uri.file(mergedAbsolutePath));
-            await this._logEvent('plan_management', {
-                operation: 'merge_plans',
-                sessionId: mergedSessionId,
-                mergedCount: activeSheets.length,
-                planFile: mergedRelativePath.replace(/\\/g, '/')
-            });
-            vscode.window.showInformationMessage(`Merged ${activeSheets.length} plans into ${path.basename(mergedAbsolutePath)}.`);
-        } catch (e) {
-            vscode.window.showErrorMessage(`Failed to merge open plans: ${e}`);
         }
     }
 

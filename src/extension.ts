@@ -990,6 +990,53 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(fullSyncDisposable);
 
+    // Reset Kanban Database command — deletes local DB and rebuilds from plan files
+    const resetKanbanDbDisposable = vscode.commands.registerCommand('switchboard.resetKanbanDb', async () => {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            vscode.window.showWarningMessage('No workspace open.');
+            return;
+        }
+
+        const confirm = await vscode.window.showWarningMessage(
+            'This will delete the local Kanban database and rebuild it from plan files. Continue?',
+            { modal: true },
+            'Reset'
+        );
+        if (confirm !== 'Reset') return;
+
+        const db = KanbanDatabase.forWorkspace(workspaceRoot);
+        const dbFilePath = db.dbPath;
+
+        KanbanDatabase.invalidateWorkspace(workspaceRoot);
+
+        try {
+            if (fs.existsSync(dbFilePath)) {
+                await fs.promises.unlink(dbFilePath);
+            }
+        } catch (err) {
+            vscode.window.showErrorMessage(`Failed to delete DB: ${err}`);
+            return;
+        }
+
+        await vscode.commands.executeCommand('switchboard.fullSync');
+        vscode.window.showInformationMessage('Kanban database has been reset and rebuilt.');
+    });
+    context.subscriptions.push(resetKanbanDbDisposable);
+
+    // Invalidate DB cache when kanban.dbPath setting changes
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('switchboard.kanban.dbPath')) {
+                const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                if (workspaceRoot) {
+                    KanbanDatabase.invalidateWorkspace(workspaceRoot);
+                    vscode.commands.executeCommand('switchboard.refreshUI');
+                }
+            }
+        })
+    );
+
     const refreshUIDisposable = vscode.commands.registerCommand('switchboard.refreshUI', async () => {
         await taskViewerProvider.refreshUI();
     });
@@ -2565,6 +2612,7 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
  * Perform actual setup logic (Unified)
  */
 async function performSetup(workspaceUri: vscode.Uri, extensionUri: vscode.Uri, options: { silent: boolean }) {
+    const workspaceRoot = workspaceUri.fsPath;
     // 1. Core directories (project docs + runtime messaging)
     const dirs = [
         '.agent',
@@ -2649,7 +2697,10 @@ async function performSetup(workspaceUri: vscode.Uri, extensionUri: vscode.Uri, 
     const expectedSwitchboardEntry = {
         type: 'stdio',
         command: 'node',
-        args: ['${workspaceFolder}/.switchboard/MCP/mcp-server.js']
+        args: ['${workspaceFolder}/.switchboard/MCP/mcp-server.js'],
+        env: {
+            SWITCHBOARD_WORKSPACE_ROOT: workspaceRoot.replace(/\\/g, '/')
+        }
     };
 
     let mcpConfig: Record<string, any> = { servers: {} };
@@ -2977,7 +3028,8 @@ function getConfigFilesForIDE(ide: string): { template: string; destination: str
     const configs: Record<string, { template: string; destination: string }[]> = {
         github: [
             { template: 'copilot-instructions.md.template', destination: '.github/copilot-instructions.md' },
-            { template: 'agents/switchboard.agent.md.template', destination: '.github/agents/switchboard.agent.md' }
+            { template: 'agents/switchboard.agent.md.template', destination: '.github/agents/switchboard.agent.md' },
+            { template: 'mcp.json.template', destination: '.vscode/mcp.json' }
         ],
         antigravity: [], // Handled by performSetup
         windsurf: [
@@ -3007,6 +3059,7 @@ function getConfigFilesForIDE(ide: string): { template: string; destination: str
  */
 function getMcpConfigFilesForIDE(ide: string): { template: string; destination: string }[] {
     const mcpConfigs: Record<string, { template: string; destination: string }[]> = {
+        github: [{ template: 'mcp.json.template', destination: '.vscode/mcp.json' }],
         windsurf: [{ template: 'mcp_config.json.template', destination: 'mcp_config.json' }],
         cursor: [{ template: 'mcp.json.template', destination: '.cursor/mcp.json' }],
         claude: [{ template: '.mcp.json.template', destination: '.mcp.json' }],
@@ -3031,7 +3084,7 @@ async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspace
 
     const templatesBaseUri = vscode.Uri.joinPath(context.extensionUri, 'templates');
     const absWorkspaceRoot = workspaceRoot.replace(/\\/g, '/');
-    const ideKeys = ['windsurf', 'cursor', 'claude', 'gemini', 'kiro'];
+    const ideKeys = ['windsurf', 'cursor', 'claude', 'gemini', 'kiro', 'github'];
     let written = 0;
 
     for (const ide of ideKeys) {
@@ -3046,14 +3099,24 @@ async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspace
                     fs.mkdirSync(destDir, { recursive: true });
                 }
 
-                // Build the correct MCP entry
-                const newEntry = {
-                    command: 'node',
-                    args: [path.join(absWorkspaceRoot, '.switchboard', 'MCP', 'mcp-server.js')],
-                    env: {
-                        SWITCHBOARD_WORKSPACE_ROOT: absWorkspaceRoot
+                // Build the correct MCP entry. GitHub Copilot uses a different schema.
+                const isGitHub = ide === 'github';
+                const newEntry = isGitHub
+                    ? {
+                        type: 'stdio' as const,
+                        command: 'node',
+                        args: ['${workspaceFolder}/.switchboard/MCP/mcp-server.js'],
+                        env: {
+                            SWITCHBOARD_WORKSPACE_ROOT: absWorkspaceRoot
+                        }
                     }
-                };
+                    : {
+                        command: 'node',
+                        args: [path.join(absWorkspaceRoot, '.switchboard', 'MCP', 'mcp-server.js')],
+                        env: {
+                            SWITCHBOARD_WORKSPACE_ROOT: absWorkspaceRoot
+                        }
+                    };
 
                 // Read existing config to merge (preserve other MCP server entries)
                 let existingConfig: Record<string, any> = {};
@@ -3067,14 +3130,15 @@ async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspace
                     }
                 }
 
-                if (!existingConfig.mcpServers) {
-                    existingConfig.mcpServers = {};
+                const mcpKey = isGitHub ? 'servers' : 'mcpServers';
+                if (!existingConfig[mcpKey]) {
+                    existingConfig[mcpKey] = {};
                 }
 
                 const updatedConfig = {
                     ...existingConfig,
-                    mcpServers: {
-                        ...existingConfig.mcpServers,
+                    [mcpKey]: {
+                        ...existingConfig[mcpKey],
                         switchboard: newEntry
                     }
                 };

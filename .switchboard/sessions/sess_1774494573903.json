@@ -1,7 +1,7 @@
 {
   "sessionId": "sess_1774494573903",
   "planFile": ".switchboard/plans/feature_plan_20260326_140933_mcp_setup_is_still_screwed.md",
-  "topic": "MCP setup is still screwed",
+  "topic": "Fix GitHub Copilot MCP Auto-Setup — Incomplete IDE Integration",
   "createdAt": "2026-03-26T03:09:33.902Z",
   "events": [
     {
@@ -24,6 +24,11 @@
     {
       "workflow": "sidebar-review",
       "timestamp": "2026-03-26T03:13:17.248Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-26T05:09:56.260Z",
       "action": "start"
     }
   ]

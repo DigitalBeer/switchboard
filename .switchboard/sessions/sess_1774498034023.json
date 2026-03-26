@@ -1,0 +1,35 @@
+{
+  "sessionId": "sess_1774498034023",
+  "planFile": ".switchboard/plans/feature_plan_20260326_150714_complexity_analysis_not_working_properly.md",
+  "topic": "Complexity Analysis Not Working Properly — DB/File Mismatch Fix",
+  "createdAt": "2026-03-26T04:07:14.022Z",
+  "events": [
+    {
+      "workflow": "initiate-plan",
+      "timestamp": "2026-03-26T04:07:14.022Z",
+      "action": "start"
+    },
+    {
+      "workflow": "move-to-plan-reviewed",
+      "timestamp": "2026-03-26T04:15:29.006Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-26T04:15:45.093Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "Improved plan",
+      "timestamp": "2026-03-26T04:15:59.761Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-26T05:09:56.269Z",
+      "action": "start"
+    }
+  ]
+}

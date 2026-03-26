@@ -1,7 +1,7 @@
 {
   "sessionId": "sess_1774494170986",
-  "planFile": ".switchboard/plans/feature_plan_20260326_140250_tooltips_do_not_display.md",
-  "topic": "tooltips do not display",
+  "planFile": ".switchboard/plans/feature_plan_20260326_140250_kanban_card_buttons_missing_tooltip_attributes.md",
+  "topic": "Kanban Card Buttons Missing Tooltip Attributes",
   "createdAt": "2026-03-26T03:02:50.985Z",
   "events": [
     {
@@ -24,6 +24,11 @@
     {
       "workflow": "sidebar-review",
       "timestamp": "2026-03-26T03:13:17.217Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-26T05:09:56.239Z",
       "action": "start"
     }
   ]

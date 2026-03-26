@@ -1,7 +1,7 @@
 {
   "sessionId": "sess_1774494496817",
   "planFile": ".switchboard/plans/feature_plan_20260326_140816_add_visual_feedback_to_open_terminals.md",
-  "topic": "Add visual feedback to open terminals",
+  "topic": "Add Visual Feedback to \"OPEN AGENT TERMINALS\" Button",
   "createdAt": "2026-03-26T03:08:16.817Z",
   "events": [
     {
@@ -24,6 +24,11 @@
     {
       "workflow": "sidebar-review",
       "timestamp": "2026-03-26T03:13:17.241Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-26T05:09:56.253Z",
       "action": "start"
     }
   ]

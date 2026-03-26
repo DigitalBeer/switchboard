@@ -164,12 +164,6 @@
             box-shadow: 0 0 8px color-mix(in srgb, var(--accent-red) 20%, transparent);
         }
 
-        .icon-btn.merge:hover:not(:disabled) {
-            color: var(--accent-cyan);
-            border-color: color-mix(in srgb, var(--accent-cyan) 50%, transparent);
-            box-shadow: 0 0 8px color-mix(in srgb, var(--accent-cyan) 20%, transparent);
-        }
-
         .icon-btn:disabled {
             opacity: 0.35;
             cursor: not-allowed;
@@ -795,9 +789,19 @@
             border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
         }
 
+        .secondary-btn.success.feedback {
+            animation: success-glow 1.2s ease-out, sweep 1s ease-out;
+            background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent-green) 60%, transparent) 50%, transparent 100%);
+            background-size: 200% 100%;
+        }
+
         .secondary-btn.error {
             color: var(--accent-red);
             border-color: color-mix(in srgb, var(--accent-red) 45%, transparent);
+        }
+
+        .secondary-btn.error.feedback {
+            animation: error-shake 0.4s ease-out;
         }
 
         .secondary-btn.is-denied,
@@ -1278,8 +1282,6 @@
                         aria-label="Recover plans">RECOVER</button>
                     <button id="btn-delete-plan" class="icon-btn delete" title="Delete active plan"
                         aria-label="Delete plan">DELETE</button>
-                    <button id="btn-merge-all-plans" class="icon-btn merge" title="Merge all plans into a single file"
-                        aria-label="Merge all plans">MERGE ALL</button>
                 </div>
             </div>
             <div class="dropdown-container">
@@ -1497,7 +1499,6 @@
         const mcpDot = document.getElementById('mcp-dot');
         const mcpText = document.getElementById('mcp-text');
         const copyPlanLinkBtn = document.getElementById('btn-copy-plan-link');
-        const mergeAllPlansBtn = document.getElementById('btn-merge-all-plans');
 
         const recoverPlansModal = document.getElementById('recover-plans-modal');
         const recoverPlanList = document.getElementById('recover-plan-list');
@@ -1526,9 +1527,6 @@
             const hasPlan = isPlanSelected();
             if (copyPlanLinkBtn) {
                 copyPlanLinkBtn.disabled = !hasPlan;
-            }
-            if (mergeAllPlansBtn) {
-                mergeAllPlansBtn.disabled = !currentRunSheets || currentRunSheets.length === 0;
             }
         }
 
@@ -1778,7 +1776,24 @@
         const btnCopyMcp = document.getElementById('btn-copy-mcp-config');
         if (btnCopyMcp) btnCopyMcp.addEventListener('click', () => vscode.postMessage({ type: 'copyMcpConfig' }));
         const btnGrid = document.getElementById('createAgentGrid');
-        if (btnGrid) btnGrid.addEventListener('click', () => vscode.postMessage({ type: 'createAgentGrid' }));
+        if (btnGrid) {
+            btnGrid.addEventListener('click', () => {
+                btnGrid.innerText = 'OPENING...';
+                btnGrid.classList.add('dispatching');
+                btnGrid.classList.remove('is-teal');
+                btnGrid.disabled = true;
+                vscode.postMessage({ type: 'createAgentGrid' });
+                if (btnGrid._gridResultTimeout) clearTimeout(btnGrid._gridResultTimeout);
+                btnGrid._gridResultTimeout = setTimeout(() => {
+                    // Safety reset if backend never responds
+                    btnGrid.innerText = 'OPEN AGENT TERMINALS';
+                    btnGrid.classList.remove('dispatching', 'success', 'error', 'feedback');
+                    btnGrid.classList.add('is-teal');
+                    btnGrid.disabled = false;
+                    btnGrid._gridResultTimeout = null;
+                }, 30000);
+            });
+        }
         const btnDeregister = document.getElementById('btn-deregister-all');
         if (btnDeregister) btnDeregister.addEventListener('click', () => vscode.postMessage({ type: 'deregisterAllTerminals' }));
         const btnKanban = document.getElementById('btn-open-kanban');
@@ -1901,12 +1916,6 @@
                 const sessionId = runSheetSelect ? runSheetSelect.value : null;
                 if (!sessionId) return;
                 vscode.postMessage({ type: 'deletePlan', sessionId });
-            });
-        }
-
-        if (mergeAllPlansBtn) {
-            mergeAllPlansBtn.addEventListener('click', () => {
-                vscode.postMessage({ type: 'mergeAllPlans' });
             });
         }
 
@@ -2164,6 +2173,30 @@
                     if (message.dispatchReadiness !== undefined) { lastDispatchReadiness = message.dispatchReadiness || {}; }
                     renderAgentList();
                     break;
+                case 'createAgentGridResult': {
+                    const gridBtn = document.getElementById('createAgentGrid');
+                    if (gridBtn) {
+                        if (gridBtn._gridResultTimeout) {
+                            clearTimeout(gridBtn._gridResultTimeout);
+                            gridBtn._gridResultTimeout = null;
+                        }
+                        gridBtn.classList.remove('dispatching');
+                        if (message.success) {
+                            gridBtn.classList.add('success', 'feedback');
+                            gridBtn.innerText = 'TERMINALS OPENED';
+                        } else {
+                            gridBtn.classList.add('error', 'feedback');
+                            gridBtn.innerText = 'FAILED';
+                        }
+                        setTimeout(() => {
+                            gridBtn.innerText = 'OPEN AGENT TERMINALS';
+                            gridBtn.classList.remove('success', 'error', 'feedback');
+                            gridBtn.classList.add('is-teal');
+                            gridBtn.disabled = false;
+                        }, 2000);
+                    }
+                    break;
+                }
                 case 'julesStatus':
                     lastJulesActivePlans = message.activePlans || [];
                     lastJulesSessions = message.sessions || [];

@@ -1,7 +1,7 @@
 {
   "sessionId": "sess_1774494294885",
   "planFile": ".switchboard/plans/feature_plan_20260326_140454_remove_merge_all_sidebar_button.md",
-  "topic": "Remove merge all sidebar button",
+  "topic": "Remove \"MERGE ALL\" Sidebar Button",
   "createdAt": "2026-03-26T03:04:54.883Z",
   "events": [
     {
@@ -24,6 +24,11 @@
     {
       "workflow": "sidebar-review",
       "timestamp": "2026-03-26T03:13:17.234Z",
+      "action": "start"
+    },
+    {
+      "workflow": "handoff",
+      "timestamp": "2026-03-26T05:09:56.247Z",
       "action": "start"
     }
   ]

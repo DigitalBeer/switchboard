@@ -391,13 +391,37 @@ export class KanbanProvider implements vscode.Disposable {
                 const dbRows = await db.getBoard(workspaceId);
                 console.log(`[KanbanProvider] _refreshBoardImpl: getBoard returned ${dbRows.length} active rows`);
 
+                // Self-heal stale 'Unknown' complexity by re-parsing plan files.
+                // Only runs for plans still at 'Unknown' in the DB — one-time cost per plan.
+                const complexityOverrides = new Map<string, 'Low' | 'High'>();
+                const unknownRows = dbRows.filter(r => (r.complexity || 'Unknown') === 'Unknown' && r.planFile);
+                if (unknownRows.length > 0) {
+                    const batchUpdates: Array<{ sessionId: string; topic: string; planFile: string; complexity: 'Low' | 'High' }> = [];
+                    for (const row of unknownRows) {
+                        const parsed = await this.getComplexityFromPlan(resolvedWorkspaceRoot, row.planFile);
+                        if (parsed === 'Low' || parsed === 'High') {
+                            complexityOverrides.set(row.sessionId, parsed);
+                            batchUpdates.push({
+                                sessionId: row.sessionId,
+                                topic: row.topic || '',
+                                planFile: row.planFile || '',
+                                complexity: parsed
+                            });
+                        }
+                    }
+                    if (batchUpdates.length > 0) {
+                        await db.updateMetadataBatch(batchUpdates);
+                        console.log(`[KanbanProvider] Self-healed complexity for ${batchUpdates.length} plans`);
+                    }
+                }
+
                 cards = dbRows.map(row => ({
                     sessionId: row.sessionId,
                     topic: row.topic || row.planFile || 'Untitled',
                     planFile: row.planFile || '',
                     column: this._normalizeLegacyKanbanColumn(row.kanbanColumn) || 'CREATED',
                     lastActivity: row.updatedAt || row.createdAt || '',
-                    complexity: row.complexity || 'Unknown',
+                    complexity: complexityOverrides.get(row.sessionId) || row.complexity || 'Unknown',
                     workspaceRoot: resolvedWorkspaceRoot
                 }));
 
@@ -487,6 +511,31 @@ export class KanbanProvider implements vscode.Disposable {
                 complexity: rec.complexity || 'Unknown',
                 workspaceRoot: resolvedWorkspaceRoot
             })));
+
+            // Self-heal stale 'Unknown' complexity (snapshot-based refresh path).
+            const complexityOverrides = new Map<string, 'Low' | 'High'>();
+            const unknownCards = cards.filter(c => c.complexity === 'Unknown' && c.planFile);
+            if (unknownCards.length > 0) {
+                const db = this._getKanbanDb(resolvedWorkspaceRoot);
+                const batchUpdates: Array<{ sessionId: string; topic: string; planFile: string; complexity: 'Low' | 'High' }> = [];
+                for (const card of unknownCards) {
+                    const parsed = await this.getComplexityFromPlan(resolvedWorkspaceRoot, card.planFile);
+                    if (parsed === 'Low' || parsed === 'High') {
+                        card.complexity = parsed;
+                        complexityOverrides.set(card.sessionId, parsed);
+                        batchUpdates.push({
+                            sessionId: card.sessionId,
+                            topic: card.topic || '',
+                            planFile: card.planFile || '',
+                            complexity: parsed
+                        });
+                    }
+                }
+                if (batchUpdates.length > 0) {
+                    await db.updateMetadataBatch(batchUpdates);
+                    console.log(`[KanbanProvider] Self-healed complexity for ${batchUpdates.length} plans (snapshot path)`);
+                }
+            }
 
             const agentNames = await this._getAgentNames(resolvedWorkspaceRoot);
             const visibleAgents = await this._getVisibleAgents(resolvedWorkspaceRoot);

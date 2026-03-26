@@ -1429,7 +1429,7 @@
             // For completed cards, show a Recover button instead of Copy Prompt
             let primaryActionBtn;
             if (isCompleted) {
-                primaryActionBtn = `<button class="card-btn recover" data-session="${card.sessionId}">Recover</button>`;
+                primaryActionBtn = `<button class="card-btn recover" data-session="${card.sessionId}" data-tooltip="Recover this plan">Recover</button>`;
             } else {
                 let copyLabel = 'Copy Prompt';
                 if (card.column === 'CREATED') {
@@ -1439,7 +1439,7 @@
                 } else if (card.column === 'LEAD CODED' || card.column === 'CODER CODED') {
                     copyLabel = 'Copy review prompt';
                 }
-                primaryActionBtn = `<button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">${copyLabel}</button>`;
+                primaryActionBtn = `<button class="card-btn copy" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" data-tooltip="Copy prompt and advance">${copyLabel}</button>`;
             }
 
             const pairProgramBtn = (card.column === 'PLAN REVIEWED' && complexity === 'High')
@@ -1447,7 +1447,7 @@
                 : '';
             const completeOrDoneBtn = isCompleted
                 ? `<span class="card-done-badge">✓ Done</span>`
-                : `<button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
+                : `<button class="card-btn icon-btn complete" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" data-tooltip="Complete and archive">
                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6"/></svg>
                    </button>`;
             return `
@@ -1460,7 +1460,7 @@
                             ${primaryActionBtn}
                         </div>
                         <div style="display: flex; gap: 4px;">
-                            <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}">
+                            <button class="card-btn icon-btn review" data-session="${card.sessionId}" data-workspace-root="${escapeAttr(card.workspaceRoot)}" data-tooltip="Review plan">
                                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 1.5l3 3L5 14H2v-3L11.5 1.5z"/></svg>
                             </button>
                             ${completeOrDoneBtn}
@@ -1512,15 +1512,36 @@
         let draggedSessionId = null;
 
         function handleDragStart(e) {
-            draggedSessionId = e.target.dataset.session;
+            const draggedId = e.target.dataset.session;
+            draggedSessionId = draggedId;
             e.target.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', draggedSessionId);
+
+            // Check if the dragged card is part of a multi-selection
+            let idsToTransfer = [draggedId];
+            if (selectedCards.has(draggedId) && selectedCards.size > 1) {
+                const card = currentCards.find(c => c.sessionId === draggedId);
+                if (card) {
+                    const selectedInColumn = getSelectedInColumn(card.column);
+                    if (selectedInColumn.length > 1) {
+                        idsToTransfer = selectedInColumn;
+                    }
+                }
+            }
+
+            // Add dragging class to all cards being transferred
+            idsToTransfer.forEach(id => {
+                const el = document.querySelector(`.kanban-card[data-session="${id}"]`);
+                if (el) el.classList.add('dragging');
+            });
+
+            e.dataTransfer.setData('application/json', JSON.stringify(idsToTransfer));
+            e.dataTransfer.setData('text/plain', draggedId);
             e.dataTransfer.setData('application/switchboard-workspace-root', e.target.dataset.workspaceRoot || getActiveWorkspaceRoot());
         }
 
         function handleDragEnd(e) {
-            e.target.classList.remove('dragging');
+            document.querySelectorAll('.kanban-card.dragging').forEach(el => el.classList.remove('dragging'));
             document.querySelectorAll('.column-body').forEach(el => el.classList.remove('drag-over'));
             draggedSessionId = null;
         }
@@ -1687,6 +1708,7 @@
 
             if (validIds.length > 0) {
                 document.querySelectorAll('.kanban-card.selected').forEach(el => el.classList.remove('selected'));
+                selectedCards.clear();
                 setTimeout(() => {
                     if (cliTriggersEnabled && forwardIds.length > 0) {
                         if (dropMode === 'prompt') {

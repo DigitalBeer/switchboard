@@ -87,6 +87,10 @@
       {
         "command": "switchboard.reviewPlan",
         "title": "Switchboard: Review Plan"
+      },
+      {
+        "command": "switchboard.resetKanbanDb",
+        "title": "Switchboard: Reset Kanban Database"
       }
     ],
     "configuration": {
@@ -215,6 +219,12 @@
           "minimum": 1,
           "maximum": 500,
           "description": "Maximum number of cards shown in the Kanban Completed column (1–500). Higher values may slow rendering.",
+          "scope": "resource"
+        },
+        "switchboard.kanban.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom file path for the Kanban database (e.g., ~/Google Drive/Switchboard/kanban.db). If empty, uses the default .switchboard/kanban.db in the workspace root. Use this to store the DB in a cloud-synced folder for multi-machine handover.",
           "scope": "resource"
         }
       }
