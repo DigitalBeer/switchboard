@@ -218,3 +218,59 @@ The critique correctly identifies the root cause: the deduplication check in `_h
 ## Recommendation
 
 **Send to Coder** — The changes are surgical (one new DB method, two guard insertions at caller sites), the architecture is well-understood, and the fallback behavior ensures no regressions. No schema migrations needed. The `hasPlan()` and new `getPlanByPlanFile()` methods are simple SQL queries.
+
+## Reviewer Pass
+
+**Date:** 2025-07-17
+**Reviewer:** Copilot (Principal Engineer Review)
+
+### Stage 1 — Grumpy Principal Engineer Findings
+
+| # | Severity | Location | Finding |
+|---|----------|----------|---------|
+| 1 | ✅ PASS | `KanbanDatabase.ts:376-385` | `getPlanByPlanFile()` implemented exactly per spec: `ensureReady()` guard, `_normalizePath()` for backslash normalization, workspace-scoped query with `LIMIT 1`, returns `null` on DB not ready. Uses the shared `_normalizePath()` helper (line 733) which is even cleaner than the inline `.replace()` the plan suggested. No complaints. |
+| 2 | ✅ PASS | `TaskViewerProvider.ts:5346-5357` | `_handlePlanCreation()` DB guard inserted in exactly the right location — after the file-based `findRunSheetByPlanFile()` check (line 5338) and before session file creation (line 5411). Falls through cleanly when `_getKanbanDb()` returns undefined. Calls `_syncFilesAndRefreshRunSheets()` on hit to keep the UI current. Workspace ID resolution uses the `||` fallback pattern. Matches the plan. |
+| 3 | ✅ PASS | `TaskViewerProvider.ts:5273-5284` | `_mirrorBrainPlan()` DB guard placed after the mirror `.md` write (line 5268) and before the runsheet JSON write (line 5310). Uses `hasPlan(runSheetId)` as specified. Mirror `.md` is still written — brain content stays up-to-date even when runsheet creation is skipped. Exactly per plan. |
+| 4 | ✅ PASS | `TaskViewerProvider.ts:4274-4317` | `_restoreRunSheet()` confirmed EXEMPT — no DB guard added. This is correct; restore is an intentional user action. |
+| 5 | ✅ PASS | `SessionActionLog.ts` | No changes made. Guards are correctly placed at caller level. |
+| 6 | ✅ PASS | Fallthrough behavior | Both guards return `null`/`undefined` when DB is not ready, falling through to existing file-based logic. No regression risk during startup race. |
+
+**Grumpy verdict:** I came in looking for bugs and found none. The implementation is a faithful, line-by-line transcription of the plan. The one micro-improvement (using `_normalizePath()` instead of inline `.replace()`) is strictly better. The guard placement in `_mirrorBrainPlan()` correctly preserves the mirror `.md` write while skipping only the `.json` runsheet — which is the whole point. No new failure modes introduced.
+
+### Stage 2 — Balanced Synthesis
+
+All six plan requirements are satisfied:
+
+1. **`getPlanByPlanFile` method** — Implemented, workspace-scoped, normalizes paths. ✅
+2. **`_handlePlanCreation` DB guard** — Correctly positioned after file-based check, before file creation. ✅
+3. **`_mirrorBrainPlan` DB guard** — Correctly positioned after `.md` mirror write, before `.json` runsheet write. ✅
+4. **`_restoreRunSheet` exempt** — Confirmed no guard added. ✅
+5. **SessionActionLog untouched** — Confirmed no changes. ✅
+6. **Fallthrough on DB not ready** — Both guards return null/undefined and fall through. ✅
+
+**No CRITICAL or MAJOR findings.** No code fixes required.
+
+### Stage 3 — Code Fixes
+
+None required. Implementation matches plan with no defects found.
+
+### Stage 4 — Verification
+
+```
+npm run compile → webpack compiled successfully (exit code 0)
+  - extension.js: compiled successfully in 2557 ms
+  - mcp-server.js: compiled successfully in 2548 ms
+```
+
+No TypeScript errors. No warnings.
+
+### Stage 5 — Summary
+
+| Aspect | Status |
+|--------|--------|
+| Files changed | `KanbanDatabase.ts`, `TaskViewerProvider.ts` |
+| Lines added | ~25 (1 method + 2 guard blocks + comments) |
+| Compilation | ✅ Clean |
+| Plan compliance | ✅ 6/6 requirements met |
+| Regressions | None identified |
+| Remaining risks | Startup race (mitigated by fallthrough); no unit tests written yet (per Verification Plan section) |

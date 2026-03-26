@@ -1008,7 +1008,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const db = KanbanDatabase.forWorkspace(workspaceRoot);
         const dbFilePath = db.dbPath;
 
-        KanbanDatabase.invalidateWorkspace(workspaceRoot);
+        await KanbanDatabase.invalidateWorkspace(workspaceRoot);
 
         try {
             if (fs.existsSync(dbFilePath)) {
@@ -1026,11 +1026,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Invalidate DB cache when kanban.dbPath setting changes
     context.subscriptions.push(
-        vscode.workspace.onDidChangeConfiguration(e => {
+        vscode.workspace.onDidChangeConfiguration(async e => {
             if (e.affectsConfiguration('switchboard.kanban.dbPath')) {
                 const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
                 if (workspaceRoot) {
-                    KanbanDatabase.invalidateWorkspace(workspaceRoot);
+                    await KanbanDatabase.invalidateWorkspace(workspaceRoot);
                     vscode.commands.executeCommand('switchboard.refreshUI');
                 }
             }

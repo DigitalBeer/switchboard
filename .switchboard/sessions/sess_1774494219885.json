@@ -37,6 +37,12 @@
       "timestamp": "2026-03-26T05:53:31.792Z",
       "action": "stop",
       "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-26T09:54:17.669Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
     }
   ]
 }

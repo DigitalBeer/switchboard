@@ -14,6 +14,7 @@ This folder contains runtime state for the Switchboard extension. It is created 
 | `handoff/` | Artifacts staged for delegation to other agents |
 | `sessions/` | Session run sheets and activity logs |
 | `reviews/` | Review workflow outputs |
+| `kanban.db` | SQLite database tracking all active and completed plans |
 | `state.json` | Shared agent state (managed by MCP server) |
 | `server_info.json` | HTTP/SSE discovery info (port, token endpoint) |
 
@@ -21,3 +22,7 @@ This folder contains runtime state for the Switchboard extension. It is created 
 
 - `CLIENT_CONFIG.md` — transport options and MCP connection guide
 - `SWITCHBOARD_PROTOCOL.md` — full protocol specification and message schema
+
+## Cloud Sync Note
+
+The `kanban.db` file can be stored in a cloud-synced folder (via `switchboard.kanban.dbPath`). If multiple machines modify the database simultaneously, your cloud provider (e.g., Google Drive, Dropbox) may create **conflict copies** (e.g., `kanban (1).db`). Switchboard will warn you if it detects these files, but it will not automatically merge them. You should manually resolve conflicts by ensuring only one `kanban.db` exists in the target directory.

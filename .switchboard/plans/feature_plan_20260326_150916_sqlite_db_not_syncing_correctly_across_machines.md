@@ -260,3 +260,45 @@ context.subscriptions.push(
 ## Open Questions
 - Should the reset command also offer to delete session files (`.switchboard/sessions/`), or just the DB? For now, just the DB is safest.
 - Should we show a notification when the extension detects the DB file was modified externally (e.g., by Google Drive sync)? This could be a future enhancement.
+
+---
+
+## Post-Implementation Review (2026-03-27)
+
+### Implementation Status: ✅ COMPLETE — All 4 changes implemented
+
+| Change | File | Status |
+|--------|------|--------|
+| 1. `switchboard.kanban.dbPath` setting + `switchboard.resetKanbanDb` command | `package.json` | ✅ Implemented (lines 92–94, 224–229) |
+| 2. Custom DB path in KanbanDatabase constructor | `src/services/KanbanDatabase.ts` | ✅ Implemented (lines 151–162) |
+| 3. `invalidateWorkspace()` static method | `src/services/KanbanDatabase.ts` | ✅ Implemented (lines 130–146) |
+| 4. Config change listener + reset command | `src/extension.ts` | ✅ Implemented (lines 994–1038) |
+
+### Review Findings
+
+| # | Finding | Severity | Disposition |
+|---|---------|----------|-------------|
+| 1 | `_writeTail` race in `invalidateWorkspace` — in-flight persist silently dropped when `_db` nulled before write completes | **CRITICAL** | **FIXED** |
+| 2 | `require('vscode')` in KanbanDatabase constructor breaks unit test isolation | MAJOR | Deferred — functional in extension host; refactor to caller-injected config is a larger change |
+| 3 | `dbPath` getter on zombie instances after invalidation | MAJOR | Accepted — reset command correctly extracts path before invalidating |
+| 4 | No automated test coverage for new features | NIT | Deferred — requires extension host mocking infrastructure |
+
+### Fixes Applied
+
+**Fix 1 (CRITICAL): Drain `_writeTail` before invalidation**
+- `src/services/KanbanDatabase.ts` — `invalidateWorkspace()` changed from `void` to `async Promise<void>`. Now awaits `existing._writeTail` before setting `_db = null`, preventing silent data loss from in-flight persist operations.
+- `src/extension.ts` line 1011 — Added `await` to `invalidateWorkspace()` call in reset command handler.
+- `src/extension.ts` line 1029 — Config change listener callback made `async`, added `await` to `invalidateWorkspace()` call.
+
+### Files Changed During Review
+- `src/services/KanbanDatabase.ts` (lines 130–146: invalidateWorkspace signature + drain logic)
+- `src/extension.ts` (line 1011: await added; lines 1029–1033: async callback + await added)
+
+### Validation Results
+- `npx tsc --noEmit` — ✅ Pass (exit 0)
+- `npm run compile` (webpack) — ✅ Pass (both extension + MCP server bundles compiled successfully)
+
+### Remaining Risks
+- **`require('vscode')` in constructor**: If KanbanDatabase is ever unit-tested outside the extension host, the constructor will throw. Low risk — no such tests exist today.
+- **Cloud sync conflict copies**: If two machines have VS Code open simultaneously with the same custom DB path, cloud services may create conflict copies (e.g., `kanban (1).db`). Documented as by-design for non-simultaneous handover.
+- **No file-modification-time check**: The plan's Balanced Response suggested checking if the DB file on disk is newer than the loaded copy. Not implemented. Future enhancement for detecting external (cloud-sync) modifications between extension activations.

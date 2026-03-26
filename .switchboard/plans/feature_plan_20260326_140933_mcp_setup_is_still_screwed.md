@@ -245,3 +245,46 @@ The grumpy critique raises valid architectural concerns. Here's the pragmatic as
 ## Recommendation
 
 Send to Coder — the changes are well-scoped to five specific locations in `extension.ts` plus one new template file. The branching logic in `writeAllIdeMcpConfigs()` requires careful implementation but is straightforward with the schema details documented above.
+
+## Reviewer Pass
+
+**Reviewer:** Copilot CLI (Principal Engineer review)
+**Date:** 2026-03-26
+**Commit reviewed:** `0ce7f36` ("code fixes") — implements all plan requirements on top of `31c3937`
+
+### Findings
+
+| ID | Severity | Description | Verdict |
+|----|----------|-------------|---------|
+| NIT-1 | NIT | `getConfigFilesForIDE('github')` template entry for `mcp.json.template` is dead code during normal setup flow — `performSetup()` always writes `.vscode/mcp.json` first, so the template pipeline skips it. Only active in "Overwrite All" path (which loses non-Switchboard entries, same as all other IDEs). | **Dismissed** — registry consistency across IDEs is the right trade-off. |
+| NIT-2 | NIT | `type: 'stdio' as const` in `writeAllIdeMcpConfigs()` is unnecessary for runtime but standard TS idiom. | **Dismissed** — zero cost, aids type narrowing. |
+
+### Plan Requirement Coverage (7/7 ✅)
+
+1. ✅ `github` entry in `getMcpConfigFilesForIDE()` → `.vscode/mcp.json` (line 3062)
+2. ✅ MCP config entry added to `getConfigFilesForIDE('github')` as 3rd entry (line 3032)
+3. ✅ `'github'` in `ideKeys` + `servers`/`type: 'stdio'` schema branching in `writeAllIdeMcpConfigs()` (lines 3087, 3103–3143)
+4. ✅ `SWITCHBOARD_WORKSPACE_ROOT` env var added to `performSetup()` entry (lines 2701–2703)
+5. ✅ `templates/github/mcp.json.template` created — correct `servers` schema, `type: 'stdio'`, `${workspaceFolder}`, `{{WORKSPACE_ROOT}}`
+6. ✅ Merge logic preserves non-Switchboard servers via spread merge (lines 3138–3144)
+7. ✅ `${workspaceFolder}` used for args path in both `performSetup()` and `writeAllIdeMcpConfigs()` GitHub branch
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/extension.ts` | 4 modifications: `getMcpConfigFilesForIDE`, `getConfigFilesForIDE`, `writeAllIdeMcpConfigs`, `performSetup` |
+| `templates/github/mcp.json.template` | Created — 12 lines, `servers` schema with `type: 'stdio'` |
+
+### Verification
+
+- **`npm run compile`**: ✅ Both webpack bundles compiled successfully (extension + mcp-server), zero errors.
+- **No CRITICAL or MAJOR issues found.** No code fixes applied.
+
+### Remaining Risks
+
+1. **"Overwrite All" destroys non-Switchboard entries** — pre-existing behavior across all IDEs, not a regression.
+2. **`performSetup()` always writes `.vscode/mcp.json` regardless of IDE selection** — pre-existing behavior, not introduced by this change.
+3. **Manual testing needed** — Copilot MCP client connectivity should be verified end-to-end per the Verification Plan above.
+
+### Status: **PASSED** — all plan requirements implemented, compilation clean, no fixes needed.

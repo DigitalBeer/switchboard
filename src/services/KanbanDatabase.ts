@@ -13,6 +13,7 @@ export interface KanbanPlanRecord {
     kanbanColumn: string;
     status: KanbanPlanStatus;
     complexity: 'Unknown' | 'Low' | 'High';
+    tags: string;
     workspaceId: string;
     createdAt: string;
     updatedAt: string;
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS plans (
     kanban_column TEXT NOT NULL DEFAULT 'CREATED',
     status        TEXT NOT NULL DEFAULT 'active',
     complexity    TEXT DEFAULT 'Unknown',
+    tags          TEXT DEFAULT '',
     workspace_id  TEXT NOT NULL,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,
@@ -76,17 +78,22 @@ const MIGRATION_V2_SQL = [
 const MIGRATION_V2_CONFIG_TABLE = `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`;
 const MIGRATION_V2_STATUS_INDEX = `CREATE INDEX IF NOT EXISTS idx_plans_status ON plans(status)`;
 
+const MIGRATION_V4_SQL = [
+    `ALTER TABLE plans ADD COLUMN tags TEXT DEFAULT ''`,
+];
+
 const UPSERT_PLAN_SQL = `
 INSERT INTO plans (
-    plan_id, session_id, topic, plan_file, kanban_column, status, complexity,
+    plan_id, session_id, topic, plan_file, kanban_column, status, complexity, tags,
     workspace_id, created_at, updated_at, last_action, source_type,
     brain_source_path, mirror_path
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(plan_id) DO UPDATE SET
     session_id = excluded.session_id,
     topic = excluded.topic,
     plan_file = excluded.plan_file,
     complexity = excluded.complexity,
+    tags = excluded.tags,
     workspace_id = excluded.workspace_id,
     updated_at = excluded.updated_at,
     last_action = excluded.last_action,
@@ -97,7 +104,7 @@ ON CONFLICT(plan_id) DO UPDATE SET
 
 const MIGRATION_VERSION_KEY = 'kanban_db_migration_version';
 
-const PLAN_COLUMNS = `plan_id, session_id, topic, plan_file, kanban_column, status, complexity,
+const PLAN_COLUMNS = `plan_id, session_id, topic, plan_file, kanban_column, status, complexity, tags,
                     workspace_id, created_at, updated_at, last_action, source_type,
                     brain_source_path, mirror_path`;
 
@@ -116,13 +123,41 @@ export class KanbanDatabase {
     private static _instances = new Map<string, KanbanDatabase>();
     private static _sqlJsPromise: Promise<SqlJsStatic> | null = null;
 
-    public static forWorkspace(workspaceRoot: string): KanbanDatabase {
+    public static forWorkspace(workspaceRoot: string, customDbPath?: string): KanbanDatabase {
         const stable = path.resolve(workspaceRoot);
         const existing = KanbanDatabase._instances.get(stable);
         if (existing) {
             return existing;
         }
-        const created = new KanbanDatabase(stable);
+
+        // Resolve the DB path — either from explicit parameter, VS Code setting, or default
+        let resolvedDbPath: string;
+        if (customDbPath !== undefined && customDbPath.trim() !== '') {
+            const trimmed = customDbPath.trim();
+            const expanded = trimmed.startsWith('~')
+                ? path.join(require('os').homedir(), trimmed.slice(1))
+                : trimmed;
+            resolvedDbPath = path.isAbsolute(expanded) ? expanded : path.join(stable, expanded);
+        } else {
+            // Try reading from VS Code settings (safe to fail outside extension host)
+            let settingValue = '';
+            try {
+                const vscode = require('vscode');
+                settingValue = String(vscode.workspace.getConfiguration('switchboard').get('kanban.dbPath') || '').trim();
+            } catch {
+                // Outside extension host (e.g. unit tests) — use default
+            }
+            if (settingValue) {
+                const expanded = settingValue.startsWith('~')
+                    ? path.join(require('os').homedir(), settingValue.slice(1))
+                    : settingValue;
+                resolvedDbPath = path.isAbsolute(expanded) ? expanded : path.join(stable, expanded);
+            } else {
+                resolvedDbPath = path.join(stable, '.switchboard', 'kanban.db');
+            }
+        }
+
+        const created = new KanbanDatabase(stable, resolvedDbPath);
         KanbanDatabase._instances.set(stable, created);
         return created;
     }
@@ -130,11 +165,14 @@ export class KanbanDatabase {
     /**
      * Invalidate the cached DB instance for a workspace, forcing re-creation
      * on the next forWorkspace() call. Used when kanban.dbPath setting changes.
+     * Drains any in-flight writes before tearing down to prevent silent data loss.
      */
-    public static invalidateWorkspace(workspaceRoot: string): void {
+    public static async invalidateWorkspace(workspaceRoot: string): Promise<void> {
         const stable = path.resolve(workspaceRoot);
         const existing = KanbanDatabase._instances.get(stable);
         if (existing) {
+            // Drain in-flight writes before nulling _db to prevent silent data loss
+            try { await existing._writeTail; } catch { /* swallow — chain keeps alive internally */ }
             existing._db = null;
             existing._initPromise = null;
             KanbanDatabase._instances.delete(stable);
@@ -147,18 +185,10 @@ export class KanbanDatabase {
     private _initPromise: Promise<boolean> | null = null;
     private _lastInitError: string | null = null;
     private _writeTail: Promise<void> = Promise.resolve();
+    private static _lastLoadedMtimes = new Map<string, number>();
 
-    private constructor(private readonly _workspaceRoot: string) {
-        const vscode = require('vscode');
-        const customPath = String(vscode.workspace.getConfiguration('switchboard').get('kanban.dbPath') || '').trim();
-        if (customPath) {
-            const resolved = customPath.startsWith('~')
-                ? path.join(require('os').homedir(), customPath.slice(1))
-                : customPath;
-            this._dbPath = path.isAbsolute(resolved) ? resolved : path.join(this._workspaceRoot, resolved);
-        } else {
-            this._dbPath = path.join(this._workspaceRoot, '.switchboard', 'kanban.db');
-        }
+    private constructor(private readonly _workspaceRoot: string, resolvedDbPath: string) {
+        this._dbPath = resolvedDbPath;
     }
 
     public get lastInitError(): string | null {
@@ -216,6 +246,7 @@ export class KanbanDatabase {
                     record.kanbanColumn,
                     record.status,
                     record.complexity,
+                    record.tags || '',
                     record.workspaceId,
                     record.createdAt,
                     record.updatedAt,
@@ -293,6 +324,13 @@ export class KanbanDatabase {
         return this._persistedUpdate(
             'UPDATE plans SET complexity = ?, updated_at = ? WHERE session_id = ?',
             [complexity, new Date().toISOString(), sessionId]
+        );
+    }
+
+    public async updateTags(sessionId: string, tags: string): Promise<boolean> {
+        return this._persistedUpdate(
+            'UPDATE plans SET tags = ?, updated_at = ? WHERE session_id = ?',
+            [tags, new Date().toISOString(), sessionId]
         );
     }
 
@@ -399,12 +437,13 @@ export class KanbanDatabase {
         return ids;
     }
 
-    /** Batch-update topic, planFile, and (optionally) complexity for multiple plans in one transaction + persist. */
+    /** Batch-update topic, planFile, and (optionally) complexity and tags for multiple plans in one transaction + persist. */
     public async updateMetadataBatch(updates: Array<{
         sessionId: string;
         topic: string;
         planFile: string;
         complexity?: 'Unknown' | 'Low' | 'High';
+        tags?: string;
     }>): Promise<boolean> {
         if (!(await this.ensureReady()) || !this._db) return false;
         if (updates.length === 0) return true;
@@ -413,17 +452,23 @@ export class KanbanDatabase {
         this._db.run('BEGIN');
         try {
             for (const u of updates) {
+                const setClauses = ['topic = ?', 'plan_file = ?', 'updated_at = ?'];
+                const params: unknown[] = [u.topic, this._normalizePath(u.planFile), now];
+
                 if (u.complexity === 'Low' || u.complexity === 'High') {
-                    this._db.run(
-                        'UPDATE plans SET topic = ?, plan_file = ?, complexity = ?, updated_at = ? WHERE session_id = ?',
-                        [u.topic, this._normalizePath(u.planFile), u.complexity, now, u.sessionId]
-                    );
-                } else {
-                    this._db.run(
-                        'UPDATE plans SET topic = ?, plan_file = ?, updated_at = ? WHERE session_id = ?',
-                        [u.topic, this._normalizePath(u.planFile), now, u.sessionId]
-                    );
+                    setClauses.push('complexity = ?');
+                    params.push(u.complexity);
                 }
+                if (typeof u.tags === 'string') {
+                    setClauses.push('tags = ?');
+                    params.push(u.tags);
+                }
+
+                params.push(u.sessionId);
+                this._db.run(
+                    `UPDATE plans SET ${setClauses.join(', ')} WHERE session_id = ?`,
+                    params
+                );
             }
             this._db.run('COMMIT');
         } catch (error) {
@@ -590,10 +635,28 @@ export class KanbanDatabase {
             const SQL = await KanbanDatabase._loadSqlJs();
 
             if (fs.existsSync(this._dbPath)) {
+                const stats = await fs.promises.stat(this._dbPath);
+                const fileMtime = stats.mtimeMs;
+
+                const previousMtime = KanbanDatabase._lastLoadedMtimes.get(this._dbPath) || 0;
+                if (previousMtime > 0 && fileMtime > previousMtime) {
+                    console.warn(`[KanbanDatabase] DB file modified externally (cloud sync?). Reloading from ${this._dbPath}`);
+                    try {
+                        const vscode = require('vscode');
+                        vscode.window.showInformationMessage(
+                            'Kanban database was updated by another machine. Reloading…'
+                        );
+                    } catch {
+                        // Outside extension host — skip notification
+                    }
+                }
+
+                KanbanDatabase._lastLoadedMtimes.set(this._dbPath, fileMtime);
                 const existing = await fs.promises.readFile(this._dbPath);
                 this._db = new SQL.Database(new Uint8Array(existing));
                 console.log(`[KanbanDatabase] Loaded existing DB from ${this._dbPath} (${existing.length} bytes)`);
             } else {
+                KanbanDatabase._lastLoadedMtimes.delete(this._dbPath);
                 this._db = new SQL.Database();
                 console.log(`[KanbanDatabase] Created new empty DB at ${this._dbPath}`);
             }
@@ -608,6 +671,9 @@ export class KanbanDatabase {
 
             // Persist migration changes (new tables/columns) to disk
             await this._persist();
+
+            // Warn about conflict copies
+            this._warnConflictCopies();
 
             // Verify config table exists and has workspace_id
             try {
@@ -637,6 +703,28 @@ export class KanbanDatabase {
             this._lastInitError = error instanceof Error ? error.message : String(error);
             console.error('[KanbanDatabase] Initialization failed:', error);
             return false;
+        }
+    }
+
+    private _warnConflictCopies(): void {
+        try {
+            const dir = path.dirname(this._dbPath);
+            const baseName = path.basename(this._dbPath, '.db'); // e.g. 'kanban'
+            const siblings = fs.readdirSync(dir).filter(
+                f => f !== path.basename(this._dbPath) && f.startsWith(baseName) && f.endsWith('.db')
+            );
+            if (siblings.length > 0) {
+                const msg = `[KanbanDatabase] Possible cloud sync conflict copies detected: ${siblings.join(', ')}`;
+                console.warn(msg);
+                try {
+                    const vscode = require('vscode');
+                    vscode.window.showWarningMessage(
+                        `Kanban DB conflict copies found (${siblings.length}). Check ${dir} and remove stale files.`
+                    );
+                } catch { /* outside extension host */ }
+            }
+        } catch {
+            // Directory read failed — non-critical, swallow
         }
     }
 
@@ -688,6 +776,11 @@ export class KanbanDatabase {
             }
         } catch (e) {
             console.error('[KanbanDatabase] V3 migration workspace consolidation failed:', e);
+        }
+
+        // V4: add tags column
+        for (const sql of MIGRATION_V4_SQL) {
+            try { this._db.exec(sql); } catch { /* column already exists */ }
         }
     }
 
@@ -745,6 +838,7 @@ export class KanbanDatabase {
                     kanbanColumn: String(row.kanban_column || "CREATED"),
                     status: String(row.status || "active") as KanbanPlanStatus,
                     complexity: String(row.complexity || "Unknown") as "Unknown" | "Low" | "High",
+                    tags: String(row.tags || ""),
                     workspaceId: String(row.workspace_id || ""),
                     createdAt: String(row.created_at || ""),
                     updatedAt: String(row.updated_at || ""),

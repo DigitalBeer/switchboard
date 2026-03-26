@@ -510,7 +510,7 @@ async function getSqlJs(workspaceRoot) {
     return sqlJsInitPromise;
 }
 
-async function readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumnId = null, columnDefinitions = BUILTIN_KANBAN_COLUMN_DEFINITIONS) {
+async function readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumnId = null, columnDefinitions = BUILTIN_KANBAN_COLUMN_DEFINITIONS, complexityFilter = null, tagFilter = null) {
     const dbPath = path.join(workspaceRoot, '.switchboard', 'kanban.db');
     if (!fs.existsSync(dbPath)) return null;
 
@@ -530,8 +530,16 @@ async function readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumn
                 params.push(requestedColumnId);
             }
         }
+        if (complexityFilter) {
+            whereClauses.push('LOWER(complexity) = ?');
+            params.push(complexityFilter.toLowerCase());
+        }
+        if (tagFilter) {
+            whereClauses.push('tags LIKE ?');
+            params.push(`%,${tagFilter.toLowerCase()},%`);
+        }
         const stmt = db.prepare(
-            `SELECT topic, session_id, created_at, kanban_column
+            `SELECT topic, session_id, created_at, kanban_column, complexity, tags
              FROM plans
              WHERE ${whereClauses.join(' AND ')}
              ORDER BY updated_at DESC`,
@@ -545,7 +553,8 @@ async function readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumn
                 topic: row.topic || 'Untitled',
                 sessionId: row.session_id || '',
                 createdAt: row.created_at || '',
-                complexity: 'unknown'
+                complexity: row.complexity || 'Unknown',
+                tags: row.tags || ''
             });
         }
         stmt.free();
@@ -2219,9 +2228,11 @@ function registerTools(server) {
     server.tool(
         "get_kanban_state",
         {
-            column: z.string().optional().describe("Optional kanban column to return. Supports internal IDs like 'CREATED' and UI labels like 'New'.")
+            column: z.string().optional().describe("Optional kanban column to return. Supports internal IDs like 'CREATED' and UI labels like 'New'."),
+            complexity: z.string().optional().describe("Filter by complexity: 'Low' or 'High'."),
+            tag: z.string().optional().describe("Filter by a specific tag, e.g., 'backend' or 'authentication'.")
         },
-        async ({ column } = {}) => {
+        async ({ column, complexity, tag } = {}) => {
             const workspaceRoot = getWorkspaceRoot();
             const sbDir = path.join(workspaceRoot, '.switchboard');
             const dbPath = path.join(sbDir, 'kanban.db');
@@ -2271,7 +2282,7 @@ function registerTools(server) {
                 return buildKanbanStateResponse(createEmptyKanbanColumnBuckets(columnDefinitions), column, columnDefinitions);
             }
 
-            const dbColumns = await readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumnId, columnDefinitions);
+            const dbColumns = await readKanbanStateFromDb(workspaceRoot, workspaceId, requestedColumnId, columnDefinitions, complexity || null, tag || null);
             if (dbColumns) {
                 return buildKanbanStateResponse(dbColumns, requestedColumnId, columnDefinitions);
             }

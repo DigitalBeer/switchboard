@@ -271,3 +271,38 @@ private async _handleCopyPlanLink(sessionId: string, column?: string, workspaceR
 
 ## Recommendation
 **Send to Coder.** This is a focused bug fix with clear scope: two methods in one file, using existing APIs (`_getKanbanDb`, `getPlanBySessionId`). The changes are mechanical — replacing one data source with another while preserving the same interface and adding a fallback. No architectural decisions, no new APIs, no schema changes. A competent coder with the implementation spec above can execute this in a single session.
+
+## Reviewer Pass
+**Date:** 2026-03-26
+
+### Grumpy Findings
+
+| # | Severity | Finding |
+|---|----------|---------|
+| 1 | **NIT** | **Redundant DB lookup.** `_resolvePlanContextForSession` calls `db.getPlanBySessionId(sessionId)` (line 5448), then `_handleCopyPlanLink` calls it again (line 6062) for `kanbanColumn`. Two round-trips for the same row. |
+| 2 | **NIT** | **Two filesystem fallback sites.** `_resolvePlanContextForSession` has its own fallback (line 5459), and `_handleCopyPlanLink` has a separate inline fallback for kanban column (line 6068). Future cleanup requires touching both. |
+
+No CRITICAL or MAJOR findings. All 6 plan requirements verified as satisfied:
+1. ✅ DB-first lookup via `getPlanBySessionId` (line 5448)
+2. ✅ `_handleCopyPlanLink` delegates to `_resolvePlanContextForSession` (line 6055)
+3. ✅ Kanban column sourced from DB `record.kanbanColumn` (line 6063)
+4. ✅ `_isPathWithinRoot()` check preserved (line 5483)
+5. ✅ `// TECH-DEBT:` comments on both filesystem fallbacks (lines 5459, 6068)
+6. ✅ Clear error: `'No plan file associated with this session.'` (line 5479)
+
+### Balanced Synthesis
+
+| Finding | Disposition | Rationale |
+|---------|-------------|-----------|
+| NIT-1: Redundant DB lookup | **Dismiss** | SQLite read is sub-millisecond on user click. Expanding `_resolvePlanContextForSession` to return the full DB record would couple the shared method to copy-link's specific needs. |
+| NIT-2: Two fallback sites | **Dismiss** | Both are marked `// TECH-DEBT:`. When the companion "stop session files" plan lands, `grep TECH-DEBT` will find both for removal. |
+
+### Files Changed
+None. Implementation matches plan specification exactly — no code fixes required.
+
+### Verification Results
+- `npm run compile`: ✅ Passed (webpack compiled successfully, exit code 0)
+
+### Remaining Risks
+- **`_resolveWorkspaceRootForSession`** still reads session files (as noted in the plan's adversarial review). Out of scope — `workspaceRoot` is always provided in the kanban card click flow — but worth tracking for the session-file elimination effort.
+- **No automated test coverage** for these methods. Manual verification per the plan's test matrix is the mitigation.

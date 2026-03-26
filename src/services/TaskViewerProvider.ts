@@ -832,6 +832,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             kanbanColumn: 'CREATED',
             status: sheet.completed ? 'completed' : 'active',
             complexity,
+            tags: '',
             workspaceId,
             createdAt,
             updatedAt,
@@ -874,7 +875,8 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const bootstrapped = await KanbanMigration.bootstrapIfNeeded(db, workspaceId, records);
         if (!bootstrapped) return null;
         const synced = await KanbanMigration.syncPlansMetadata(db, workspaceId, records,
-            (planFile) => this._kanbanProvider ? this._kanbanProvider.getComplexityFromPlan(workspaceRoot, planFile) : Promise.resolve('Unknown')
+            (planFile) => this._kanbanProvider ? this._kanbanProvider.getComplexityFromPlan(workspaceRoot, planFile) : Promise.resolve('Unknown'),
+            (planFile) => this._kanbanProvider ? this._kanbanProvider.getTagsFromPlan(workspaceRoot, planFile) : Promise.resolve('')
         );
         if (!synced) return null;
         return workspaceId;
@@ -3940,6 +3942,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 kanbanColumn: 'CREATED',
                 status: status as KanbanPlanRecord['status'],
                 complexity: 'Unknown',
+                tags: '',
                 workspaceId: entry.ownerWorkspaceId,
                 createdAt: entry.createdAt || new Date().toISOString(),
                 updatedAt: entry.updatedAt || new Date().toISOString(),
@@ -3982,6 +3985,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 kanbanColumn: existing?.kanbanColumn || 'CREATED',
                 status: (entry.status === 'orphan' ? 'archived' : entry.status) as KanbanPlanRecord['status'],
                 complexity: existing?.complexity || 'Unknown',
+                tags: existing?.tags || '',
                 workspaceId: entry.ownerWorkspaceId,
                 createdAt: entry.createdAt || new Date().toISOString(),
                 updatedAt: entry.updatedAt || new Date().toISOString(),
@@ -4010,6 +4014,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 kanbanColumn: existing?.kanbanColumn || 'CREATED',
                 status: (entry.status === 'orphan' ? 'archived' : entry.status) as KanbanPlanRecord['status'],
                 complexity: existing?.complexity || 'Unknown',
+                tags: existing?.tags || '',
                 workspaceId: entry.ownerWorkspaceId,
                 createdAt: entry.createdAt || new Date().toISOString(),
                 updatedAt: entry.updatedAt || new Date().toISOString(),
@@ -4554,6 +4559,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             kanbanColumn: 'CREATED',
                             status: 'deleted',
                             complexity: 'Unknown',
+                            tags: '',
                             workspaceId: wsId,
                             createdAt: new Date().toISOString(),
                             updatedAt: new Date().toISOString(),
@@ -4596,6 +4602,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     kanbanColumn: 'CREATED',
                     status: 'deleted',
                     complexity: 'Unknown',
+                    tags: '',
                     workspaceId: wsId,
                     createdAt: new Date().toISOString(),
                     updatedAt: new Date().toISOString(),

@@ -154,3 +154,56 @@ The critique raises legitimate concerns that deserve verification, but most are 
 
 ## Recommendation
 **Send to Coder.** This is a straightforward deletion across two files with no architectural decisions, no new code to write, and no ambiguous requirements. All seven removal targets are precisely identified with exact line numbers. A standard coder can execute this in a single pass with high confidence.
+
+## Reviewer Pass
+
+**Reviewer:** Copilot CLI (Principal Engineer review)
+**Date:** 2026-03-26
+**Verdict:** ✅ PASS — All 7 removal targets confirmed deleted. No code fixes required.
+
+### Stage 1 — Grumpy Principal Engineer Review
+
+All 7 plan-specified removal targets were verified absent from the codebase:
+
+| # | Target | File | Status |
+|---|--------|------|--------|
+| 1 | `<button id="btn-merge-all-plans">` HTML element | implementation.html | ✅ Removed |
+| 2 | `.icon-btn.merge:hover:not(:disabled)` CSS rule | implementation.html | ✅ Removed |
+| 3 | `const mergeAllPlansBtn = document.getElementById(...)` variable | implementation.html | ✅ Removed |
+| 4 | `if (mergeAllPlansBtn)` disable guard in `updatePlanActionStates()` | implementation.html | ✅ Removed |
+| 5 | `if (mergeAllPlansBtn) { addEventListener` click listener | implementation.html | ✅ Removed |
+| 6 | `case 'mergeAllPlans':` switch arm | TaskViewerProvider.ts | ✅ Removed |
+| 7 | `private async _handleMergeAllPlans()` method (~125 lines) | TaskViewerProvider.ts | ✅ Removed |
+
+**Collateral damage check:** None detected.
+- RECOVER and DELETE buttons remain intact in the `.plan-actions` toolbar.
+- `updatePlanActionStates()` still correctly manages `copyPlanLinkBtn.disabled`.
+- `copyPlanLinkBtn` click listener intact.
+- CSS rules for `.icon-btn.recover` and `.icon-btn.delete` intact.
+- Adjacent switch cases (`createDraftPlanTicket`, `getRecoverablePlans`, `restorePlan`) intact.
+- `_handleClaimPlan()` and `_findReviewFilesForSession()` methods intact around the deletion site.
+
+**Grep audit:** `grep -rn 'mergeAllPlans|_handleMergeAllPlans|btn-merge-all-plans|icon-btn\.merge|batch-merge|merge_plans' src/` → **0 matches** ✅
+
+**Findings:** None. Zero CRITICAL, MAJOR, or NIT issues identified.
+
+### Stage 2 — Balanced Synthesis
+
+No findings to triage. The implementation is a clean, complete execution of all 7 removal targets with no collateral damage to surrounding code.
+
+### Stage 3 — Code Fixes
+
+No fixes required.
+
+### Stage 4 — Verification Results
+
+- **`npm run compile`**: ✅ Both webpack bundles compiled successfully (exit code 0, zero errors).
+- **Grep audit**: ✅ Zero matches for all 6 search patterns across `src/`.
+
+### Stage 5 — Summary
+
+**Files changed:** `src/webview/implementation.html`, `src/services/TaskViewerProvider.ts`
+**Remaining risks:**
+- Existing `feature_plan_batch_*.md` files from prior merges remain on disk as inert Markdown (documented in plan as expected; no action needed).
+- No automated test coverage for the removal (none existed before either). Manual sidebar verification recommended per the plan's manual test checklist.
+**Status:** Implementation complete and verified. Ready for manual QA.

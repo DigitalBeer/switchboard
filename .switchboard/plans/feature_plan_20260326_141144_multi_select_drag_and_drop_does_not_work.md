@@ -151,3 +151,42 @@ The critique is valid but the risk is well-contained. Here's why this is safe:
 
 ## Recommendation
 **Send to Coder** — This is a focused, single-file fix with three small modifications to existing functions. The drop-side infrastructure is already complete. No architectural decisions or cross-file coordination required.
+
+## Reviewer Pass
+
+**Date:** 2025-07-14
+**Reviewer:** Copilot (Principal Engineer review)
+
+### Stage 1 — Grumpy Principal Engineer Findings
+
+| # | Severity | Location | Finding |
+|---|----------|----------|---------|
+| 1 | ✅ PASS | `handleDragStart` (1514–1541) | Multi-select gating logic (`selectedCards.has && size > 1 && getSelectedInColumn`) matches plan exactly. Single-card fallback preserved. `application/json`, `text/plain`, and `application/switchboard-workspace-root` all set. |
+| 2 | ✅ PASS | `handleDragEnd` (1543–1547) | `querySelectorAll('.kanban-card.dragging')` sweep replaces single `e.target` removal. Matches plan. |
+| 3 | ✅ PASS | `handleDrop` (1710–1711) | `.selected` CSS class cleared, then `selectedCards.clear()` immediately follows. JS and DOM state in sync. |
+| 4 | ✅ PASS | Single-card regression guard | Three-condition gate (`has`, `size > 1`, `length > 1`) ensures single-card drag is identical to pre-change behaviour. |
+| 5 | ✅ PASS | `application/switchboard-workspace-root` | Line 1540 sets it unconditionally, using `dataset.workspaceRoot` with `getActiveWorkspaceRoot()` fallback. |
+
+**No CRITICAL or MAJOR findings.** Implementation matches the plan specification on all five requirements.
+
+### Stage 2 — Balanced Synthesis
+
+All five plan requirements are satisfied with no deviations. The code is clean, the edge-case guards are conservative, and the existing `handleDrop` JSON parsing + try/catch fallback means even a corrupted payload degrades gracefully to single-card behaviour. Nothing to fix, defer, or dismiss.
+
+### Stage 3 — Code Fixes
+
+No fixes required. Implementation is plan-compliant.
+
+### Stage 4 — Verification
+
+- **`npm run compile`**: ✅ Both webpack bundles compiled successfully (extension.js + mcp-server.js), zero errors, zero warnings.
+
+### Stage 5 — Summary
+
+| Item | Detail |
+|------|--------|
+| Files reviewed | `src/webview/kanban.html` |
+| Files changed | None (no fixes needed) |
+| Build status | ✅ Pass |
+| Plan compliance | 5/5 requirements met |
+| Remaining risks | Theoretical `currentCards` staleness during mid-drag re-render (guarded by `if (card)` check; low probability due to full-board render approach) |

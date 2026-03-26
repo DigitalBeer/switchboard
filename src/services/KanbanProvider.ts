@@ -13,6 +13,21 @@ import type { AutobanConfigState } from './autobanState';
 export type KanbanColumn = string;
 type McpMoveTargetResolution = { role: string; normalizedTarget: string; usesComplexityRouting: boolean };
 
+const ALLOWED_TAGS = new Set([
+    'frontend', 'backend', 'authentication', 'database', 'ui', 'devops', 'infrastructure', 'bugfix'
+]);
+
+function sanitizeTags(raw: string): string {
+    if (!raw || raw.toLowerCase().trim() === 'none') return '';
+    const tags = raw
+        .toLowerCase()
+        .split(',')
+        .map(t => t.trim())
+        .filter(t => t.length > 0 && ALLOWED_TAGS.has(t));
+    if (tags.length === 0) return '';
+    return `,${tags.join(',')},`;
+}
+
 /** Column ordering: each column maps to its next column. */
 const NEXT_COLUMN: Record<string, KanbanColumn | null> = {};
 
@@ -412,6 +427,27 @@ export class KanbanProvider implements vscode.Disposable {
                     if (batchUpdates.length > 0) {
                         await db.updateMetadataBatch(batchUpdates);
                         console.log(`[KanbanProvider] Self-healed complexity for ${batchUpdates.length} plans`);
+                    }
+                }
+
+                // Self-heal stale empty tags by parsing plan files.
+                const emptyTagRows = dbRows.filter(r => !r.tags && r.planFile);
+                if (emptyTagRows.length > 0) {
+                    const tagBatchUpdates: Array<{ sessionId: string; topic: string; planFile: string; tags: string }> = [];
+                    for (const row of emptyTagRows) {
+                        const parsedTags = await this.getTagsFromPlan(resolvedWorkspaceRoot, row.planFile);
+                        if (parsedTags) {
+                            tagBatchUpdates.push({
+                                sessionId: row.sessionId,
+                                topic: row.topic || '',
+                                planFile: row.planFile || '',
+                                tags: parsedTags
+                            });
+                        }
+                    }
+                    if (tagBatchUpdates.length > 0) {
+                        await db.updateMetadataBatch(tagBatchUpdates);
+                        console.log(`[KanbanProvider] Self-healed tags for ${tagBatchUpdates.length} plans`);
                     }
                 }
 
@@ -1023,6 +1059,21 @@ export class KanbanProvider implements vscode.Disposable {
             return meaningful.length === 0 ? 'Low' : 'High';
         } catch {
             return 'Unknown';
+        }
+    }
+
+    public async getTagsFromPlan(workspaceRoot: string, planPath: string): Promise<string> {
+        try {
+            if (!planPath) return '';
+            const resolvedPlanPath = path.isAbsolute(planPath) ? planPath : path.join(workspaceRoot, planPath);
+            if (!fs.existsSync(resolvedPlanPath)) return '';
+            const content = await fs.promises.readFile(resolvedPlanPath, 'utf8');
+
+            const tagsMatch = content.match(/\*\*Tags:\*\*\s*(.+)/i);
+            if (!tagsMatch) return '';
+            return sanitizeTags(tagsMatch[1]);
+        } catch {
+            return '';
         }
     }
 

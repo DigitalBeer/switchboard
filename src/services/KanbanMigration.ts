@@ -7,6 +7,7 @@ export type LegacyKanbanSnapshotRow = {
     planFile: string;
     kanbanColumn: string;
     complexity: 'Unknown' | 'Low' | 'High';
+    tags: string;
     workspaceId: string;
     createdAt: string;
     updatedAt: string;
@@ -35,6 +36,7 @@ export class KanbanMigration {
             ...row,
             kanbanColumn: KanbanMigration._normalizeLegacyCodedColumn(row.kanbanColumn, row.lastAction),
             status: 'active',
+            tags: row.tags || '',
             brainSourcePath: (row as any).brainSourcePath || '',
             mirrorPath: (row as any).mirrorPath || ''
         }));
@@ -100,7 +102,8 @@ export class KanbanMigration {
         db: KanbanDatabase,
         workspaceId: string,
         snapshotRows: LegacyKanbanSnapshotRow[],
-        resolveComplexity?: (planFile: string) => Promise<'Unknown' | 'Low' | 'High'>
+        resolveComplexity?: (planFile: string) => Promise<'Unknown' | 'Low' | 'High'>,
+        resolveTags?: (planFile: string) => Promise<string>
     ): Promise<boolean> {
         const ready = await db.ensureReady();
         if (!ready) return false;
@@ -113,6 +116,7 @@ export class KanbanMigration {
                 topic: string;
                 planFile: string;
                 complexity?: 'Unknown' | 'Low' | 'High';
+                tags?: string;
             }> = [];
 
             for (const row of snapshotRows) {
@@ -126,11 +130,19 @@ export class KanbanMigration {
                         const parsed = await resolveComplexity(row.planFile);
                         resolvedComplexity = (parsed === 'Low' || parsed === 'High') ? parsed : undefined;
                     }
+                    let resolvedTags: string | undefined;
+                    if (row.tags) {
+                        resolvedTags = row.tags;
+                    } else if (resolveTags) {
+                        const parsed = await resolveTags(row.planFile);
+                        resolvedTags = parsed || undefined;
+                    }
                     metadataUpdates.push({
                         sessionId: row.sessionId,
                         topic: row.topic,
                         planFile: row.planFile,
-                        complexity: resolvedComplexity
+                        complexity: resolvedComplexity,
+                        tags: resolvedTags
                     });
                 }
             }

@@ -13,15 +13,17 @@ Fix the mismatch between a plan's actual complexity (as determined by parsing th
 > - There is a one-time performance cost on the first refresh after upgrade: every `'Unknown'` plan triggers a file read + regex parse. Subsequent refreshes skip plans already resolved to `'Low'` or `'High'`.
 
 ## Complexity Audit
+
+**Manual Complexity Override:** High
+
 ### Routine
 - Adding the re-parse loop in `_refreshBoardImpl()` — straightforward async iteration using the existing public `getComplexityFromPlan()` method and the existing `updateMetadataBatch()` DB writer.
 - Updating `syncPlansMetadata()` to accept a complexity resolver callback — a signature change plus a conditional `await` call.
 - Wiring the resolver callback at the call site in `KanbanProvider.ts` — one-line change.
 
 ### Complex / Risky
-- **Hot-path performance in `_refreshBoardImpl()`:** The re-parse loop reads plan files from disk (via `fs.existsSync` + `fs.promises.readFile` inside `getComplexityFromPlan`). For boards with many `'Unknown'` plans on first refresh after upgrade, this could stall the webview update. Mitigation: only re-parse plans where `complexity === 'Unknown'`; once resolved, they are skipped on all future refreshes. Batch all DB writes into a single `updateMetadataBatch()` call (one transaction, one persist).
-- **Race condition between `_refreshBoardImpl` and `syncPlansMetadata`:** Both paths may attempt to update the same row's complexity concurrently. Since SQLite writes are serialized within the same `KanbanDatabase` instance (in-memory sql.js with `_persistedUpdate`) and both will compute the same parsed value from the same file, last-writer-wins is safe.
-- **`getComplexityFromPlan()` priority stack interaction:** The method checks the DB (priority 2, lines 886–906) before file content (priorities 3–4). When called from the refresh path for a plan with `'Unknown'` in the DB, the DB lookup will find `'Unknown'`, fall through, and proceed to file parsing — which is exactly the desired behavior. The redundant DB roundtrip is <1ms (in-memory sql.js) and not worth optimizing with a parameter.
+- User marked this plan as high complexity.
+
 
 ## Edge-Case & Dependency Audit
 - **Race Conditions:** `_refreshBoardImpl()` is guarded by the `_isRefreshing` flag (line 348). The re-parse loop runs inside this guard, so concurrent refreshes are already serialized. No new race condition introduced.
@@ -239,3 +241,51 @@ await KanbanMigration.syncPlansMetadata(db, workspaceId, snapshotRows,
 4. **Verify Manual Override precedence:** Set a manual complexity override via the review panel dropdown (e.g. set a "Low" plan to "High"). Refresh the board. Confirm the override sticks and is not overwritten by file parsing (manual overrides write directly to DB via `updateComplexity()` and result in `'High'` — not `'Unknown'`).
 5. **Verify deleted plan file handling:** Delete a plan file from disk (leave the DB row). Refresh the board. Confirm the card remains "Unknown" (not crashed, not incorrectly set to Low/High).
 6. **Verify sync pipeline (Changes 2–3):** Trigger a plan sync. Confirm that existing plans with `'Unknown'` complexity get resolved during sync.
+
+## Reviewer Pass
+
+**Date:** 2025-07-24
+**Reviewer:** Copilot (code review agent)
+
+### Stage 1 — Grumpy Principal Engineer Findings
+
+| # | Severity | File | Finding |
+|---|----------|------|---------|
+| 1 | ✅ PASS | `KanbanProvider.ts` `_refreshBoardImpl()` | Self-heal logic at lines 394–416 matches the plan exactly: filters Unknown+planFile rows, calls `getComplexityFromPlan`, batches writes, uses override map in card builder (line 424). Correct. |
+| 2 | ✅ PASS | `KanbanProvider.ts` `_refreshBoardWithData()` | Self-heal block at lines 515–538 follows the same pattern. Directly mutates `card.complexity` for the current render and persists via `updateMetadataBatch`. Correct. |
+| 3 | ✅ PASS | `KanbanMigration.ts` `syncPlansMetadata()` | Optional `resolveComplexity` callback added (line 103). For-loop body correctly resolves complexity for existing plans where it's neither Low nor High (lines 122–128). Guard prevents writing 'Unknown' back. Backward-compatible. Correct. |
+| 4 | ✅ PASS | `KanbanDatabase.ts` `updateMetadataBatch()` | Unchanged. Lines 416–426 correctly branch on `'Low' \| 'High'` and skip complexity column otherwise. No modification needed. Verified. |
+| 5 | NIT | `KanbanProvider.ts` | Plan says Change 3 wires the resolver at "KanbanProvider.ts call sites", but the actual call site is in `TaskViewerProvider.ts:876`. The wiring IS correctly done there with a null-safe `this._kanbanProvider` check. Plan text is slightly misleading but implementation is correct. |
+| 6 | NIT | `KanbanProvider.ts` | Completed plans in `_refreshBoardImpl()` (lines 430–438) don't get self-healed, while `_refreshBoardWithData()` self-heals all cards including completed ones (line 517 filters from full `cards` array). Minor inconsistency between refresh paths — cosmetic only since completed plans don't need complexity routing. |
+
+### Stage 2 — Balanced Synthesis
+
+| # | Finding | Verdict | Rationale |
+|---|---------|---------|-----------|
+| 5 | Plan text references wrong file for call site | **Dismiss** | Implementation is correct at the actual call site. Plan text inaccuracy is documentation-only, not a code defect. |
+| 6 | Completed plans self-healed in snapshot path but not main path | **Dismiss** | Completed plans' complexity is cosmetic (no routing decisions). The snapshot path being more thorough is harmless. Not worth adding complexity to the main path for consistency. |
+
+**No CRITICAL or MAJOR findings.** All four planned changes are implemented correctly.
+
+### Stage 3 — Code Fixes
+
+No fixes required. All findings were NITs dismissed during synthesis.
+
+### Stage 4 — Verification
+
+- `npm run compile`: ✅ **Both webpack bundles compiled successfully** (extension + MCP server, 0 errors).
+
+### Files Reviewed
+
+| File | Changes Present | Matches Plan |
+|------|----------------|--------------|
+| `src/services/KanbanProvider.ts` | Self-heal in `_refreshBoardImpl()` and `_refreshBoardWithData()` | ✅ Yes |
+| `src/services/KanbanMigration.ts` | `resolveComplexity` callback parameter | ✅ Yes |
+| `src/services/KanbanDatabase.ts` | No changes (verified unchanged) | ✅ Yes |
+| `src/services/TaskViewerProvider.ts` | Resolver callback wired at `syncPlansMetadata` call site | ✅ Yes (call site location differs from plan text) |
+
+### Remaining Risks
+
+1. **First-refresh performance** — Boards with many Unknown plans will incur N file reads on first refresh post-upgrade. Mitigated by the one-time nature and small file sizes (<10KB markdown).
+2. **Redundant DB lookup** — `getComplexityFromPlan()` queries the DB as priority 2 (lines 936–955), which will return the same stale 'Unknown' we already know about. Harmless (<1ms in-memory lookup) but a wasted round-trip. Not worth fixing.
+3. **Manual integration testing** — Automated compilation passes, but the full fix requires manual VS Code testing per the verification plan (items 1–6) to confirm end-to-end behavior.

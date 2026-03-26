@@ -129,3 +129,64 @@ The Grumpy critique is theatrically delivered but substantively correct on all p
 
 ## Recommendation
 **Send to Coder.** This is a minimal, low-risk, single-file change — four attribute additions to existing HTML template strings. No architectural decisions, no cross-file dependencies, no complex logic. A standard coder can execute this in under 5 minutes with full confidence.
+
+## Reviewer Pass
+
+### Stage 1 — Grumpy Principal Engineer Review
+
+Well, well, well. Someone actually followed instructions for once. Four buttons, four `data-tooltip` attributes, zero structural changes. Let me see if I can find something to complain about.
+
+**Recover button (line 1432):** `data-tooltip="Recover this plan"` — ✅ Matches plan spec exactly. Attribute placed after `data-session`, consistent with existing patterns. PASS.
+
+**Copy button (line 1442):** `data-tooltip="Copy prompt and advance"` — ✅ Matches plan spec. Attribute appended after `data-workspace-root`. PASS.
+
+**Complete button (line 1450):** `data-tooltip="Complete and archive"` — ✅ Matches plan spec. Attribute appended after `data-workspace-root`. PASS.
+
+**Review button (line 1463):** `data-tooltip="Review plan"` — ✅ Matches plan spec. Attribute appended after `data-workspace-root`. PASS.
+
+**Pair Programming button (line 1446):** No `data-tooltip` attribute. Correct — explicitly out of scope per plan. PASS.
+
+**CSS changes:** None. PASS.
+**JS changes:** None. PASS.
+**Structural HTML changes:** None. PASS.
+
+| # | Finding | Severity | Description |
+|---|---------|----------|-------------|
+| 1 | Stale CSS comment | NIT | Line 770: `/* Tooltips are ONLY for column header icons/buttons, never for card elements */` is now factually wrong. Card buttons now have tooltips. Comment is misleading but harmless — it's a comment, not code. |
+| 2 | Pair Programming button gap | NIT | Line 1446: The Pair Programming button still lacks a tooltip. Explicitly out of scope per plan, but remains a UX gap for discoverability. |
+
+**No CRITICAL or MAJOR findings.** The implementation is a clean, exact match to the plan specification.
+
+### Stage 2 — Balanced Synthesis
+
+| # | Finding | Verdict | Rationale |
+|---|---------|---------|-----------|
+| 1 | Stale CSS comment (NIT) | **Defer** | The comment is misleading but not harmful. Fixing it in this change would violate the user directive of "attribute additions only, no structural changes." Track as a follow-up. |
+| 2 | Pair Programming button (NIT) | **Defer** | Explicitly excluded from scope in the plan and edge-case audit. Should be tracked as a separate follow-up item with user review of desired tooltip text. |
+
+**No code fixes required.** Zero CRITICAL or MAJOR findings to act on.
+
+### Stage 3 — Code Fixes
+
+No fixes applied. All findings were NITs deferred to follow-up work.
+
+### Stage 4 — Verification
+
+- **Command:** `npm run compile`
+- **Result:** ✅ Both webpack bundles compiled successfully with exit code 0.
+  - `extension.js` — compiled successfully
+  - `mcp-server.js` — compiled successfully
+- **No errors, no warnings related to this change.**
+
+### Stage 5 — Summary
+
+**Files reviewed:** `src/webview/kanban.html` (lines 1421–1471, `createCardHtml()`)
+
+**Implementation status:** ✅ COMPLETE — all four `data-tooltip` attributes are present with correct values, matching the plan specification exactly.
+
+**Remaining risks:**
+1. Manual verification pending: tooltip positioning and visual rendering in the VS Code webview cannot be tested from CLI. Recommend manual hover-test per the plan's verification checklist (items 2–9).
+2. Stale CSS comment on line 770 should be cleaned up in a follow-up.
+3. Pair Programming button tooltip should be addressed in a separate plan with user input on desired text.
+
+**Verdict:** APPROVED — ship it.

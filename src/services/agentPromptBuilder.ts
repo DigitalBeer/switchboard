@@ -92,6 +92,7 @@ export function buildKanbanBatchPrompt(
         const aggressiveDirective = aggressivePairProgramming
             ? `\n\nPAIR PROGRAMMING OPTIMISATION: Aggressive mode is enabled. Assume the Coder agent is highly competent and can handle most implementation tasks independently, including multi-file changes, test updates, and straightforward refactors. Only classify tasks as Complex / Risky if they involve: (a) new architectural patterns or framework integrations the codebase hasn't used before, (b) security-sensitive logic (auth, crypto, permissions), (c) complex state machines or concurrency, or (d) changes that could silently break existing behaviour without obvious test failures. Everything else — even if it touches multiple files or requires careful reading — should be Routine.\n`
             : '';
+        const ALLOWED_TAGS = "frontend, backend, authentication, database, UI, devops, infrastructure, bugfix";
         return `Please ${plannerVerb} the following ${plans.length} plans. Break each down into distinct steps grouped by high complexity and low complexity. Add extra detail.${aggressiveDirective}
 MANDATORY: You MUST read and strictly adhere to \`.agent/rules/how_to_plan.md\` to format your output and ensure sufficient technical detail. Do not make assumptions about which files need to be changed; provide exact file paths and explicit implementation steps as required by the guide.
 Do not add net-new product requirements or scope.
@@ -103,10 +104,16 @@ For each plan:
 1. Read the plan file before editing.
 2. Fill out 'TODO' sections or underspecified parts. Scan the Kanban board/plans folder for potential cross-plan conflicts and document them.
 3. Ensure the plan has a "## Complexity Audit" section with "### Routine" and "### Complex / Risky" subsections. If missing, create it. If present, update it. If Complex / Risky is empty, write "- None" explicitly.
-4. Perform adversarial review: post a Grumpy critique (dramatic "Grumpy Principal Engineer" voice: incisive, specific, theatrical) then a Balanced synthesis.
-5. ${chatCritiqueDirective}
-6. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
-7. Recommend agent: if the plan is simple (routine changes, only Routine tasks), say "Send to Coder". If complex (Complex tasks, new frameworks), say "Send to Lead Coder".
+4. Ensure the plan has a "## Metadata" section immediately after the "## Goal" section. You MUST explicitly assign metadata using EXACTLY this format:
+## Metadata
+**Tags:** [comma-separated list chosen ONLY from: ${ALLOWED_TAGS}]
+**Complexity:** [Low | High]
+
+Use 'High' for complex logic, new frameworks, or risky state mutations. Use 'Low' for routine changes. Do NOT invent tags outside the allowed list. If no tags apply, write **Tags:** none
+5. Perform adversarial review: post a Grumpy critique (dramatic "Grumpy Principal Engineer" voice: incisive, specific, theatrical) then a Balanced synthesis.
+6. ${chatCritiqueDirective}
+7. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
+8. Recommend agent: if the plan is simple (routine changes, only Routine tasks), say "Send to Coder". If complex (Complex tasks, new frameworks), say "Send to Lead Coder".
 
 ${focusDirective}
 
