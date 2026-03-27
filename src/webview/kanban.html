@@ -767,7 +767,6 @@
         }
 
         /* Custom instant tooltips — replaces native title delay */
-        /* Tooltips are ONLY for column header icons/buttons, never for card elements */
         [data-tooltip] {
             position: relative;
         }
@@ -803,13 +802,13 @@
 
     <body>
     <div class="kanban-header">
-        <div class="kanban-title" id="kanban-title">⚡ CLI-BAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to IDE chat agents</div>
+        <div class="kanban-title" id="kanban-title">AUTOBAN - Drag plan cards to trigger CLI Agent actions | Copy prompts to send to IDE chat agents</div>
         <div class="header-controls">
             <select id="workspace-select" class="workspace-select" data-tooltip="Select workspace"></select>
         </div>
     </div>
     <div class="controls-strip">
-        <button class="strip-btn" id="btn-autoban" data-tooltip="Start or stop the autoban engine">▶ START AUTOBAN</button>
+        <button class="strip-btn" id="btn-autoban" data-tooltip="Start or stop the automation engine">▶ START AUTOMATION</button>
         <div class="autoban-timers-inline" id="autoban-timers-inline"></div>
         <span class="controls-spacer"></span>
         <span class="triggers-off-badge" id="triggers-off-badge" hidden>⚠ TRIGGERS OFF</span>
@@ -936,6 +935,7 @@
         const ICON_IMPORT_CLIPBOARD = '{{ICON_IMPORT_CLIPBOARD}}';
         const ICON_CLI = '{{ICON_CLI}}';
         const ICON_PROMPT = '{{ICON_PROMPT}}';
+        const ICON_RECOVER_SELECTED = '{{ICON_55}}';
 
         function getActiveWorkspaceRoot() {
             return currentWorkspaceRoot || (workspaceItems[0] && workspaceItems[0].workspaceRoot) || '';
@@ -1083,10 +1083,7 @@
                 if (isCompleted) {
                     buttonArea = `<div class="column-button-area">
                         <button class="column-icon-btn recover-selected-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Recover selected plans back to active board">
-                             ↩ Selected
-                        </button>
-                        <button class="column-icon-btn recover-all-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Recover all completed plans back to active board">
-                             ↩ All
+                            <img src="${ICON_RECOVER_SELECTED}" alt="Recover Selected">
                         </button>
                     </div>`;
                 } else if (isLastWorkingColumn) {
@@ -1105,9 +1102,9 @@
                                <img src="${ICON_JULES}" alt="Jules">
                            </button>`
                         : '';
-                    const analystMapBtn = (isPlanReviewed && lastVisibleAgents.analyst !== false)
-                        ? `<button class="column-icon-btn" data-action="analystMapSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Generate context map for selected plans">
-                               <img src="${ICON_ANALYST_MAP}" alt="Analyst Map">
+                    const rePlanBtn = (isPlanReviewed && lastVisibleAgents.planner !== false)
+                        ? `<button class="column-icon-btn" data-action="rePlanSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Re-plan selected plans (trigger high-reasoning refinement)">
+                               <img src="${ICON_ANALYST_MAP}" alt="Re-plan">
                            </button>`
                         : '';
                     buttonArea = `<div class="column-button-area">
@@ -1124,7 +1121,7 @@
                             <img src="${ICON_PROMPT_ALL}" alt="Prompt All">
                         </button>
                         ${julesBtn}
-                        ${analystMapBtn}
+                        ${rePlanBtn}
                     </div>`;
                 }
 
@@ -1173,7 +1170,7 @@
                     const action = btn.dataset.action;
                     const column = btn.dataset.column;
                     const nextCol = getNextColumn(column);
-                    if (!nextCol && action !== 'julesSelected' && action !== 'analystMapSelected' && action !== 'completeSelected' && action !== 'completeAll') return;
+                    if (!nextCol && action !== 'julesSelected' && action !== 'rePlanSelected' && action !== 'completeSelected' && action !== 'completeAll') return;
 
                     switch (action) {
                         case 'moveSelected': {
@@ -1211,11 +1208,10 @@
                             ids.forEach(id => selectedCards.delete(id));
                             break;
                         }
-                        case 'analystMapSelected': {
+                        case 'rePlanSelected': {
                             const ids = getSelectedInColumn(column);
                             if (ids.length === 0) return;
-                            postKanbanMessage({ type: 'analystMapSelected', sessionIds: ids });
-                            ids.forEach(id => selectedCards.delete(id));
+                            postKanbanMessage({ type: 'rePlanSelected', sessionIds: ids, workspaceRoot: getActiveWorkspaceRoot() });
                             break;
                         }
                         case 'completeSelected': {
@@ -1303,8 +1299,8 @@
             if (!autobanBtn) return;
             const isEnabled = !!(autobanConfig && autobanConfig.enabled);
             autobanBtn.classList.toggle('is-active', isEnabled);
-            autobanBtn.textContent = isEnabled ? '⏸ STOP AUTOBAN' : '▶ START AUTOBAN';
-            autobanBtn.title = isEnabled ? 'Stop autoban engine' : 'Start autoban engine';
+            autobanBtn.textContent = isEnabled ? '⏸ STOP AUTOMATION' : '▶ START AUTOMATION';
+            autobanBtn.title = isEnabled ? 'Stop automation engine' : 'Start automation engine';
         }
 
         function syncAutobanCountdownTimer() {
@@ -1443,7 +1439,7 @@
             }
 
             const pairProgramBtn = (card.column === 'PLAN REVIEWED' && complexity === 'High')
-                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}">Pair</button>`
+                ? `<button class="card-btn pair-program-btn" data-session="${card.sessionId}" data-tooltip="Pair programming (Lead + Coder)">Pair</button>`
                 : '';
             const completeOrDoneBtn = isCompleted
                 ? `<span class="card-done-badge">✓ Done</span>`

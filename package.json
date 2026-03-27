@@ -82,7 +82,7 @@
       },
       {
         "command": "switchboard.openKanban",
-        "title": "Switchboard: Open CLI-BAN"
+        "title": "Switchboard: Open AUTOBAN"
       },
       {
         "command": "switchboard.reviewPlan",

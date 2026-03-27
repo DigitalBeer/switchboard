@@ -14,7 +14,7 @@ Here's one workflow combining Windsurf, Copilot CLI, and Gemini CLI. Switchboard
 
 1. Enter your CLI agent startup commands into the setup menu. Switchboard boots them in VS Code terminals and tracks their PIDs so it can dispatch automated messages using the official VS Code API terminal.sendText.
 
-2. Create 5 plans in the **CLI-BAN** (a kanban-style routing board for tasks and agents) and hit *Copy prompt for all plans*.
+2. Create 5 plans in the **AUTOBAN** (a kanban-style routing board for tasks and agents) and hit *Copy prompt for all plans*.
 
 3. Paste into Windsurf. Opus reads the full board state via MCP, enriches each plan with detail, and produces a routing table. Every task gets a complexity rating and an agent recommendation.
 
@@ -36,7 +36,7 @@ Now, if you want Opus doing everything, it can. You can spend $200 on a Claude M
 
 **Plan review** lets you highlight any part of a plan and send it back to your planner agent with inline comments — the same workflow popularised in Antigravity. Useful when a plan needs tightening before you commit it to implementation.
 
-**AUTOBAN** rotates plans through CLI-BAN stages on a timer, no orchestrator agent needed.
+**AUTOBAN** rotates plans through AUTOBAN stages on a timer, no orchestrator agent needed.
 
 **Grumpy Principal Engineer persona** is injected at architecture and review stages. Triggered by half-baked plans and bad code. 
 

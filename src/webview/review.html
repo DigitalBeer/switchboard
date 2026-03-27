@@ -461,7 +461,7 @@
         <div class="header-copy">
             <div class="eyebrow">Ticket View</div>
             <h1 class="title" id="header-title">Plan Ticket</h1>
-            <input id="header-title-input" class="title-input hidden" type="text" />
+            <input id="header-title-input" class="title-input hidden" type="text" placeholder="Untitled Plan" />
         </div>
         <div class="header-actions">
             <button id="copy-plan-link">Copy Link</button>
@@ -866,8 +866,9 @@
                 state.isPreview = true;
             }
 
-            headerTitleEl.textContent = state.topic || 'Ticket';
-            headerTitleInputEl.value = state.topic;
+            const isDefaultTitle = (state.topic || '').trim().toLowerCase() === 'untitled plan';
+            headerTitleEl.textContent = state.topic && !isDefaultTitle ? state.topic : 'Untitled Plan';
+            headerTitleInputEl.value = isDefaultTitle ? '' : state.topic;
             renderColumns(Array.isArray(message.columns) ? message.columns : [], state.column);
             complexitySelectEl.value = state.complexity;
             updateDependenciesSummary();
@@ -894,7 +895,7 @@
         }
 
         function savePlanText() {
-            const nextTopic = headerTitleInputEl.value.trim();
+            const nextTopic = headerTitleInputEl.value.trim() || 'Untitled Plan';
             setBusy(true);
             setStatus('Saving plan text...');
             vscode.postMessage({
@@ -953,7 +954,7 @@
         });
 
         headerTitleInputEl.addEventListener('input', () => {
-            headerTitleEl.textContent = headerTitleInputEl.value.trim() || 'Ticket';
+            headerTitleEl.textContent = headerTitleInputEl.value.trim() || 'Untitled Plan';
         });
 
         savePlanButtonEl.addEventListener('click', () => {

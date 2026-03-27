@@ -130,7 +130,7 @@ export class KanbanProvider implements vscode.Disposable {
 
         this._panel = vscode.window.createWebviewPanel(
             'switchboard-kanban',
-            'CLI-BAN',
+            'AUTOBAN',
             vscode.ViewColumn.One,
             {
                 enableScripts: true,
@@ -1967,28 +1967,22 @@ export class KanbanProvider implements vscode.Disposable {
                 }
                 break;
             }
-            case 'analystMapSelected': {
+            case 'rePlanSelected': {
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
                 const visibleAgents = await this._getVisibleAgents(workspaceRoot);
-                if (visibleAgents.analyst === false) {
-                    vscode.window.showWarningMessage('Analyst is currently disabled in setup.');
+                if (visibleAgents.planner === false) {
+                    vscode.window.showWarningMessage('Planner agent is currently disabled in setup.');
                     break;
                 }
-                let successCount = 0;
-                for (const sessionId of msg.sessionIds) {
-                    try {
-                        const dispatched = await vscode.commands.executeCommand<boolean>('switchboard.analystMapFromKanban', sessionId, workspaceRoot);
-                        if (dispatched) { successCount++; }
-                    } catch (err) {
-                        console.error(`[KanbanProvider] Failed to send analyst map for ${sessionId}:`, err);
-                    }
-                }
-                if (successCount > 0) {
-                    vscode.window.showInformationMessage(`Sent ${successCount} plan(s) to analyst for context map generation.`);
-                } else {
-                    vscode.window.showWarningMessage('Failed to send plans to analyst for context map generation.');
-                }
+                await vscode.commands.executeCommand(
+                    'switchboard.triggerBatchAgentFromKanban',
+                    'planner',
+                    msg.sessionIds,
+                    'improve-plan',
+                    workspaceRoot
+                );
+                vscode.window.showInformationMessage(`Sent ${msg.sessionIds.length} plan(s) to planner for re-plan (improve-plan).`);
                 break;
             }
         }
@@ -2052,6 +2046,7 @@ export class KanbanProvider implements vscode.Disposable {
             '{{ICON_IMPORT_CLIPBOARD}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-101-150 Sci-Fi Flat icons-121.png')).toString(),
             '{{ICON_CLI}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-53.png')).toString(),
             '{{ICON_PROMPT}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-22.png')).toString(),
+            '{{ICON_55}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-55.png')).toString(),
         };
         for (const [placeholder, uri] of Object.entries(iconMap)) {
             content = content.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), uri);

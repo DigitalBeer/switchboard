@@ -30,6 +30,30 @@
       "timestamp": "2026-03-27T04:09:36.139Z",
       "action": "stop",
       "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "move-to-plan-reviewed",
+      "timestamp": "2026-03-27T04:14:43.670Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-created",
+      "timestamp": "2026-03-27T04:15:01.808Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "move-to-plan-reviewed",
+      "timestamp": "2026-03-27T04:20:21.618Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "move-to-coder-coded",
+      "timestamp": "2026-03-27T05:23:36.533Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
     }
   ]
 }
