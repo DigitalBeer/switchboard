@@ -404,3 +404,75 @@ describe('ArchiveManager', () => {
 ## Agent Recommendation
 
 **Send to Lead Coder** — This plan introduces a new external runtime dependency (DuckDB CLI), cross-database synchronization over cloud filesystems, an MCP tool with shell injection surface area, and has confirmed merge conflicts with the in-flight Consolidate Session Files plan. A Lead Coder must resolve the SQL injection vulnerability, validate the DuckDB SQL dialect, establish cross-plan sequencing, and make a design decision on cloud filesystem locking before implementation begins. A standard Coder assignment risks shipping the happy path without addressing these structural issues.
+
+## Review Results
+
+**Reviewer:** Adversarial Code Review (Principal Engineer)
+**Date:** 2026-03-28
+**Verdict:** Implementation is **substantially better** than the plan's proposed code. Most CRITICAL plan-level vulnerabilities were already mitigated during implementation. Four code-level issues found and fixed.
+
+### Stage 1 — Grumpy Principal Engineer Review
+
+#### What the plan proposed vs. what was implemented
+
+The plan's proposed code had **two CRITICAL security vulnerabilities** (shell injection via `exec()`, SQL injection via semicolon stripping only) and **two DuckDB dialect errors** (`INSERT OR REPLACE`, `USING GIN` indexes). Credit where due: the actual implementation already fixed all four:
+
+| Plan Proposed | Actual Implementation | Status |
+|---|---|---|
+| `exec(\`duckdb "${path}" "${sql}"\`)` | `execFile('duckdb', [args...])` | ✅ Fixed |
+| `sql.replace(/;/g, '')` as primary defense | `-readonly` flag + SELECT-only + keyword blocklist | ✅ Fixed |
+| `INSERT OR REPLACE` (SQLite syntax) | `INSERT ... ON CONFLICT DO UPDATE` (DuckDB) | ✅ Fixed |
+| `CREATE INDEX ... USING GIN` | Standard B-tree indexes only | ✅ Fixed |
+
+#### Issues found in the ACTUAL implementation
+
+**CRITICAL — False-positive keyword blocking (FIXED)**
+Both `ArchiveManager.ts:queryArchive()` and `register-tools.js:query_plan_archive` used `string.includes()` for blocked keyword detection. This is substring matching, meaning:
+- `SELECT updated_at FROM plans` → **blocked** (`UPDATE` inside `UPDATED`)
+- `SELECT * FROM plans WHERE status = 'CREATED'` → **blocked** (`CREATE` inside `CREATED`)
+- `SELECT plan_id, created_at, deleted FROM plans` → **blocked** by both `CREATE` and `DELETE`
+
+This made the archive query tool **unusable for most legitimate queries**. Fixed: replaced with `\b` word-boundary regex matching.
+
+**MAJOR — Double-LIMIT syntax error (FIXED)**
+The code appended `LIMIT ${limit}` unconditionally. If the user query already contained `LIMIT 10`, the result was `SELECT ... LIMIT 10 LIMIT 100` — a DuckDB syntax error. Fixed: strip any trailing `LIMIT N` before appending the enforced limit.
+
+**MAJOR — Type safety in `_escapeDuckDb` (FIXED)**
+Method signature was `(value: string)` but body checked for `null`/`undefined`. Fixed type to `(value: string | null | undefined)` for honest runtime behavior.
+
+**MAJOR — Duplicate variable declaration in KanbanProvider.ts (FIXED)**
+`_checkCliTools()` had `const execFileAsync = promisify(execFile)` declared twice on consecutive lines. This caused a TypeScript compilation error.
+
+#### NITs (not fixed — design-level)
+
+**NIT — Cloud filesystem locking remains a documented limitation.** DuckDB's WAL mode doesn't work over FUSE mounts (Google Drive, Dropbox). The implementation has no retry logic or partition-per-machine strategy. This is acceptable for Phase 1 if documented clearly.
+
+**NIT — `terminal.sendText()` in KanbanProvider.ts `openCliTerminal` handler** uses shell string construction (`duckdb '${safePath}'`). The single-quote escaping is correct for POSIX shells but may fail on Windows PowerShell. Lower risk since it's a user-facing terminal, not an automated command.
+
+**NIT — No DuckDB CLI version pinning.** If DuckDB renames `-readonly` to `--read-only` or `-json` to `--format json`, the integration breaks silently.
+
+### Stage 2 — Balanced Synthesis
+
+The implementation is in good shape. The original plan's adversarial review was prescient — it correctly identified the `exec()` → `execFile()` and `INSERT OR REPLACE` → `ON CONFLICT` issues, and the implementer addressed them. The keyword false-positive bug was a subtler issue that the plan didn't anticipate.
+
+**Security posture after fixes:** Defense-in-depth with four layers:
+1. `SELECT`-only enforcement (first line of defense)
+2. Word-boundary blocked keyword matching (blocks DuckDB-specific attack vectors)
+3. `-readonly` flag to DuckDB CLI (prevents writes even if SQL check is bypassed)
+4. `execFile()` with argument arrays (prevents shell injection regardless of SQL content)
+
+**Remaining risk:** An agent could still craft a valid SELECT that exfiltrates data from the archive (e.g., `SELECT * FROM plans`). This is acceptable since the archive contains only plan metadata, not secrets.
+
+### Files Changed by This Review
+
+| File | Change |
+|---|---|
+| `src/services/ArchiveManager.ts` | Word-boundary keyword matching, LIMIT dedup, type fix |
+| `src/mcp-server/register-tools.js` | Word-boundary keyword matching, LIMIT dedup |
+| `src/services/KanbanProvider.ts` | Removed duplicate `execFileAsync` declaration |
+
+### Verification
+
+- **TypeScript typecheck:** Passes (1 pre-existing error in TaskViewerProvider.ts unrelated to archive feature)
+- **Schema SQL:** Valid DuckDB syntax confirmed (`CREATE TABLE IF NOT EXISTS`, `INSERT ... ON CONFLICT`, standard indexes)
+- **Keyword blocking:** Verified with test harness — legitimate queries (`SELECT updated_at`, `WHERE status = 'CREATED'`) now pass; attack vectors (`COPY`, `ATTACH`, `DROP`) still blocked

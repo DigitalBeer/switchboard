@@ -2190,7 +2190,6 @@ export class KanbanProvider implements vscode.Disposable {
     private async _checkCliTools(): Promise<void> {
         try {
             const execFileAsync = promisify(execFile);
-            const execFileAsync = promisify(execFile);
             const { stdout } = await execFileAsync('duckdb', ['--version']);
             this._panel?.webview.postMessage({ type: 'cliStatus', tool: 'duckdb', installed: true, version: stdout.trim() });
         } catch {
