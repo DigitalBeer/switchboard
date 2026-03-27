@@ -1401,6 +1401,10 @@
                     <span>Inline challenge step for Lead Coder prompts</span>
                 </label>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <input id="advanced-reviewer-toggle" type="checkbox" style="width:auto; margin:0;">
+                    <span>Advanced reviewer mode (deep regression analysis — high token usage)</span>
+                </label>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="aggressive-pair-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Aggressive pair programming (shift more tasks to Coder)</span>
                 </label>
@@ -1856,6 +1860,7 @@
                     if (isOpen) {
                         vscode.postMessage({ type: 'getStartupCommands' });
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
+                        vscode.postMessage({ type: 'getAdvancedReviewerSetting' });
                         vscode.postMessage({ type: 'getLeadChallengeSetting' });
                         vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
                         vscode.postMessage({ type: 'getAggressivePairSetting' });
@@ -1880,11 +1885,12 @@
                     if (role) visibleAgents[role] = cb.checked;
                 });
                 const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
+                const advancedReviewerEnabled = !!document.getElementById('advanced-reviewer-toggle')?.checked;
                 const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
                 const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
                 const aggressivePairProgramming = !!document.getElementById('aggressive-pair-toggle')?.checked;
                 const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
-                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, planIngestionFolder, customAgents: lastCustomAgents });
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, advancedReviewerEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, planIngestionFolder, customAgents: lastCustomAgents });
                 lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
                 lastPlanIngestionFolder = planIngestionFolder;
                 renderCustomAgentConfigList();
@@ -2280,6 +2286,13 @@
                     const toggle = document.getElementById('accurate-coding-toggle');
                     if (toggle) {
                         toggle.checked = message.enabled !== false;
+                    }
+                    break;
+                }
+                case 'advancedReviewerSetting': {
+                    const toggle = document.getElementById('advanced-reviewer-toggle');
+                    if (toggle) {
+                        toggle.checked = message.enabled === true;
                     }
                     break;
                 }

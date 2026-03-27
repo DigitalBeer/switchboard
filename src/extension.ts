@@ -976,6 +976,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(kanbanProvider);
     context.subscriptions.push(reviewProvider);
     taskViewerProvider.setKanbanProvider(kanbanProvider);
+    kanbanProvider.setTaskViewerProvider(taskViewerProvider);
     if (workspaceRoot) {
         void taskViewerProvider.initializeKanbanDbOnStartup();
     }
@@ -2303,28 +2304,40 @@ async function hasSwitchboardConfigs(workspaceRoot: string): Promise<boolean> {
  * Detect which IDEs are installed
  */
 async function detectIDEs(workspaceRoot: string): Promise<{ key: string; name: string; path: string }[]> {
-    const ideConfigs: Array<{ key: string; name: string; path: string }> = [
+    const ideConfigs: Array<{ key: string; name: string; path: string; globalPath?: string }> = [
         { key: 'antigravity', name: 'Antigravity', path: '.agent' },
         { key: 'github', name: 'GitHub Copilot', path: '.github' },
         { key: 'cursor', name: 'Cursor (Composer)', path: '.cursorrules' },
-        { key: 'windsurf', name: 'Windsurf (Cascade)', path: '.codeium' },
+        { key: 'windsurf', name: 'Windsurf (Cascade)', path: '.codeium', globalPath: '.codeium/windsurf' },
         { key: 'claude', name: 'Claude Code', path: '.mcp.json' },
         { key: 'gemini', name: 'Gemini CLI', path: '.gemini' },
         { key: 'kiro', name: 'Kiro', path: '.kiro' }
     ];
 
     const results = await Promise.all(ideConfigs.map(async ide => {
-        const uri = vscode.Uri.file(path.join(workspaceRoot, ide.path));
+        // Check workspace-local marker
+        const wsUri = vscode.Uri.file(path.join(workspaceRoot, ide.path));
         try {
-            await vscode.workspace.fs.stat(uri);
+            await vscode.workspace.fs.stat(wsUri);
             return ide;
         } catch {
-            return null;
+            // Fall through to global check
         }
+        // Check global (home-dir) marker if defined
+        if (ide.globalPath) {
+            const globalUri = vscode.Uri.file(path.join(os.homedir(), ide.globalPath));
+            try {
+                await vscode.workspace.fs.stat(globalUri);
+                return ide;
+            } catch {
+                // Not found globally either
+            }
+        }
+        return null;
     }));
 
     const detected = results
-        .filter((ide): ide is { key: string; name: string; path: string } => ide !== null)
+        .filter((ide): ide is { key: string; name: string; path: string; globalPath?: string } => ide !== null)
         .map(({ key, name, path }) => ({ key, name, path }));
 
     return detected;
@@ -2898,7 +2911,11 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
                 const configFiles = getConfigFilesForIDE(target);
                 for (const configFile of configFiles) {
                     const templatePath = vscode.Uri.joinPath(templatesBaseUri, target, configFile.template);
-                    const destPath = vscode.Uri.file(path.join(workspaceRoot, configFile.destination));
+                    const destPath = vscode.Uri.file(
+                        configFile.isGlobal
+                            ? path.join(os.homedir(), configFile.destination)
+                            : path.join(workspaceRoot, configFile.destination)
+                    );
                     const destDir = vscode.Uri.file(path.dirname(destPath.fsPath));
 
                     // Ensure destination directory exists
@@ -2959,21 +2976,54 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
                         const configFiles = getConfigFilesForIDE(target);
                         for (const configFile of configFiles) {
                             if (!results.skipped.includes(configFile.destination)) continue;
+                            const absDestPath = configFile.isGlobal
+                                ? path.join(os.homedir(), configFile.destination)
+                                : path.join(workspaceRoot, configFile.destination);
                             try {
                                 const templatePath = vscode.Uri.joinPath(templatesBaseUri, target, configFile.template);
-                                const destPath = vscode.Uri.file(path.join(workspaceRoot, configFile.destination));
-                                try {
-                                    await vscode.workspace.fs.stat(templatePath);
-                                    const raw = Buffer.from(await vscode.workspace.fs.readFile(templatePath)).toString('utf8');
-                                    const content = raw.replace(/\{\{WORKSPACE_ROOT\}\}/g, absWorkspaceRoot);
-                                    await vscode.workspace.fs.writeFile(destPath, Buffer.from(content, 'utf8'));
-                                } catch {
-                                    const defaultContent = getDefaultTemplate(target);
-                                    await vscode.workspace.fs.writeFile(destPath, Buffer.from(defaultContent, 'utf8'));
+                                const destPath = vscode.Uri.file(absDestPath);
+                                if (configFile.isGlobal && configFile.destination.endsWith('.json')) {
+                                    // Global MCP JSON: merge to preserve other MCP server entries
+                                    let existingConfig: Record<string, any> = {};
+                                    try {
+                                        const existingRaw = Buffer.from(await vscode.workspace.fs.readFile(destPath)).toString('utf8');
+                                        existingConfig = JSON.parse(existingRaw);
+                                    } catch {
+                                        existingConfig = {};
+                                    }
+                                    let templateJson: Record<string, any> = {};
+                                    try {
+                                        await vscode.workspace.fs.stat(templatePath);
+                                        const raw = Buffer.from(await vscode.workspace.fs.readFile(templatePath)).toString('utf8');
+                                        const content = raw.replace(/\{\{WORKSPACE_ROOT\}\}/g, absWorkspaceRoot);
+                                        templateJson = JSON.parse(content);
+                                    } catch {
+                                        const defaultContent = getDefaultTemplate(target);
+                                        templateJson = JSON.parse(defaultContent);
+                                    }
+                                    const mcpKey = 'mcpServers';
+                                    const mergedConfig = {
+                                        ...existingConfig,
+                                        [mcpKey]: {
+                                            ...(existingConfig[mcpKey] || {}),
+                                            ...(templateJson[mcpKey] || {})
+                                        }
+                                    };
+                                    await vscode.workspace.fs.writeFile(destPath, Buffer.from(JSON.stringify(mergedConfig, null, 2) + '\n', 'utf8'));
+                                } else {
+                                    try {
+                                        await vscode.workspace.fs.stat(templatePath);
+                                        const raw = Buffer.from(await vscode.workspace.fs.readFile(templatePath)).toString('utf8');
+                                        const content = raw.replace(/\{\{WORKSPACE_ROOT\}\}/g, absWorkspaceRoot);
+                                        await vscode.workspace.fs.writeFile(destPath, Buffer.from(content, 'utf8'));
+                                    } catch {
+                                        const defaultContent = getDefaultTemplate(target);
+                                        await vscode.workspace.fs.writeFile(destPath, Buffer.from(defaultContent, 'utf8'));
+                                    }
                                 }
                                 overwritten++;
                             } catch (e) {
-                                mcpOutputChannel?.appendLine(`[Setup] Overwrite failed for ${configFile.destination}: ${e}`);
+                                mcpOutputChannel?.appendLine(`[Setup] Overwrite failed for ${absDestPath}: ${e}`);
                             }
                         }
                     }
@@ -3024,8 +3074,8 @@ async function showSetupWizard(context: vscode.ExtensionContext, taskViewerProvi
 /**
  * Get configuration files for an IDE
  */
-function getConfigFilesForIDE(ide: string): { template: string; destination: string }[] {
-    const configs: Record<string, { template: string; destination: string }[]> = {
+function getConfigFilesForIDE(ide: string): { template: string; destination: string; isGlobal?: boolean }[] {
+    const configs: Record<string, { template: string; destination: string; isGlobal?: boolean }[]> = {
         github: [
             { template: 'copilot-instructions.md.template', destination: '.github/copilot-instructions.md' },
             { template: 'agents/switchboard.agent.md.template', destination: '.github/agents/switchboard.agent.md' },
@@ -3034,7 +3084,7 @@ function getConfigFilesForIDE(ide: string): { template: string; destination: str
         antigravity: [], // Handled by performSetup
         windsurf: [
             { template: 'windsurf-instructions.md.template', destination: '.codeium/windsurf-instructions.md' },
-            { template: 'mcp_config.json.template', destination: 'mcp_config.json' }
+            { template: 'mcp_config.json.template', destination: '.codeium/windsurf/mcp_config.json', isGlobal: true }
         ],
         cursor: [
             { template: 'cursor-instructions.md.template', destination: '.cursorrules' },
@@ -3057,10 +3107,10 @@ function getConfigFilesForIDE(ide: string): { template: string; destination: str
 /**
  * Get only the MCP config file entries (JSON configs, not instruction markdown) for each IDE.
  */
-function getMcpConfigFilesForIDE(ide: string): { template: string; destination: string }[] {
-    const mcpConfigs: Record<string, { template: string; destination: string }[]> = {
+function getMcpConfigFilesForIDE(ide: string): { template: string; destination: string; isGlobal?: boolean }[] {
+    const mcpConfigs: Record<string, { template: string; destination: string; isGlobal?: boolean }[]> = {
         github: [{ template: 'mcp.json.template', destination: '.vscode/mcp.json' }],
-        windsurf: [{ template: 'mcp_config.json.template', destination: 'mcp_config.json' }],
+        windsurf: [{ template: 'mcp_config.json.template', destination: '.codeium/windsurf/mcp_config.json', isGlobal: true }],
         cursor: [{ template: 'mcp.json.template', destination: '.cursor/mcp.json' }],
         claude: [{ template: '.mcp.json.template', destination: '.mcp.json' }],
         gemini: [{ template: 'settings.json.template', destination: '.gemini/settings.json' }],
@@ -3091,7 +3141,9 @@ async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspace
         const mcpFiles = getMcpConfigFilesForIDE(ide);
         for (const configFile of mcpFiles) {
             try {
-                const destPath = path.join(workspaceRoot, configFile.destination);
+                const destPath = configFile.isGlobal
+                    ? path.join(os.homedir(), configFile.destination)
+                    : path.join(workspaceRoot, configFile.destination);
                 const destDir = path.dirname(destPath);
 
                 // Ensure destination directory exists
@@ -3151,15 +3203,15 @@ async function writeAllIdeMcpConfigs(context: vscode.ExtensionContext, workspace
                     currentJson = fs.readFileSync(destPath, 'utf8');
                 }
                 if (currentJson.trim() === newJson.trim()) {
-                    mcpOutputChannel?.appendLine(`[ConnectMCP] ${configFile.destination} already up to date.`);
+                    mcpOutputChannel?.appendLine(`[ConnectMCP] ${destPath} already up to date.`);
                     continue;
                 }
 
                 fs.writeFileSync(destPath, newJson, 'utf8');
                 written++;
-                mcpOutputChannel?.appendLine(`[ConnectMCP] Wrote ${configFile.destination}`);
+                mcpOutputChannel?.appendLine(`[ConnectMCP] Wrote ${destPath}`);
             } catch (e) {
-                mcpOutputChannel?.appendLine(`[ConnectMCP] Failed to write ${configFile.destination}: ${e}`);
+                mcpOutputChannel?.appendLine(`[ConnectMCP] Failed to write ${configFile.isGlobal ? path.join(os.homedir(), configFile.destination) : path.join(workspaceRoot, configFile.destination)}: ${e}`);
             }
         }
     }

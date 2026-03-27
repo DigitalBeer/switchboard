@@ -91,6 +91,18 @@
       {
         "command": "switchboard.resetKanbanDb",
         "title": "Switchboard: Reset Kanban Database"
+      },
+      {
+        "command": "switchboard.archiveCurrentPlan",
+        "title": "Switchboard: Archive Current Plan"
+      },
+      {
+        "command": "switchboard.queryArchive",
+        "title": "Switchboard: Query Plan Archive"
+      },
+      {
+        "command": "switchboard.exportAllToArchive",
+        "title": "Switchboard: Export All Completed Plans to Archive"
       }
     ],
     "configuration": {
@@ -225,6 +237,18 @@
           "type": "string",
           "default": "",
           "description": "Custom file path for the Kanban database (e.g., ~/Google Drive/Switchboard/kanban.db). If empty, uses the default .switchboard/kanban.db in the workspace root. Use this to store the DB in a cloud-synced folder for multi-machine handover.",
+          "scope": "resource"
+        },
+        "switchboard.archive.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to DuckDB archive database for historical plan research (e.g., ~/GoogleDrive/SwitchboardArchives/{workspace}.duckdb). Leave empty to disable archiving.",
+          "scope": "resource"
+        },
+        "switchboard.archive.autoArchiveCompleted": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically archive plans when moved to COMPLETED column.",
           "scope": "resource"
         }
       }

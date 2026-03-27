@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { createRequire } from 'module';
+import * as os from 'os';
 import * as path from 'path';
 
 export type KanbanPlanStatus = 'active' | 'archived' | 'completed' | 'deleted';
@@ -80,6 +81,33 @@ const MIGRATION_V2_STATUS_INDEX = `CREATE INDEX IF NOT EXISTS idx_plans_status O
 
 const MIGRATION_V4_SQL = [
     `ALTER TABLE plans ADD COLUMN tags TEXT DEFAULT ''`,
+];
+
+const MIGRATION_V5_SQL = [
+    `CREATE TABLE IF NOT EXISTS plan_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        workflow TEXT,
+        action TEXT,
+        timestamp TEXT NOT NULL,
+        device_id TEXT DEFAULT '',
+        vector_clock TEXT DEFAULT '',
+        payload TEXT DEFAULT '{}',
+        FOREIGN KEY (session_id) REFERENCES plans(session_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_events_session ON plan_events(session_id, timestamp)`,
+    `CREATE INDEX IF NOT EXISTS idx_events_time ON plan_events(timestamp)`,
+    `CREATE TABLE IF NOT EXISTS activity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        correlation_id TEXT,
+        session_id TEXT
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_time ON activity_log(timestamp)`,
+    `CREATE INDEX IF NOT EXISTS idx_activity_session ON activity_log(session_id, timestamp)`,
 ];
 
 const UPSERT_PLAN_SQL = `
@@ -185,6 +213,9 @@ export class KanbanDatabase {
     private _initPromise: Promise<boolean> | null = null;
     private _lastInitError: string | null = null;
     private _writeTail: Promise<void> = Promise.resolve();
+    private _loadedMtime: number = 0;       // mtimeMs of kanban.db when last loaded into memory
+    private _lastStatCheckMs: number = 0;   // Date.now() of last fs.stat() call (debounce)
+    private static readonly STAT_DEBOUNCE_MS = 500; // Don't re-stat more often than this
     private static _lastLoadedMtimes = new Map<string, number>();
 
     private constructor(private readonly _workspaceRoot: string, resolvedDbPath: string) {
@@ -200,7 +231,11 @@ export class KanbanDatabase {
     }
 
     public async ensureReady(): Promise<boolean> {
-        if (this._db) return true;
+        if (this._db) {
+            // Check if another IDE has modified the DB file since we loaded it
+            await this._reloadIfStale();
+            return true;
+        }
         if (!this._initPromise) {
             this._initPromise = this._initialize().then((ready) => {
                 if (!ready) {
@@ -629,6 +664,50 @@ export class KanbanDatabase {
         }
     }
 
+    /**
+     * Check if the on-disk DB file has been modified by another process (e.g. another IDE).
+     * If so, reload the entire in-memory database from disk.
+     * Debounced to avoid excessive fs.stat() calls during rapid query bursts.
+     */
+    private async _reloadIfStale(): Promise<void> {
+        if (!this._db) return; // Not initialized yet — _initialize() will load fresh
+
+        const now = Date.now();
+        if (now - this._lastStatCheckMs < KanbanDatabase.STAT_DEBOUNCE_MS) return;
+        this._lastStatCheckMs = now;
+
+        try {
+            if (!fs.existsSync(this._dbPath)) return; // File deleted — keep in-memory state
+
+            const stats = await fs.promises.stat(this._dbPath);
+            const currentMtime = stats.mtimeMs;
+
+            if (currentMtime === this._loadedMtime) return; // No external changes
+
+            // Drain any in-flight writes before reloading to prevent data loss
+            try { await this._writeTail; } catch { /* swallow — chain keeps alive internally */ }
+
+            console.log(`[KanbanDatabase] External modification detected (mtime ${this._loadedMtime} → ${currentMtime}). Reloading from disk.`);
+
+            const SQL = await KanbanDatabase._loadSqlJs();
+            const fileBuffer = await fs.promises.readFile(this._dbPath);
+
+            // Release old DB reference for GC
+            this._db = null;
+            this._db = new SQL.Database(new Uint8Array(fileBuffer));
+
+            // Re-apply schema and migrations (idempotent — safe to re-run)
+            this._db.exec(SCHEMA_SQL);
+            this._runMigrations();
+
+            this._loadedMtime = currentMtime;
+            KanbanDatabase._lastLoadedMtimes.set(this._dbPath, currentMtime);
+        } catch (error) {
+            console.error('[KanbanDatabase] Failed to reload from disk:', error);
+            // Keep using stale in-memory copy — better than crashing
+        }
+    }
+
     private async _initialize(): Promise<boolean> {
         try {
             await fs.promises.mkdir(path.dirname(this._dbPath), { recursive: true });
@@ -652,11 +731,13 @@ export class KanbanDatabase {
                 }
 
                 KanbanDatabase._lastLoadedMtimes.set(this._dbPath, fileMtime);
+                this._loadedMtime = fileMtime;
                 const existing = await fs.promises.readFile(this._dbPath);
                 this._db = new SQL.Database(new Uint8Array(existing));
                 console.log(`[KanbanDatabase] Loaded existing DB from ${this._dbPath} (${existing.length} bytes)`);
             } else {
                 KanbanDatabase._lastLoadedMtimes.delete(this._dbPath);
+                this._loadedMtime = 0;
                 this._db = new SQL.Database();
                 console.log(`[KanbanDatabase] Created new empty DB at ${this._dbPath}`);
             }
@@ -782,6 +863,11 @@ export class KanbanDatabase {
         for (const sql of MIGRATION_V4_SQL) {
             try { this._db.exec(sql); } catch { /* column already exists */ }
         }
+
+        // V5: event sourcing tables (plan_events + activity_log)
+        for (const sql of MIGRATION_V5_SQL) {
+            try { this._db.exec(sql); } catch { /* table/index already exists */ }
+        }
     }
 
     private async _persist(): Promise<boolean> {
@@ -794,6 +880,13 @@ export class KanbanDatabase {
             try {
                 await fs.promises.writeFile(tmpPath, Buffer.from(data));
                 await fs.promises.rename(tmpPath, this._dbPath);
+                // Update our mtime baseline so _reloadIfStale() doesn't
+                // re-read our own write as an "external modification"
+                try {
+                    const stats = await fs.promises.stat(this._dbPath);
+                    this._loadedMtime = stats.mtimeMs;
+                    KanbanDatabase._lastLoadedMtimes.set(this._dbPath, stats.mtimeMs);
+                } catch { /* stat failure is non-critical */ }
                 return true;
             } catch (error) {
                 try { await fs.promises.unlink(tmpPath); } catch { /* best-effort cleanup */ }
@@ -817,6 +910,177 @@ export class KanbanDatabase {
             return false;
         }
         return this._persist();
+    }
+
+    /**
+     * Append a plan event (workflow start, column change, completion, etc.)
+     */
+    public async appendPlanEvent(sessionId: string, event: {
+        eventType: string;
+        workflow?: string;
+        action?: string;
+        timestamp?: string;
+        payload?: string;
+    }): Promise<boolean> {
+        const deviceId = os.hostname();
+        return this._persistedUpdate(
+            `INSERT INTO plan_events (session_id, event_type, workflow, action, timestamp, device_id, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+                sessionId,
+                event.eventType,
+                event.workflow || '',
+                event.action || '',
+                event.timestamp || new Date().toISOString(),
+                deviceId,
+                event.payload || '{}'
+            ]
+        );
+    }
+
+    /**
+     * Get plan events for a session, ordered by timestamp
+     */
+    public async getPlanEvents(sessionId: string): Promise<any[]> {
+        if (!(await this.ensureReady()) || !this._db) return [];
+        try {
+            const stmt = this._db.prepare(
+                `SELECT * FROM plan_events WHERE session_id = ? ORDER BY timestamp ASC`,
+                [sessionId]
+            );
+            const results: any[] = [];
+            while (stmt.step()) {
+                results.push(stmt.getAsObject());
+            }
+            stmt.free();
+            return results;
+        } catch (error) {
+            console.error('[KanbanDatabase] Failed to get plan events:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Append an activity log event (replaces activity.jsonl writes)
+     */
+    public async appendActivityEvent(event: {
+        timestamp: string;
+        eventType: string;
+        payload: string;
+        correlationId?: string;
+        sessionId?: string | null;
+    }): Promise<boolean> {
+        return this._persistedUpdate(
+            `INSERT INTO activity_log (timestamp, event_type, payload, correlation_id, session_id)
+             VALUES (?, ?, ?, ?, ?)`,
+            [
+                event.timestamp,
+                event.eventType,
+                event.payload,
+                event.correlationId || null,
+                event.sessionId || null
+            ]
+        );
+    }
+
+    /**
+     * Get recent activity events with cursor-based pagination
+     */
+    public async getRecentActivity(limit: number, beforeTimestamp?: string): Promise<{
+        events: any[];
+        hasMore: boolean;
+        nextCursor?: string;
+    }> {
+        if (!(await this.ensureReady()) || !this._db) return { events: [], hasMore: false };
+        try {
+            const whereClause = beforeTimestamp ? 'WHERE timestamp < ?' : '';
+            const params = beforeTimestamp ? [beforeTimestamp, limit + 1] : [limit + 1];
+            const stmt = this._db.prepare(
+                `SELECT * FROM activity_log ${whereClause} ORDER BY timestamp DESC LIMIT ?`,
+                params
+            );
+            const results: any[] = [];
+            while (stmt.step()) {
+                results.push(stmt.getAsObject());
+            }
+            stmt.free();
+            const hasMore = results.length > limit;
+            if (hasMore) results.pop();
+            return {
+                events: results,
+                hasMore,
+                nextCursor: hasMore && results.length > 0 ? results[results.length - 1].timestamp : undefined
+            };
+        } catch (error) {
+            console.error('[KanbanDatabase] Failed to get recent activity:', error);
+            return { events: [], hasMore: false };
+        }
+    }
+
+    /**
+     * Get a run sheet (session event history) from the database.
+     * Returns null if no events found for this session.
+     */
+    public async getRunSheet(sessionId: string): Promise<any | null> {
+        const events = await this.getPlanEvents(sessionId);
+        if (events.length === 0) return null;
+        return {
+            sessionId,
+            events: events.map(e => {
+                try { return JSON.parse(e.payload); }
+                catch { return { workflow: e.workflow, action: e.action, timestamp: e.timestamp }; }
+            })
+        };
+    }
+
+    /**
+     * Migrate events from a session file into the plan_events table.
+     * Returns number of events migrated. Skips if events already exist for this session.
+     */
+    public async migrateSessionEvents(sessionId: string, events: any[]): Promise<number> {
+        if (!(await this.ensureReady()) || !this._db) return 0;
+
+        // Skip if session already has events in DB
+        try {
+            const checkStmt = this._db.prepare(
+                `SELECT COUNT(*) as cnt FROM plan_events WHERE session_id = ?`,
+                [sessionId]
+            );
+            if (checkStmt.step()) {
+                const count = checkStmt.getAsObject().cnt;
+                checkStmt.free();
+                if (Number(count) > 0) return 0;
+            } else {
+                checkStmt.free();
+            }
+        } catch { return 0; }
+
+        let migrated = 0;
+        const deviceId = os.hostname();
+        for (const event of events) {
+            try {
+                this._db.run(
+                    `INSERT INTO plan_events (session_id, event_type, workflow, action, timestamp, device_id, payload)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                        sessionId,
+                        'workflow_event',
+                        event.workflow || '',
+                        event.action || '',
+                        event.timestamp || new Date().toISOString(),
+                        deviceId,
+                        JSON.stringify(event)
+                    ]
+                );
+                migrated++;
+            } catch (e) {
+                console.error(`[KanbanDatabase] Failed to migrate event for ${sessionId}:`, e);
+            }
+        }
+        if (migrated > 0) {
+            await this._persist();
+        }
+        return migrated;
     }
 
     /** Normalize paths to use forward slashes for cross-platform compatibility */

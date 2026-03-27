@@ -645,6 +645,15 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._kanbanProvider.updateAutobanConfig(this._getAutobanBroadcastState());
     }
 
+    /**
+     * Programmatically select a session in the sidebar dropdown.
+     * Called by KanbanProvider when the user clicks a card on the Kanban board.
+     */
+    public selectSession(sessionId: string) {
+        this._lastSessionId = sessionId;
+        this._view?.webview.postMessage({ type: 'selectSession', sessionId });
+    }
+
     private _deriveLastActionFromEvents(events: any[]): string {
         for (let i = events.length - 1; i >= 0; i--) {
             const workflow = String(events[i]?.workflow || '').trim();
@@ -1052,6 +1061,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 resolvedWorkspaceRoot
             );
         }
+        await vscode.commands.executeCommand('switchboard.refreshUI');
     }
 
     private _workflowForForwardMove(targetColumn: string): string | null {
@@ -1192,6 +1202,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 resolvedWorkspaceRoot
             );
         }
+        await vscode.commands.executeCommand('switchboard.refreshUI');
     }
 
     /**
@@ -1310,7 +1321,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     public async handleKanbanCompletePlan(sessionId: string, workspaceRoot?: string): Promise<boolean> {
-        return await this._handleCompletePlan(sessionId, workspaceRoot);
+        const success = await this._handleCompletePlan(sessionId, workspaceRoot);
+        if (success) {
+            await vscode.commands.executeCommand('switchboard.refreshUI');
+        }
+        return success;
     }
 
     public async handleKanbanRestorePlan(planId: string, _workspaceRoot?: string): Promise<boolean> {
@@ -6122,7 +6137,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         : undefined;
             if (workflowName) {
                 try {
-                    await this._updateSessionRunSheet(sessionId, workflowName);
+                    const targetColumn = this._targetColumnForRole(role);
+                    if (targetColumn) {
+                        await this._applyManualKanbanColumnChange(
+                            sessionId,
+                            targetColumn,
+                            workflowName,
+                            `Auto-advanced after copying ${role} prompt`,
+                            resolvedWorkspaceRoot
+                        );
+                        // Trigger a full refresh so the Kanban board (and sidebar) reflects the move immediately
+                        await vscode.commands.executeCommand('switchboard.refreshUI');
+                    } else {
+                        await this._updateSessionRunSheet(sessionId, workflowName);
+                    }
                 } catch (updateError) {
                     console.error(`[TaskViewerProvider] Failed to auto-advance runsheet after copy for ${sessionId}:`, updateError);
                 }

@@ -3202,6 +3202,76 @@ function registerTools(server) {
         }
     );
 
+    // --- Archive Query Tool ---
+    server.tool(
+        "query_plan_archive",
+        {
+            sql: z.string().describe("SELECT query to run against the DuckDB archive (e.g., \"SELECT * FROM plans WHERE complexity = 'High'\")"),
+            limit: z.number().optional().describe("Max rows to return (default 100)")
+        },
+        async ({ sql, limit = 100 }) => {
+            const workspaceRoot = getWorkspaceRoot();
+
+            // Read archive path from config
+            let archivePath = '';
+            try {
+                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
+                if (fs.existsSync(settingsPath)) {
+                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+                    archivePath = settings['switchboard.archive.dbPath'] || '';
+                }
+            } catch { /* ignore */ }
+
+            if (!archivePath) {
+                return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
+            }
+
+            // Resolve path
+            let resolvedPath = archivePath.trim();
+            if (resolvedPath.startsWith('~')) {
+                resolvedPath = path.join(require('os').homedir(), resolvedPath.slice(1));
+            }
+            if (resolvedPath.includes('{workspace}')) {
+                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
+            }
+            if (!path.isAbsolute(resolvedPath)) {
+                resolvedPath = path.join(workspaceRoot, resolvedPath);
+            }
+
+            if (!fs.existsSync(resolvedPath)) {
+                return { content: [{ type: "text", text: "No archive database found. Complete and archive some plans first." }] };
+            }
+
+            // Security: only allow SELECT statements
+            const trimmed = sql.trim().toUpperCase();
+            if (!trimmed.startsWith('SELECT')) {
+                return { isError: true, content: [{ type: "text", text: "Only SELECT queries are allowed on the archive." }] };
+            }
+
+            // Word-boundary match to avoid false positives on column names
+            // like updated_at, created_at, etc.
+            const blocked = ['COPY', 'ATTACH', 'DETACH', 'EXPORT', 'IMPORT', 'INSTALL', 'LOAD', 'CALL', 'PRAGMA', 'CREATE', 'DROP', 'ALTER', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'];
+            for (const keyword of blocked) {
+                if (new RegExp(`\\b${keyword}\\b`).test(trimmed)) {
+                    return { isError: true, content: [{ type: "text", text: `Blocked keyword "${keyword}" detected in query.` }] };
+                }
+            }
+
+            // Strip semicolons (defense-in-depth) and handle existing LIMIT
+            const cleaned = sql.replace(/;/g, '');
+            const withoutLimit = cleaned.replace(/\bLIMIT\s+\d+\s*$/i, '').trim();
+            const limitedSql = `${withoutLimit} LIMIT ${limit}`;
+
+            try {
+                const { stdout } = await execFileAsync('duckdb', ['-readonly', '-json', resolvedPath, limitedSql]);
+                const results = JSON.parse(stdout || '[]');
+                return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+            } catch (e) {
+                return { isError: true, content: [{ type: "text", text: `Query failed: ${e.message}` }] };
+            }
+        }
+    );
+
     // --- Resources ---
     server.resource(
         "switchboard://active-rules",

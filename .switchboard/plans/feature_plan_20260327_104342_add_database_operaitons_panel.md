@@ -858,3 +858,202 @@ private async checkCliTools() {
 | `src/webview/dbSyncPanel.css` | **NEW** — Panel-specific styles |
 | `src/services/KanbanProvider.ts` | Add message handlers for DB path, CLI tools, terminal operations |
 
+## Review Results
+
+**Reviewer**: Adversarial Code Review (automated)
+**Date**: 2025-07-22
+**Status**: Code NOT yet implemented — this is a pre-implementation review of the plan's proposed code blocks.
+
+### Stage 1: Grumpy Principal Engineer Review
+
+Oh good, another "simple panel" that's actually five features in a trench coat. Let me annotate the corpses.
+
+---
+
+#### CRITICAL-1: `resetDatabase()` uses browser `confirm()` — trivial mis-click deletes all data
+**Location**: Plan Section 2, line 520–526
+```javascript
+function resetDatabase() {
+    if (confirm('Reset the kanban database? All plan metadata will be lost.')) {
+        vscode.postMessage({ type: 'resetDatabase' });
+    }
+}
+```
+Browser `confirm()` in a VS Code webview is *negligent* for a destructive operation. One spacebar tap and all plan metadata is gone. Worse, `confirm()` may not even render correctly in all webview implementations — some VS Code themes suppress browser-native dialogs.
+
+**Fix**: Remove `confirm()` entirely from the webview handler. Just `postMessage({type:'resetDatabase'})`. The extension-side handler MUST use `vscode.window.showWarningMessage('...', { modal: true }, 'Reset Database')` which gives a proper OS-native modal dialog.
+
+---
+
+#### CRITICAL-2: Shell injection in `openCliTerminal` — double quotes don't prevent injection
+**Location**: Plan Section 3, line 784–786
+```typescript
+const expandedPath = archivePath.replace(/^~/, require('os').homedir());
+const terminal = vscode.window.createTerminal('DuckDB Archive');
+terminal.sendText(`duckdb "${expandedPath}"`);
+```
+Double quotes in shell do NOT prevent command injection. A path like `foo"; rm -rf /; echo "` escapes the quotes and executes arbitrary commands. This is a textbook shell injection.
+
+**Fix**: Use single-quote wrapping with embedded single-quote escaping:
+```typescript
+const safePath = expandedPath.replace(/'/g, "'\\''");
+terminal.sendText(`duckdb '${safePath}'`);
+```
+
+---
+
+#### CRITICAL-3: `detectGoogleDrivePath` fallback loop returns FIRST path unconditionally
+**Location**: Plan Section 3, lines 710–713
+```typescript
+for (const fb of fallbacks) {
+    return fb;  // Returns immediately — no fs.existsSync() check
+}
+```
+This is `return fallbacks[0]` with extra steps. The `My Drive` fallback at index 1 is dead code. On machines without Google Drive, this confidently returns a non-existent path.
+
+**Fix**: Check `fs.existsSync(path.dirname(fb))` before returning each fallback. If none exist, return the first as a reasonable default (the DB file itself won't exist yet, but its parent directory should).
+
+---
+
+#### MAJOR-1: iCloud preset is macOS-only with no platform guard
+**Location**: Plan Section 3, line 672
+```typescript
+case 'icloud':
+    presetPath = path.join(homedir, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Switchboard', 'kanban.db');
+```
+On Windows/Linux, `~/Library/Mobile Documents/com~apple~CloudDocs/` is meaningless. This silently sets a bogus path.
+
+**Fix**: Guard with `if (process.platform === 'darwin')`. On other platforms, show `vscode.window.showWarningMessage('iCloud Drive preset is only available on macOS.')`.
+
+---
+
+#### MAJOR-2: No Windows/Linux codepath for Google Drive detection
+**Location**: Plan Section 3, `detectGoogleDrivePath()` (lines 688–716)
+Only handles macOS `~/Library/CloudStorage/GoogleDrive-*`. Windows users get the generic `~/Google Drive/Switchboard/kanban.db` fallback, which is plausible but unchecked. Linux has no Google Drive native support — the fallback path will never exist.
+
+**Fix**: Add platform switch:
+- **macOS**: CloudStorage scan (current code)
+- **Windows**: Check `path.join(homedir, 'Google Drive')` and `path.join(homedir, 'My Drive')`
+- **Linux**: Skip auto-detection; show warning that Google Drive doesn't have native Linux sync
+
+---
+
+#### MAJOR-3: `checkCliTools` uses `exec()` instead of `execFile()`
+**Location**: Plan Section 4, line 805
+```typescript
+const { stdout } = await execAsync('duckdb --version');
+```
+`exec()` passes through the shell. If a user's PATH contains a malicious `duckdb` shim, this executes it with shell expansion. Use `execFile('duckdb', ['--version'])` for direct execution without shell interpretation.
+
+---
+
+#### MAJOR-4: Inline `require()` calls bypass TypeScript type checking
+**Locations**: Lines 660, 692, 784, 799–800
+```typescript
+const homedir = require('os').homedir();
+const fs = require('fs');
+const { exec } = require('child_process');
+```
+These should be top-level imports (`import * as os from 'os'`, etc.). Inline `require()` bypasses TypeScript's type system, prevents tree shaking, and makes dependencies invisible to static analysis.
+
+---
+
+#### MAJOR-5: Terminal accumulation — no reuse or cleanup
+**Location**: Plan Section 3, `openCliTerminal()` (line 785)
+Each click creates `vscode.window.createTerminal('DuckDB Archive')`. No reference tracking, no reuse. Click the button 10 times → 10 orphaned DuckDB processes with open file handles on the database.
+
+**Fix**: Store the terminal reference as a class field (`private _duckdbTerminal?: vscode.Terminal`). On subsequent clicks, check `this._duckdbTerminal?.exitStatus === undefined` and reuse/show it instead of creating a new one.
+
+---
+
+#### MINOR-1: `updateCloudStatus` misses CloudStorage paths
+**Location**: Plan Section 2, line 552
+```javascript
+if (path.includes('Google Drive') || path.includes('Dropbox') || path.includes('iCloud'))
+```
+The auto-detected macOS path is `~/Library/CloudStorage/GoogleDrive-email@gmail.com/...` which contains `GoogleDrive-` (no space), not `Google Drive`. Badge will show "custom" instead of "cloud synced" for auto-detected paths.
+
+**Fix**: Add `|| path.includes('GoogleDrive-') || path.includes('CloudDocs')`.
+
+---
+
+#### MINOR-2: `toggleSection` initial state check is fragile
+**Location**: Plan Section 2, line 451
+```javascript
+if (content.style.display === 'none') {
+```
+The CSS sets `display: none` via class rule (`.section-content { display: none }`), not inline style. On first toggle, `content.style.display` is `''` (empty string), not `'none'`. The condition works only because the else branch fires, but the logic is inverted from intent.
+
+**Fix**: Check both: `if (content.style.display === 'none' || content.style.display === '')`.
+
+---
+
+#### NIT-1: Linux DuckDB install command hardcodes version and architecture
+**Location**: Plan Section 3, line 754
+```typescript
+installCommand = 'wget https://github.com/duckdb/duckdb/releases/download/v1.1.3/duckdb_cli-linux-amd64.zip && unzip ...';
+```
+Hardcoded `v1.1.3` and `amd64`. Will be stale immediately. Prefer linking to the docs page or detecting architecture at runtime.
+
+---
+
+#### NIT-2: Separate CSS file vs inline styles — convention mismatch
+The plan proposes `src/webview/dbSyncPanel.css` as a new file. The existing `kanban.html` uses inline `<style>` blocks. Either follow the existing convention (inline) or establish a clear reason for the new file. A separate CSS file in a webview requires additional `webview.asWebviewUri()` plumbing.
+
+---
+
+### Stage 2: Balanced Synthesis
+
+The plan's own adversarial section (lines 74–112) correctly identified the three most critical bugs. Here's the calibrated assessment:
+
+| ID | Severity | Fixable Inline? | Blocks Implementation? |
+|----|----------|-----------------|----------------------|
+| CRITICAL-1 (confirm dialog) | 🔴 Must fix | Yes — trivial | Yes |
+| CRITICAL-2 (shell injection) | 🔴 Must fix | Yes — 2-line fix | Yes |
+| CRITICAL-3 (fallback loop) | 🔴 Must fix | Yes — add existsSync | Yes |
+| MAJOR-1 (iCloud platform) | 🟠 Should fix | Yes — platform guard | No |
+| MAJOR-2 (cross-platform) | 🟠 Should fix | Moderate effort | No — macOS-first is acceptable |
+| MAJOR-3 (exec vs execFile) | 🟠 Should fix | Yes — 1-line change | No |
+| MAJOR-4 (inline require) | 🟠 Should fix | Yes — move to imports | No |
+| MAJOR-5 (terminal reuse) | 🟠 Should fix | Yes — add field + check | No |
+| MINOR-1 (cloud status) | 🟡 Nice to have | Yes | No |
+| MINOR-2 (toggle state) | 🟡 Nice to have | Yes | No |
+
+**The three CRITICALs must be fixed before implementation begins.** The implementer should receive this review as binding requirements.
+
+### Prescriptive Fixes for Implementer
+
+When implementing this plan, apply these corrections to the proposed code:
+
+1. **`resetDatabase()` in webview**: Remove `confirm()`. Just `postMessage({type:'resetDatabase'})`. Add `vscode.window.showWarningMessage` on the extension side.
+
+2. **`openCliTerminal()` in KanbanProvider.ts**:
+```typescript
+const safePath = expandedPath.replace(/'/g, "'\\''");
+terminal.sendText(`duckdb '${safePath}'`);
+```
+
+3. **`detectGoogleDrivePath()` fallback loop**:
+```typescript
+for (const fb of fallbacks) {
+    if (fs.existsSync(path.dirname(fb))) {
+        return fb;
+    }
+}
+return fallbacks[0]; // Default fallback
+```
+
+4. **iCloud preset**: Wrap in `if (process.platform === 'darwin')`.
+
+5. **All inline `require()` calls**: Move to top-level imports.
+
+6. **`checkCliTools`**: Use `execFile('duckdb', ['--version'])` not `exec('duckdb --version')`.
+
+7. **Terminal reuse**: Add `private _duckdbTerminal?: vscode.Terminal` field.
+
+8. **`updateCloudStatus`**: Add `GoogleDrive-` and `CloudDocs` to path matching.
+
+### Recommendation
+
+**Status**: Plan APPROVED with required fixes. The three CRITICAL issues are straightforward to fix during implementation. The plan's scope and architecture are sound — the adversarial split into 3 plans (from the Grumpy Critique) is overcautious given the code is cohesive. Ship as one plan, but the implementer MUST apply the 8 prescriptive fixes above.
+
