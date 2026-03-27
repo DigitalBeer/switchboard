@@ -629,6 +629,140 @@
             animation: iconFlash 0.35s ease-out forwards;
         }
 
+        /* Testing Fail icon button */
+        .testing-fail-icon {
+            color: var(--accent-red);
+            font-size: 16px;
+            font-weight: bold;
+            line-height: 22px;
+            width: 22px;
+            height: 22px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .testing-fail-btn:hover .testing-fail-icon {
+            text-shadow: 0 0 8px var(--accent-red);
+        }
+
+        /* Modal overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        .modal-overlay.hidden {
+            display: none;
+        }
+        .modal-content {
+            background: var(--panel-bg2);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            width: 480px;
+            max-width: 90vw;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+        }
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px 12px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .modal-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--accent-red);
+            margin: 0;
+        }
+        .modal-close-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+        }
+        .modal-close-btn:hover {
+            color: var(--text-primary);
+        }
+        .modal-body {
+            padding: 16px 20px;
+        }
+        .modal-body label {
+            display: block;
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        .modal-plan-count {
+            color: var(--text-primary);
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+        .modal-textarea {
+            width: 100%;
+            background: var(--bg-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            color: var(--text-primary);
+            font-family: var(--font-family);
+            font-size: 13px;
+            padding: 10px;
+            resize: vertical;
+            min-height: 100px;
+        }
+        .modal-textarea:focus {
+            outline: none;
+            border-color: var(--accent-teal);
+            box-shadow: 0 0 4px var(--accent-teal-dim);
+        }
+        .modal-textarea::placeholder {
+            color: var(--text-secondary);
+        }
+        .modal-footer {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            padding: 12px 20px 16px;
+            border-top: 1px solid var(--border-color);
+        }
+        .modal-btn {
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 13px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            font-family: var(--font-family);
+            transition: all 0.15s;
+        }
+        .modal-btn-secondary {
+            background: transparent;
+            border-color: var(--border-bright);
+            color: var(--text-primary);
+        }
+        .modal-btn-secondary:hover {
+            border-color: var(--accent-teal);
+            background: color-mix(in srgb, var(--accent-teal) 10%, transparent);
+        }
+        .modal-btn-primary {
+            background: var(--accent-teal);
+            color: #000;
+            font-weight: 600;
+        }
+        .modal-btn-primary:hover {
+            background: color-mix(in srgb, var(--accent-teal) 80%, white);
+            box-shadow: 0 0 8px var(--accent-teal-dim);
+        }
+
         /* CSS Toggle Switch */
         .toggle-switch {
             position: relative;
@@ -1026,6 +1160,25 @@
     </div>
     <div class="kanban-board" id="kanban-board"></div>
 
+    <!-- Testing Fail Modal -->
+    <div id="testing-fail-modal" class="modal-overlay hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Report Testing Failure</h3>
+                <button class="modal-close-btn" id="testing-fail-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-plan-count" id="testing-fail-plan-count"></p>
+                <label for="testing-fail-feedback">Describe the testing issues:</label>
+                <textarea id="testing-fail-feedback" class="modal-textarea" placeholder="e.g. Tests failing due to null pointer in UserService.getUser()..." rows="6"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn modal-btn-secondary" id="testing-fail-copy">Copy Prompt</button>
+                <button class="modal-btn modal-btn-primary" id="testing-fail-send">Send to Lead Coder</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const vscode = acquireVsCodeApi();
         const kanbanBoard = document.getElementById('kanban-board');
@@ -1114,6 +1267,8 @@
         let workspaceItems = [];
         let columnDragDropModes = {};
         const selectedCards = new Set();
+        let testingFailSessionIds = [];
+        let testingFailSourceColumn = '';
 
         // Column abbreviations for inline timers
         const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R', 'COMPLETED': 'D' };
@@ -1199,6 +1354,28 @@
 
         function escapeAttr(value) {
             return String(value || '').replace(/"/g, '&quot;');
+        }
+
+        function openTestingFailModal(sessionIds, column) {
+            testingFailSessionIds = sessionIds;
+            testingFailSourceColumn = column;
+            const modal = document.getElementById('testing-fail-modal');
+            const countEl = document.getElementById('testing-fail-plan-count');
+            const textarea = document.getElementById('testing-fail-feedback');
+            const def = columnDefinitions.find(d => d.id === column);
+            const label = def ? def.label : column;
+            countEl.textContent = sessionIds.length + ' plan(s) selected from "' + label + '" column';
+            textarea.value = '';
+            textarea.style.borderColor = '';
+            modal.classList.remove('hidden');
+            textarea.focus();
+        }
+
+        function closeTestingFailModal() {
+            const modal = document.getElementById('testing-fail-modal');
+            modal.classList.add('hidden');
+            testingFailSessionIds = [];
+            testingFailSourceColumn = '';
         }
 
         function getColumnDefinition(col) {
@@ -1288,6 +1465,9 @@
                         <button class="column-icon-btn" data-action="completeAll" data-column="${escapeAttr(def.id)}" data-tooltip="Complete all plans in this column (archive)">
                             <img src="${ICON_MOVE_ALL}" alt="Complete All">
                         </button>
+                        <button class="column-icon-btn testing-fail-btn" data-action="testingFailed" data-column="${escapeAttr(def.id)}" data-tooltip="Report testing failure for selected plans">
+                            <span class="testing-fail-icon">✗</span>
+                        </button>
                     </div>`;
                 } else {
                     const julesBtn = (isPlanReviewed && lastVisibleAgents.jules !== false)
@@ -1298,6 +1478,11 @@
                     const rePlanBtn = (isPlanReviewed && lastVisibleAgents.planner !== false)
                         ? `<button class="column-icon-btn" data-action="rePlanSelected" data-column="${escapeAttr(def.id)}" data-tooltip="Re-plan selected plans (trigger high-reasoning refinement)">
                                <img src="${ICON_ANALYST_MAP}" alt="Re-plan">
+                           </button>`
+                        : '';
+                    const testingFailBtn = (def.id === 'LEAD CODED' || def.id === 'CODER CODED')
+                        ? `<button class="column-icon-btn testing-fail-btn" data-action="testingFailed" data-column="${escapeAttr(def.id)}" data-tooltip="Report testing failure for selected plans">
+                               <span class="testing-fail-icon">✗</span>
                            </button>`
                         : '';
                     buttonArea = `<div class="column-button-area">
@@ -1315,6 +1500,7 @@
                         </button>
                         ${julesBtn}
                         ${rePlanBtn}
+                        ${testingFailBtn}
                     </div>`;
                 }
 
@@ -1363,7 +1549,7 @@
                     const action = btn.dataset.action;
                     const column = btn.dataset.column;
                     const nextCol = getNextColumn(column);
-                    if (!nextCol && action !== 'julesSelected' && action !== 'rePlanSelected' && action !== 'completeSelected' && action !== 'completeAll') return;
+                    if (!nextCol && action !== 'julesSelected' && action !== 'rePlanSelected' && action !== 'completeSelected' && action !== 'completeAll' && action !== 'testingFailed') return;
 
                     switch (action) {
                         case 'moveSelected': {
@@ -1405,6 +1591,12 @@
                             const ids = getSelectedInColumn(column);
                             if (ids.length === 0) return;
                             postKanbanMessage({ type: 'rePlanSelected', sessionIds: ids, workspaceRoot: getActiveWorkspaceRoot() });
+                            break;
+                        }
+                        case 'testingFailed': {
+                            const ids = getSelectedInColumn(column);
+                            if (ids.length === 0) return;
+                            openTestingFailModal(ids, column);
                             break;
                         }
                         case 'completeSelected': {
@@ -2212,6 +2404,45 @@
         renderBoard([]);
         updateAutobanButtonState();
         syncAutobanCountdownTimer();
+
+        // Testing Fail Modal event listeners
+        document.getElementById('testing-fail-close').addEventListener('click', closeTestingFailModal);
+        document.getElementById('testing-fail-modal').addEventListener('click', function(e) {
+            if (e.target === e.currentTarget) closeTestingFailModal();
+        });
+        document.getElementById('testing-fail-copy').addEventListener('click', function() {
+            const feedback = document.getElementById('testing-fail-feedback').value.trim();
+            if (!feedback) {
+                document.getElementById('testing-fail-feedback').style.borderColor = 'var(--accent-red)';
+                return;
+            }
+            postKanbanMessage({
+                type: 'testingFailed',
+                action: 'copyPrompt',
+                column: testingFailSourceColumn,
+                sessionIds: testingFailSessionIds,
+                feedback: feedback
+            });
+            closeTestingFailModal();
+        });
+        document.getElementById('testing-fail-send').addEventListener('click', function() {
+            const feedback = document.getElementById('testing-fail-feedback').value.trim();
+            if (!feedback) {
+                document.getElementById('testing-fail-feedback').style.borderColor = 'var(--accent-red)';
+                return;
+            }
+            postKanbanMessage({
+                type: 'testingFailed',
+                action: 'sendToLead',
+                column: testingFailSourceColumn,
+                sessionIds: testingFailSessionIds,
+                feedback: feedback
+            });
+            closeTestingFailModal();
+        });
+        document.getElementById('testing-fail-feedback').addEventListener('input', function() {
+            this.style.borderColor = '';
+        });
 
         // Signal to extension that webview is ready to receive data
         postKanbanMessage({ type: 'ready' });

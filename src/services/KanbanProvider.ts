@@ -2184,6 +2184,69 @@ export class KanbanProvider implements vscode.Disposable {
                 }
                 break;
             }
+            case 'testingFailed': {
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
+                const feedback = typeof msg.feedback === 'string' ? msg.feedback.trim() : '';
+                if (!feedback) {
+                    vscode.window.showWarningMessage('Testing failure report requires feedback.');
+                    break;
+                }
+
+                await this._refreshBoard(workspaceRoot);
+                const sourceCards = this._lastCards.filter(card =>
+                    card.workspaceRoot === workspaceRoot && msg.sessionIds.includes(card.sessionId)
+                );
+                if (sourceCards.length === 0) {
+                    vscode.window.showInformationMessage('No matching plans found.');
+                    break;
+                }
+
+                const planDetails = sourceCards.map(card => {
+                    const absPath = this._resolvePlanFilePath(workspaceRoot, card.planFile);
+                    return `- [${card.topic}] Plan File: ${absPath} (Complexity: ${card.complexity})`;
+                }).join('\n');
+
+                const prompt = `TESTING FAILURE REPORT — Re-implementation Required
+
+The following ${sourceCards.length} plan(s) have failed testing. The user has reported the issues below. You must read each plan, understand the original requirements, and fix the implementation to address the reported failures.
+
+## User Feedback
+${feedback}
+
+## Affected Plans
+${planDetails}
+
+## Instructions
+1. Read each plan file listed above to understand the original requirements.
+2. Investigate the reported testing failures.
+3. Fix the implementation to resolve all reported issues.
+4. Verify your fixes address the specific feedback provided.
+5. Do not introduce scope changes beyond what's needed to fix the reported issues.
+
+FOCUS DIRECTIVE: Each plan file path above is the single source of truth for that plan. Ignore any complexity regarding directory mirroring, 'brain' vs 'source' directories, or path hashing.`;
+
+                if (msg.action === 'copyPrompt') {
+                    await vscode.env.clipboard.writeText(prompt);
+                    vscode.window.showInformationMessage(`Testing failure prompt for ${sourceCards.length} plan(s) copied to clipboard.`);
+                } else if (msg.action === 'sendToLead') {
+                    await vscode.env.clipboard.writeText(prompt);
+
+                    // Move cards to LEAD CODED column
+                    const db = this._getKanbanDb(workspaceRoot);
+                    if (await db.ensureReady()) {
+                        for (const sid of msg.sessionIds) {
+                            await db.updateColumn(sid, 'LEAD CODED');
+                        }
+                    }
+
+                    await this._refreshBoard(workspaceRoot);
+                    vscode.window.showInformationMessage(
+                        `Testing failure prompt copied and ${sourceCards.length} plan(s) moved to Lead Coder. Paste the prompt in your lead coder chat.`
+                    );
+                }
+                break;
+            }
         }
     }
 
