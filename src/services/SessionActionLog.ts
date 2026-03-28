@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { KanbanDatabase } from './KanbanDatabase';
 
 export interface ArchiveSpec { sourcePath: string; destPath: string; }
 export interface ArchiveResult { sourcePath: string; success: boolean; error?: string; }
@@ -28,6 +29,7 @@ type QueueItem = {
 };
 
 export class SessionActionLog {
+    private readonly _workspaceRoot: string;
     private readonly sessionsDir: string;
     private readonly activityLogPath: string;
     private readonly queue: QueueItem[] = [];
@@ -38,6 +40,8 @@ export class SessionActionLog {
     private _titleCacheTimestamp = 0;
     private readonly _archiveTitleCache = new Map<string, string>();
     private _archiveTitleCacheLoaded = false;
+    private _kanbanDb: KanbanDatabase | null = null;
+    private _migrationDone = false;
     private static readonly TITLE_CACHE_TTL_MS = 5_000;
     private static readonly MAX_RETRIES = 4;
     private static readonly BASE_BACKOFF_MS = 200;
@@ -46,8 +50,28 @@ export class SessionActionLog {
     private static readonly AGGREGATION_WINDOW_MS = 1000;
 
     constructor(workspaceRoot: string) {
+        this._workspaceRoot = workspaceRoot;
         this.sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         this.activityLogPath = path.join(this.sessionsDir, 'activity.jsonl');
+    }
+
+    private _getDb(): KanbanDatabase {
+        if (!this._kanbanDb) {
+            this._kanbanDb = KanbanDatabase.forWorkspace(this._workspaceRoot);
+        }
+        return this._kanbanDb;
+    }
+
+    private async _ensureDbReady(): Promise<KanbanDatabase | null> {
+        const db = this._getDb();
+        const ready = await db.ensureReady();
+        if (!ready) return null;
+        if (!this._migrationDone) {
+            this._migrationDone = true;
+            await this._migrateActivityLog();
+            await this._migrateSessionFiles();
+        }
+        return db;
     }
 
     async logEvent(type: string, payload: Record<string, any>, correlationId?: string): Promise<void> {
@@ -74,20 +98,32 @@ export class SessionActionLog {
      */
     async read(dispatchId: string): Promise<SessionEvent[]> {
         try {
+            const db = await this._ensureDbReady();
+            if (db) {
+                const result = await db.getRecentActivity(1000);
+                return result.events
+                    .map((row: any) => {
+                        try {
+                            const parsed = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+                            return { type: row.event_type, payload: parsed };
+                        } catch { return null; }
+                    })
+                    .filter((e: any): e is { type: string; payload: any } => !!e)
+                    .filter((e: any) => e.type === 'dispatch' && String(e.payload?.dispatchId || '') === dispatchId)
+                    .map((e: any) => e.payload as SessionEvent);
+            }
+
+            // Filesystem fallback during transition
             if (!fs.existsSync(this.activityLogPath)) {
                 return [];
             }
-
             const content = await fs.promises.readFile(this.activityLogPath, 'utf8');
             return content
                 .split('\n')
                 .filter(line => line.trim())
                 .map(line => {
-                    try {
-                        return JSON.parse(line) as ActivityEvent;
-                    } catch {
-                        return null;
-                    }
+                    try { return JSON.parse(line) as ActivityEvent; }
+                    catch { return null; }
                 })
                 .filter((event): event is ActivityEvent => !!event)
                 .filter(event => event.type === 'dispatch' && String(event.payload?.dispatchId || '') === dispatchId)
@@ -101,34 +137,52 @@ export class SessionActionLog {
     async getRecentActivity(limit: number, beforeTimestamp?: string): Promise<{ events: ActivityEvent[]; hasMore: boolean; nextCursor?: string }> {
         const effectiveLimit = Math.max(1, Math.min(Number(limit) || 50, 200));
         try {
-            if (!fs.existsSync(this.activityLogPath)) {
-                return { events: [], hasMore: false };
+            const db = await this._ensureDbReady();
+            let parsed: ActivityEvent[];
+
+            if (db) {
+                // DB-first: fetch a generous batch of raw events, then aggregate in-memory
+                const rawLimit = Math.max(effectiveLimit * 4, 400);
+                const result = await db.getRecentActivity(rawLimit, beforeTimestamp);
+                parsed = result.events.map((row: any) => {
+                    let payload: Record<string, any> = {};
+                    try { payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload || {}); }
+                    catch { /* malformed payload */ }
+                    return {
+                        timestamp: row.timestamp,
+                        type: row.event_type,
+                        payload,
+                        ...(row.correlation_id ? { correlationId: row.correlation_id } : {})
+                    } as ActivityEvent;
+                }).sort((a: ActivityEvent, b: ActivityEvent) =>
+                    (this._toTimestamp(a.timestamp) || 0) - (this._toTimestamp(b.timestamp) || 0)
+                );
+            } else {
+                // Filesystem fallback
+                if (!fs.existsSync(this.activityLogPath)) {
+                    return { events: [], hasMore: false };
+                }
+
+                const beforeMs = this._toTimestamp(beforeTimestamp);
+                parsed = (await fs.promises.readFile(this.activityLogPath, 'utf8'))
+                    .split('\n')
+                    .filter(line => line.trim())
+                    .map(line => {
+                        try { return JSON.parse(line) as ActivityEvent; }
+                        catch { return null; }
+                    })
+                    .filter((event): event is ActivityEvent => !!event)
+                    .filter(event => {
+                        if (beforeMs === null) return true;
+                        const eventMs = this._toTimestamp(event.timestamp);
+                        return eventMs !== null && eventMs < beforeMs;
+                    })
+                    .sort((a, b) => (this._toTimestamp(a.timestamp) || 0) - (this._toTimestamp(b.timestamp) || 0));
             }
 
-            const beforeMs = this._toTimestamp(beforeTimestamp);
-            const parsed = (await fs.promises.readFile(this.activityLogPath, 'utf8'))
-                .split('\n')
-                .filter(line => line.trim())
-                .map(line => {
-                    try {
-                        return JSON.parse(line) as ActivityEvent;
-                    } catch {
-                        return null;
-                    }
-                })
-                .filter((event): event is ActivityEvent => !!event)
-                .filter(event => {
-                    if (beforeMs === null) return true;
-                    const eventMs = this._toTimestamp(event.timestamp);
-                    return eventMs !== null && eventMs < beforeMs;
-                })
-                .sort((a, b) => (this._toTimestamp(a.timestamp) || 0) - (this._toTimestamp(b.timestamp) || 0));
-
             const sessionTitles = await this._readSessionTitleMap();
-            // REMOVE AGGRESSIVE FILTERING: We want all events to be visible in the feed.
             const aggregated = this._aggregateEvents(parsed, sessionTitles)
                 .sort((a, b) => (this._toTimestamp(b.timestamp) || 0) - (this._toTimestamp(a.timestamp) || 0));
-
 
             const events = aggregated.slice(0, effectiveLimit);
             const hasMore = aggregated.length > effectiveLimit;
@@ -450,7 +504,63 @@ export class SessionActionLog {
         return Number.isFinite(ms) ? ms : null;
     }
 
-    // --- Session Run Sheet Management (Decoupled from TaskViewerProvider) ---
+    // --- Session Run Sheet Management (DB-first, filesystem fallback during transition) ---
+
+    /**
+     * Hydrate a full run sheet from DB: merges plan_events + plans table metadata.
+     * Returns the same shape callers historically expected from session .json files.
+     */
+    private async _hydrateRunSheet(sessionId: string): Promise<any | null> {
+        const db = await this._ensureDbReady();
+        if (!db) {
+            // Filesystem fallback
+            try {
+                const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
+                if (fs.existsSync(filePath)) {
+                    return JSON.parse(await fs.promises.readFile(filePath, 'utf8'));
+                }
+            } catch { /* fall through */ }
+            return null;
+        }
+
+        const dbSheet = await db.getRunSheet(sessionId);
+        if (!dbSheet) {
+            // Check for un-migrated filesystem .json file
+            try {
+                const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
+                if (fs.existsSync(filePath)) {
+                    const content = await fs.promises.readFile(filePath, 'utf8');
+                    const fileSheet = JSON.parse(content);
+                    if (Array.isArray(fileSheet.events) && fileSheet.events.length > 0) {
+                        await db.migrateSessionEvents(sessionId, fileSheet.events);
+                    }
+                    const retrySheet = await db.getRunSheet(sessionId);
+                    if (retrySheet) {
+                        const record = await db.getPlanBySessionId(sessionId);
+                        return this._composeHydratedSheet(sessionId, retrySheet.events, record, fileSheet);
+                    }
+                    return fileSheet;
+                }
+            } catch { /* fall through */ }
+            return null;
+        }
+
+        const record = await db.getPlanBySessionId(sessionId);
+        return this._composeHydratedSheet(sessionId, dbSheet.events, record);
+    }
+
+    private _composeHydratedSheet(sessionId: string, events: any[], record: any, fileSheet?: any): any {
+        return {
+            sessionId,
+            events,
+            planFile: record?.planFile || fileSheet?.planFile || '',
+            topic: record?.topic || fileSheet?.topic || '',
+            planName: record?.topic || fileSheet?.planName || fileSheet?.topic || '',
+            completed: record?.status === 'completed' || fileSheet?.completed === true,
+            createdAt: record?.createdAt || fileSheet?.createdAt || (events.length > 0 ? events[0].timestamp : ''),
+            brainSourcePath: record?.brainSourcePath || fileSheet?.brainSourcePath || ''
+        };
+    }
 
     async createRunSheet(sessionId: string, data: any): Promise<void> {
         const tail = this._writeLocks.get(sessionId) ?? Promise.resolve();
@@ -465,8 +575,6 @@ export class SessionActionLog {
 
     private async _doCreateRunSheet(sessionId: string, data: any): Promise<void> {
         try {
-            await fs.promises.mkdir(this.sessionsDir, { recursive: true });
-            const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
             const normalized = (data && typeof data === 'object') ? { ...data } : {};
             if (typeof normalized.sessionId !== 'string' || !normalized.sessionId.trim()) {
                 normalized.sessionId = sessionId;
@@ -477,6 +585,35 @@ export class SessionActionLog {
             if (typeof normalized.createdAt !== 'string') {
                 normalized.createdAt = new Date().toISOString();
             }
+
+            const db = await this._ensureDbReady();
+            if (db) {
+                // Register plan record so completeMultiple / getPlanBySessionId work
+                const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId() || '';
+                await db.upsertPlans([{
+                    planId: sessionId,
+                    sessionId,
+                    topic: normalized.topic || normalized.planName || '',
+                    planFile: normalized.planFile || '',
+                    kanbanColumn: 'CREATED',
+                    status: 'active' as const,
+                    complexity: (['Low', 'High'].includes(normalized.complexity) ? normalized.complexity : 'Unknown') as 'Unknown' | 'Low' | 'High',
+                    tags: '',
+                    workspaceId,
+                    createdAt: normalized.createdAt,
+                    updatedAt: normalized.createdAt,
+                    lastAction: '',
+                    sourceType: 'local',
+                    brainSourcePath: normalized.brainSourcePath || '',
+                    mirrorPath: ''
+                }]);
+                if (normalized.events.length > 0) {
+                    await db.migrateSessionEvents(sessionId, normalized.events);
+                }
+            }
+
+            await fs.promises.mkdir(this.sessionsDir, { recursive: true });
+            const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
             await fs.promises.writeFile(filePath, JSON.stringify(normalized, null, 2));
         } catch (error) {
             console.error(`[SessionActionLog] Failed to create run sheet ${sessionId}:`, error);
@@ -496,15 +633,47 @@ export class SessionActionLog {
 
     private async _doUpdateRunSheet(sessionId: string, updater: (current: any) => any): Promise<void> {
         try {
-            const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
-            if (!fs.existsSync(filePath)) return;
+            const current = await this._hydrateRunSheet(sessionId);
+            if (!current) return;
 
-            const content = await fs.promises.readFile(filePath, 'utf8');
-            const current = JSON.parse(content);
+            // Snapshot BEFORE calling updater — updater may mutate current in-place
+            const prevEventLen = Array.isArray(current.events) ? current.events.length : 0;
+            const prevCompleted = current.completed;
+            const prevTopic = current.topic;
+
             const next = updater(current);
-            if (next) {
-                await fs.promises.writeFile(filePath, JSON.stringify(next, null, 2));
+            if (!next) return;
+
+            const db = await this._ensureDbReady();
+            if (db) {
+                // Diff events using pre-mutation snapshot
+                const nextEvents = Array.isArray(next.events) ? next.events : [];
+                const newEvents = nextEvents.slice(prevEventLen);
+                for (const event of newEvents) {
+                    await db.appendPlanEvent(sessionId, {
+                        eventType: 'workflow_event',
+                        workflow: event.workflow || '',
+                        action: event.action || '',
+                        timestamp: event.timestamp || new Date().toISOString(),
+                        payload: JSON.stringify(event)
+                    });
+                }
+
+                // Diff metadata using pre-mutation snapshot
+                if (next.completed === true && prevCompleted !== true) {
+                    await db.completeMultiple([sessionId]);
+                }
+                if (next.topic && next.topic !== prevTopic) {
+                    await db.updateTopic(sessionId, next.topic);
+                }
             }
+
+            // Also write filesystem copy during transition
+            try {
+                await fs.promises.mkdir(this.sessionsDir, { recursive: true });
+                const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
+                await fs.promises.writeFile(filePath, JSON.stringify(next, null, 2));
+            } catch { /* filesystem write failure is non-fatal */ }
         } catch (error) {
             console.error(`[SessionActionLog] Failed to update run sheet ${sessionId}:`, error);
         }
@@ -512,6 +681,17 @@ export class SessionActionLog {
 
     async getRunSheets(): Promise<any[]> {
         try {
+            const db = await this._ensureDbReady();
+            if (db) {
+                const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId() || '';
+                if (workspaceId) {
+                    const plans = await db.getActivePlans(workspaceId);
+                    const results = await Promise.all(plans.map(p => this._hydrateRunSheet(p.sessionId)));
+                    return results.filter(Boolean);
+                }
+            }
+
+            // Filesystem fallback
             if (!fs.existsSync(this.sessionsDir)) return [];
             const files = await fs.promises.readdir(this.sessionsDir);
             const sheets = [];
@@ -539,11 +719,24 @@ export class SessionActionLog {
      */
     async findRunSheetByPlanFile(planFile: string, options?: { includeCompleted?: boolean }): Promise<any | null> {
         try {
+            const db = await this._ensureDbReady();
+            if (db) {
+                const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId() || '';
+                if (workspaceId) {
+                    const record = await db.getPlanByPlanFile(planFile, workspaceId);
+                    if (record) {
+                        if (!options?.includeCompleted && record.status === 'completed') return null;
+                        return this._hydrateRunSheet(record.sessionId);
+                    }
+                    return null;
+                }
+            }
+
+            // Filesystem fallback
             if (!fs.existsSync(this.sessionsDir)) return null;
             const normalizedTarget = this._normalizePlanFilePath(planFile);
             const includeCompleted = options?.includeCompleted === true;
             const files = await fs.promises.readdir(this.sessionsDir);
-
             for (const file of files) {
                 if (!file.endsWith('.json')) continue;
                 try {
@@ -554,9 +747,7 @@ export class SessionActionLog {
                     if (this._normalizePlanFilePath(sheet.planFile) === normalizedTarget) {
                         return sheet;
                     }
-                } catch {
-                    // Ignore malformed runsheets while searching.
-                }
+                } catch { /* ignore malformed */ }
             }
         } catch (error) {
             console.error('[SessionActionLog] Failed to find runsheet by plan file:', error);
@@ -566,6 +757,11 @@ export class SessionActionLog {
 
     async deleteRunSheet(sessionId: string): Promise<void> {
         try {
+            const db = await this._ensureDbReady();
+            if (db) {
+                await db.deletePlanEvents(sessionId);
+            }
+            // Also clean up filesystem copy
             const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
             if (fs.existsSync(filePath)) {
                 await fs.promises.unlink(filePath);
@@ -576,16 +772,7 @@ export class SessionActionLog {
     }
 
     async getRunSheet(sessionId: string): Promise<any | null> {
-        try {
-            const filePath = path.join(this.sessionsDir, `${sessionId}.json`);
-            if (fs.existsSync(filePath)) {
-                const content = await fs.promises.readFile(filePath, 'utf8');
-                return JSON.parse(content);
-            }
-        } catch (error) {
-            console.error(`[SessionActionLog] Failed to get run sheet ${sessionId}:`, error);
-        }
-        return null;
+        return this._hydrateRunSheet(sessionId);
     }
 
     async deleteFile(relativePath: string): Promise<void> {
@@ -600,6 +787,17 @@ export class SessionActionLog {
 
     async getCompletedRunSheets(): Promise<any[]> {
         try {
+            const db = await this._ensureDbReady();
+            if (db) {
+                const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId() || '';
+                if (workspaceId) {
+                    const plans = await db.getCompletedPlans(workspaceId);
+                    const results = await Promise.all(plans.map(p => this._hydrateRunSheet(p.sessionId)));
+                    return results.filter(Boolean);
+                }
+            }
+
+            // Filesystem fallback
             if (!fs.existsSync(this.sessionsDir)) return [];
             const files = await fs.promises.readdir(this.sessionsDir);
             const sheets = [];
@@ -677,26 +875,27 @@ export class SessionActionLog {
      */
     async cleanup(retentionHours: number): Promise<void> {
         try {
-            if (!fs.existsSync(this.sessionsDir)) {
-                return;
+            const now = Date.now();
+            const cutoffMs = now - (retentionHours * 60 * 60 * 1000);
+            const cutoffIso = new Date(cutoffMs).toISOString();
+
+            const db = await this._ensureDbReady();
+            if (db) {
+                await db.cleanupActivityLog(cutoffIso);
             }
 
-            const now = Date.now();
-            const cutoff = now - (retentionHours * 60 * 60 * 1000);
-
-            const files = await fs.promises.readdir(this.sessionsDir);
-            for (const file of files) {
-                if (!file.endsWith('.jsonl') || file === 'activity.jsonl') continue;
-
-                const filePath = path.join(this.sessionsDir, file);
-                try {
-                    const stats = await fs.promises.stat(filePath);
-                    if (stats.mtimeMs < cutoff) {
-                        await fs.promises.unlink(filePath);
-                        console.log(`[SessionActionLog] Cleaned up old log: ${file}`);
-                    }
-                } catch {
-                    // Ignore errors for individual files
+            // Also clean up old .jsonl archive files on disk
+            if (fs.existsSync(this.sessionsDir)) {
+                const files = await fs.promises.readdir(this.sessionsDir);
+                for (const file of files) {
+                    if (!file.endsWith('.jsonl') || file === 'activity.jsonl') continue;
+                    const filePath = path.join(this.sessionsDir, file);
+                    try {
+                        const stats = await fs.promises.stat(filePath);
+                        if (stats.mtimeMs < cutoffMs) {
+                            await fs.promises.unlink(filePath);
+                        }
+                    } catch { /* ignore */ }
                 }
             }
         } catch (error) {
@@ -717,30 +916,25 @@ export class SessionActionLog {
         if (this.isFlushing) return;
         this.isFlushing = true;
         try {
-            await fs.promises.mkdir(this.sessionsDir, { recursive: true });
-
-            // Log Rotation Check (5MB limit)
-            // Guard: stat + rename is not atomic. If the file disappears between
-            // the two calls (e.g. another process rotated it first), catch ENOENT
-            // gracefully instead of crashing the flush pipeline.
-            try {
-                const stats = await fs.promises.stat(this.activityLogPath).catch(() => null);
-                if (stats && stats.size > 5 * 1024 * 1024) {
-                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-                    const archivePath = path.join(this.sessionsDir, `activity-${timestamp}.jsonl`);
-                    await fs.promises.rename(this.activityLogPath, archivePath).catch((renameErr: NodeJS.ErrnoException) => {
-                        if (renameErr.code !== 'ENOENT') throw renameErr;
-                        // File already rotated by another process — safe to ignore
-                    });
-                }
-            } catch (e) {
-                console.error('[SessionActionLog] Log rotation failed:', e);
-            }
+            const db = await this._ensureDbReady();
 
             while (this.queue.length > 0) {
                 const item = this.queue[0];
                 try {
-                    await fs.promises.appendFile(this.activityLogPath, `${JSON.stringify(item.event)}\n`, 'utf8');
+                    if (db) {
+                        const success = await db.appendActivityEvent({
+                            timestamp: item.event.timestamp,
+                            eventType: item.event.type,
+                            payload: JSON.stringify(item.event.payload),
+                            correlationId: item.event.correlationId || undefined,
+                            sessionId: (item.event.payload as any)?.sessionId || undefined
+                        });
+                        if (!success) throw new Error('DB appendActivityEvent returned false');
+                    } else {
+                        // Filesystem fallback
+                        await fs.promises.mkdir(this.sessionsDir, { recursive: true });
+                        await fs.promises.appendFile(this.activityLogPath, `${JSON.stringify(item.event)}\n`, 'utf8');
+                    }
                     this.queue.shift();
                     item.resolve();
                 } catch (error) {
@@ -763,6 +957,73 @@ export class SessionActionLog {
             if (this.queue.length > 0) {
                 this._scheduleFlush();
             }
+        }
+    }
+
+    // --- One-time migration methods ---
+
+    private async _migrateActivityLog(): Promise<void> {
+        try {
+            // Guard: skip if already migrated
+            const migratedPath = this.activityLogPath + '.migrated';
+            if (fs.existsSync(migratedPath)) return;
+            if (!fs.existsSync(this.activityLogPath)) return;
+
+            const db = this._getDb();
+            const ready = await db.ensureReady();
+            if (!ready) return;
+
+            const content = await fs.promises.readFile(this.activityLogPath, 'utf8');
+            const lines = content.split('\n').filter(l => l.trim());
+            let migrated = 0;
+
+            for (const line of lines) {
+                try {
+                    const event = JSON.parse(line) as ActivityEvent;
+                    await db.appendActivityEvent({
+                        timestamp: event.timestamp,
+                        eventType: event.type,
+                        payload: JSON.stringify(event.payload),
+                        correlationId: event.correlationId || undefined,
+                        sessionId: (event.payload as any)?.sessionId || undefined
+                    });
+                    migrated++;
+                } catch { /* skip malformed lines */ }
+            }
+
+            await fs.promises.rename(this.activityLogPath, migratedPath);
+            console.log(`[SessionActionLog] Migrated ${migrated} activity events from JSONL to DB`);
+        } catch (error) {
+            console.error('[SessionActionLog] Activity log migration failed:', error);
+        }
+    }
+
+    private async _migrateSessionFiles(): Promise<void> {
+        try {
+            if (!fs.existsSync(this.sessionsDir)) return;
+
+            const db = this._getDb();
+            const ready = await db.ensureReady();
+            if (!ready) return;
+
+            const files = await fs.promises.readdir(this.sessionsDir);
+            for (const file of files) {
+                if (!file.endsWith('.json') || file.endsWith('.migrated')) continue;
+                const filePath = path.join(this.sessionsDir, file);
+                try {
+                    const content = await fs.promises.readFile(filePath, 'utf8');
+                    const sheet = JSON.parse(content);
+                    const sessionId = sheet.sessionId || file.replace(/\.json$/, '');
+                    if (Array.isArray(sheet.events) && sheet.events.length > 0) {
+                        const migrated = await db.migrateSessionEvents(sessionId, sheet.events);
+                        if (migrated > 0) {
+                            await fs.promises.rename(filePath, filePath + '.migrated');
+                        }
+                    }
+                } catch { /* skip malformed session files */ }
+            }
+        } catch (error) {
+            console.error('[SessionActionLog] Session files migration failed:', error);
         }
     }
 

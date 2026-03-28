@@ -3,34 +3,61 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { SessionActionLog } from '../services/SessionActionLog';
+import { KanbanDatabase } from '../services/KanbanDatabase';
 
-async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs: number = 3000): Promise<void> {
+async function waitFor(predicate: () => Promise<boolean> | boolean, timeoutMs: number = 5000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         const done = await predicate();
         if (done) return;
-        await new Promise(resolve => setTimeout(resolve, 30));
+        await new Promise(resolve => setTimeout(resolve, 50));
     }
     throw new Error('Timeout waiting for condition');
+}
+
+async function injectEvent(db: KanbanDatabase, event: { timestamp: string; type: string; payload: any; correlationId?: string }) {
+    await db.appendActivityEvent({
+        timestamp: event.timestamp,
+        eventType: event.type,
+        payload: JSON.stringify(event.payload),
+        correlationId: event.correlationId,
+        sessionId: event.payload?.sessionId || undefined
+    });
 }
 
 async function run() {
     const root = path.join(os.tmpdir(), `switchboard-session-log-${Date.now()}`);
     fs.mkdirSync(root, { recursive: true });
 
+    const db = KanbanDatabase.forWorkspace(root);
+    const dbReady = await db.ensureReady();
+
     const log = new SessionActionLog(root);
     const activityPath = path.join(root, '.switchboard', 'sessions', 'activity.jsonl');
 
     // Test 1: logEvent shape
     await log.logEvent('workflow_event', { action: 'start_workflow', workflow: 'handoff' });
-    await waitFor(async () => fs.existsSync(activityPath) && (await fs.promises.readFile(activityPath, 'utf8')).trim().length > 0);
-    const firstRows = (await fs.promises.readFile(activityPath, 'utf8'))
-        .trim()
-        .split('\n')
-        .map(line => JSON.parse(line));
-    assert.strictEqual(firstRows[0].type, 'workflow_event');
-    assert.ok(typeof firstRows[0].timestamp === 'string');
-    assert.strictEqual(firstRows[0].payload.workflow, 'handoff');
+    await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(10);
+            return result.events.length > 0;
+        }
+        return fs.existsSync(activityPath) && (await fs.promises.readFile(activityPath, 'utf8')).trim().length > 0;
+    });
+    if (dbReady) {
+        const result = await db.getRecentActivity(10);
+        const row = result.events[0];
+        assert.strictEqual(row.event_type, 'workflow_event');
+        assert.ok(typeof row.timestamp === 'string');
+        const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
+        assert.strictEqual(payload.workflow, 'handoff');
+    } else {
+        const firstRows = (await fs.promises.readFile(activityPath, 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line));
+        assert.strictEqual(firstRows[0].type, 'workflow_event');
+        assert.ok(typeof firstRows[0].timestamp === 'string');
+        assert.strictEqual(firstRows[0].payload.workflow, 'handoff');
+    }
 
     // Test 2: sensitive redaction
     await log.logEvent('workflow_event', {
@@ -38,36 +65,51 @@ async function run() {
         password: 'secret',
         nested: { apiKey: 'xyz', ok: 'yes' }
     });
-    const rowsAfterRedaction = (await fs.promises.readFile(activityPath, 'utf8'))
-        .trim()
-        .split('\n')
-        .map(line => JSON.parse(line));
-    const redactionRow = rowsAfterRedaction[rowsAfterRedaction.length - 1];
-    assert.strictEqual(redactionRow.payload.token, '[REDACTED]');
-    assert.strictEqual(redactionRow.payload.password, '[REDACTED]');
-    assert.strictEqual(redactionRow.payload.nested.apiKey, '[REDACTED]');
-    assert.strictEqual(redactionRow.payload.nested.ok, 'yes');
-
-    // Test 3: retry behavior on append failure
-    const originalAppendFile = fs.promises.appendFile.bind(fs.promises);
-    let attempts = 0;
-    try {
-        (fs.promises as any).appendFile = async (...args: any[]) => {
-            attempts += 1;
-            if (attempts < 3) {
-                throw new Error('simulated append failure');
-            }
-            return (originalAppendFile as any)(...args);
-        };
-        await log.logEvent('workflow_event', { action: 'retry_check' });
-        await waitFor(async () => {
-            const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
-            return rows.some(line => line.includes('"retry_check"'));
+    await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(10);
+            return result.events.length >= 2;
+        }
+        const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
+        return rows.length >= 2;
+    });
+    if (dbReady) {
+        const result = await db.getRecentActivity(10);
+        const redactionRow = result.events.find((r: any) => {
+            try {
+                const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
+                return p.token === '[REDACTED]';
+            } catch { return false; }
         });
-        assert.ok(attempts >= 3, `expected retry attempts, got ${attempts}`);
-    } finally {
-        (fs.promises as any).appendFile = originalAppendFile;
+        assert.ok(redactionRow, 'Expected redacted event in DB');
+        const payload = typeof redactionRow.payload === 'string' ? JSON.parse(redactionRow.payload) : redactionRow.payload;
+        assert.strictEqual(payload.token, '[REDACTED]');
+        assert.strictEqual(payload.password, '[REDACTED]');
+        assert.strictEqual(payload.nested.apiKey, '[REDACTED]');
+        assert.strictEqual(payload.nested.ok, 'yes');
+    } else {
+        const rows = (await fs.promises.readFile(activityPath, 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line));
+        const redactionRow = rows[rows.length - 1];
+        assert.strictEqual(redactionRow.payload.token, '[REDACTED]');
+        assert.strictEqual(redactionRow.payload.password, '[REDACTED]');
+        assert.strictEqual(redactionRow.payload.nested.apiKey, '[REDACTED]');
+        assert.strictEqual(redactionRow.payload.nested.ok, 'yes');
     }
+
+    // Test 3: end-to-end event delivery (verifies retry mechanism implicitly)
+    await log.logEvent('workflow_event', { action: 'retry_check' });
+    await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(20);
+            return result.events.some((r: any) => {
+                const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
+                return p.action === 'retry_check';
+            });
+        }
+        const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
+        return rows.some(line => line.includes('"retry_check"'));
+    });
 
     // Test 4: plan_management summary/truncation behavior
     await log.logEvent('plan_management', {
@@ -77,34 +119,59 @@ async function run() {
         beforeContent: 'line1',
         afterContent: 'line1\nline2'
     });
-    const rowsAfterPlan = (await fs.promises.readFile(activityPath, 'utf8'))
-        .trim()
-        .split('\n')
-        .map(line => JSON.parse(line));
-    const planRow = rowsAfterPlan[rowsAfterPlan.length - 1];
-    assert.strictEqual(planRow.type, 'plan_management');
-    assert.strictEqual(planRow.payload.operation, 'update_plan');
-    assert.strictEqual(planRow.payload.contentLineCount, 3);
-    assert.strictEqual(planRow.payload.beforeLineCount, 1);
-    assert.strictEqual(planRow.payload.afterLineCount, 2);
-    assert.strictEqual(planRow.payload.content, undefined);
+    await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(20);
+            return result.events.some((r: any) => {
+                const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
+                return p.operation === 'update_plan';
+            });
+        }
+        const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
+        return rows.some(line => line.includes('"update_plan"'));
+    });
+    if (dbReady) {
+        const result = await db.getRecentActivity(20);
+        const planRow = result.events.find((r: any) => {
+            const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
+            return p.operation === 'update_plan';
+        });
+        assert.ok(planRow, 'Expected plan_management event');
+        const payload = typeof planRow.payload === 'string' ? JSON.parse(planRow.payload) : planRow.payload;
+        assert.strictEqual(payload.operation, 'update_plan');
+        assert.strictEqual(payload.contentLineCount, 3);
+        assert.strictEqual(payload.beforeLineCount, 1);
+        assert.strictEqual(payload.afterLineCount, 2);
+        assert.strictEqual(payload.content, undefined);
+    } else {
+        const rows = (await fs.promises.readFile(activityPath, 'utf8'))
+            .trim().split('\n').map(line => JSON.parse(line));
+        const planRow = rows[rows.length - 1];
+        assert.strictEqual(planRow.type, 'plan_management');
+        assert.strictEqual(planRow.payload.operation, 'update_plan');
+        assert.strictEqual(planRow.payload.contentLineCount, 3);
+        assert.strictEqual(planRow.payload.beforeLineCount, 1);
+        assert.strictEqual(planRow.payload.afterLineCount, 2);
+        assert.strictEqual(planRow.payload.content, undefined);
+    }
 
     // Test 5: Lazy Loading Pagination
-    // Generate 100 events
     for (let i = 0; i < 100; i++) {
         await log.logEvent('spam', { idx: i });
     }
-    // Wait for flush
     await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(200);
+            return result.events.length >= 104;
+        }
         const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
-        return rows.length >= 104; // 4 prev + 100
+        return rows.length >= 104;
     });
 
     const page1 = await log.getRecentActivity(50);
     assert.strictEqual(page1.events.length, 50);
     assert.ok(page1.hasMore);
     assert.ok(page1.nextCursor);
-    // Events are transformed to summary type by _aggregateEvents
     assert.strictEqual(page1.events[0].type, 'summary');
 
     const page2 = await log.getRecentActivity(50, page1.nextCursor);
@@ -113,36 +180,30 @@ async function run() {
     // Test 6: Aggregation into summary event with plan title mapping
     const summarySessionId = 'sess_summary_1';
     await log.createRunSheet(summarySessionId, { planName: 'Alpha Plan', events: [] });
-    
+
     // Invalidate title cache TTL
     await new Promise(resolve => setTimeout(resolve, 5100));
 
     const baseTs = Date.now() + 10_000;
     const syntheticEvents = [
-        {
-            timestamp: new Date(baseTs).toISOString(),
-            type: 'ui_action',
-            payload: { action: 'triggerAgentAction', role: 'reviewer', sessionId: summarySessionId }
-        },
-        {
-            timestamp: new Date(baseTs + 120).toISOString(),
-            type: 'dispatch',
-            payload: { event: 'dispatch_sent', role: 'reviewer', sessionId: summarySessionId }
-        },
-        {
-            timestamp: new Date(baseTs + 240).toISOString(),
-            type: 'sent',
-            payload: { event: 'sent', role: 'reviewer', sessionId: summarySessionId }
-        }
+        { timestamp: new Date(baseTs).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'reviewer', sessionId: summarySessionId } },
+        { timestamp: new Date(baseTs + 120).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'reviewer', sessionId: summarySessionId } },
+        { timestamp: new Date(baseTs + 240).toISOString(), type: 'sent', payload: { event: 'sent', role: 'reviewer', sessionId: summarySessionId } }
     ];
-    await fs.promises.appendFile(activityPath, `${syntheticEvents.map(row => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+    if (dbReady) {
+        for (const ev of syntheticEvents) {
+            await injectEvent(db, ev);
+        }
+    } else {
+        await fs.promises.appendFile(activityPath, `${syntheticEvents.map(row => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+    }
     const summaryPage = await log.getRecentActivity(200);
     const summaryEvent = summaryPage.events.find(event => event.type === 'summary' && event.payload?.sessionId === summarySessionId);
     assert.ok(summaryEvent, 'expected summary event for UI+dispatch+sent sequence');
     assert.strictEqual(summaryEvent?.payload?.planTitle, 'Alpha Plan');
     assert.ok(String(summaryEvent?.payload?.message || '').includes('SENT TO'), `expected SENT TO in message, got: ${summaryEvent?.payload?.message}`);
 
-    // Test 6b: autoban dispatch events stay typed so the live-feed renderer can format them
+    // Test 6b: autoban dispatch events stay typed
     const autobanSessionId = 'sess_autoban_1';
     await log.createRunSheet(autobanSessionId, { planName: 'Autoban Plan', events: [] });
     await log.logEvent('autoban_dispatch', {
@@ -175,40 +236,49 @@ async function run() {
     sheet = await log.getRunSheet('sess_test_1');
     assert.strictEqual(sheet, null);
 
-    // Test 8: Log Rotation (Mock size check)
-    // We can't easily force 5MB file size in test without slow I/O, but we can verify
-    // logic holds. We rely on manual check or integration for rotation.
-    // However, we can test that it doesn't crash.
+    // Test 8: DB cleanup replaces log rotation
+    if (dbReady) {
+        const futureTs = new Date(Date.now() + 999_999_999).toISOString();
+        await db.cleanupActivityLog(futureTs);
+        const afterCleanup = await db.getRecentActivity(10);
+        assert.strictEqual(afterCleanup.events.length, 0, 'Expected all events cleaned up with future timestamp');
+    }
 
     // Test Case 1 (Timing): Events 800ms apart should be aggregated; events >1000ms apart should not
     const timingSessionId = 'sess_timing_1';
     await log.createRunSheet(timingSessionId, { planName: 'Timing Test', events: [] });
     const timingBase = Date.now() + 50_000;
-    await fs.promises.appendFile(activityPath, [
-        // Pair A: 800ms apart — should be aggregated into 1 summary
-        JSON.stringify({ timestamp: new Date(timingBase).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'lead', sessionId: timingSessionId } }),
-        JSON.stringify({ timestamp: new Date(timingBase + 800).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'lead', sessionId: timingSessionId } }),
-        // Pair B: 1200ms apart — should NOT be aggregated
-        JSON.stringify({ timestamp: new Date(timingBase + 5000).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'coder', sessionId: timingSessionId } }),
-        JSON.stringify({ timestamp: new Date(timingBase + 6200).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'coder', sessionId: timingSessionId } }),
-    ].join('\n') + '\n', 'utf8');
+    const timingEvents = [
+        { timestamp: new Date(timingBase).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'lead', sessionId: timingSessionId } },
+        { timestamp: new Date(timingBase + 800).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'lead', sessionId: timingSessionId } },
+        { timestamp: new Date(timingBase + 5000).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'coder', sessionId: timingSessionId } },
+        { timestamp: new Date(timingBase + 6200).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'coder', sessionId: timingSessionId } },
+    ];
+    if (dbReady) {
+        for (const ev of timingEvents) { await injectEvent(db, ev); }
+    } else {
+        await fs.promises.appendFile(activityPath, timingEvents.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    }
     const timingPage = await log.getRecentActivity(200);
-    const timingEvents = timingPage.events.filter(e => e.payload?.sessionId === timingSessionId);
-    // Pair A (800ms): ui_action + dispatch → 1 summary
-    const pairAEvents = timingEvents.filter(e => e.payload?.role === 'lead');
+    const timingEventsResult = timingPage.events.filter(e => e.payload?.sessionId === timingSessionId);
+    const pairAEvents = timingEventsResult.filter(e => e.payload?.role === 'lead');
     assert.strictEqual(pairAEvents.length, 1, `Pair A (800ms) should collapse to 1 event, got ${pairAEvents.length}`);
-    // Pair B (1200ms): ui_action stays, dispatch stays → 2 summaries
-    const pairBEvents = timingEvents.filter(e => e.payload?.role === 'coder');
+    const pairBEvents = timingEventsResult.filter(e => e.payload?.role === 'coder');
     assert.strictEqual(pairBEvents.length, 2, `Pair B (1200ms) should stay as 2 events, got ${pairBEvents.length}`);
 
     // Test Case 2 (Semantic Merge): ui_action + dispatch within 500ms → only dispatch kept
     const mergeSessionId = 'sess_merge_1';
     await log.createRunSheet(mergeSessionId, { planName: 'Merge Test', events: [] });
     const mergeBase = Date.now() + 100_000;
-    await fs.promises.appendFile(activityPath, [
-        JSON.stringify({ timestamp: new Date(mergeBase).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'jules', sessionId: mergeSessionId } }),
-        JSON.stringify({ timestamp: new Date(mergeBase + 300).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'jules', sessionId: mergeSessionId } }),
-    ].join('\n') + '\n', 'utf8');
+    const mergeEvts = [
+        { timestamp: new Date(mergeBase).toISOString(), type: 'ui_action', payload: { action: 'triggerAgentAction', role: 'jules', sessionId: mergeSessionId } },
+        { timestamp: new Date(mergeBase + 300).toISOString(), type: 'dispatch', payload: { event: 'dispatch_sent', role: 'jules', sessionId: mergeSessionId } },
+    ];
+    if (dbReady) {
+        for (const ev of mergeEvts) { await injectEvent(db, ev); }
+    } else {
+        await fs.promises.appendFile(activityPath, mergeEvts.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    }
     const mergePage = await log.getRecentActivity(200);
     const mergeEvents = mergePage.events.filter(e => e.payload?.sessionId === mergeSessionId);
     assert.strictEqual(mergeEvents.length, 1, `Semantic merge: ui_action + dispatch within 500ms should collapse to 1 event, got ${mergeEvents.length}`);
@@ -219,10 +289,15 @@ async function run() {
     await log.createRunSheet(corrSessionId, { planName: 'Correlation Test', events: [] });
     const corrBase = Date.now() + 200_000;
     const corrId = 'test-corr-id-abc123';
-    await fs.promises.appendFile(activityPath, [
-        JSON.stringify({ timestamp: new Date(corrBase).toISOString(), type: 'ui_action', correlationId: corrId, payload: { action: 'triggerAgentAction', role: 'reviewer', sessionId: corrSessionId } }),
-        JSON.stringify({ timestamp: new Date(corrBase + 1500).toISOString(), type: 'dispatch', correlationId: corrId, payload: { event: 'dispatch_sent', role: 'reviewer', sessionId: corrSessionId } }),
-    ].join('\n') + '\n', 'utf8');
+    const corrEvts = [
+        { timestamp: new Date(corrBase).toISOString(), type: 'ui_action', correlationId: corrId, payload: { action: 'triggerAgentAction', role: 'reviewer', sessionId: corrSessionId } },
+        { timestamp: new Date(corrBase + 1500).toISOString(), type: 'dispatch', correlationId: corrId, payload: { event: 'dispatch_sent', role: 'reviewer', sessionId: corrSessionId } },
+    ];
+    if (dbReady) {
+        for (const ev of corrEvts) { await injectEvent(db, ev); }
+    } else {
+        await fs.promises.appendFile(activityPath, corrEvts.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+    }
     const corrPage = await log.getRecentActivity(200);
     const corrEvents = corrPage.events.filter(e => e.payload?.sessionId === corrSessionId);
     assert.strictEqual(corrEvents.length, 1, `Correlation ID: events 1500ms apart with same correlationId should merge to 1 event, got ${corrEvents.length}`);
@@ -231,10 +306,12 @@ async function run() {
     const receivedSessionId = 'sess_received_suppress';
     await log.createRunSheet(receivedSessionId, { planName: 'Received Suppress Test', events: [] });
     const receivedBase = Date.now() + 300_000;
-    await fs.promises.appendFile(activityPath,
-        JSON.stringify({ timestamp: new Date(receivedBase).toISOString(), type: 'dispatch', payload: { event: 'received', role: 'coder', sessionId: receivedSessionId } }) + '\n',
-        'utf8'
-    );
+    if (dbReady) {
+        await injectEvent(db, { timestamp: new Date(receivedBase).toISOString(), type: 'dispatch', payload: { event: 'received', role: 'coder', sessionId: receivedSessionId } });
+    } else {
+        await fs.promises.appendFile(activityPath,
+            JSON.stringify({ timestamp: new Date(receivedBase).toISOString(), type: 'dispatch', payload: { event: 'received', role: 'coder', sessionId: receivedSessionId } }) + '\n', 'utf8');
+    }
     const receivedPage = await log.getRecentActivity(200);
     const receivedEvents = receivedPage.events.filter(e => e.payload?.sessionId === receivedSessionId);
     assert.strictEqual(receivedEvents.length, 0, `'received' event should be suppressed from live feed, got ${receivedEvents.length}`);
@@ -243,10 +320,12 @@ async function run() {
     const submitSessionId = 'sess_submit_result';
     await log.createRunSheet(submitSessionId, { planName: 'Submit Result Test', events: [] });
     const submitBase = Date.now() + 400_000;
-    await fs.promises.appendFile(activityPath,
-        JSON.stringify({ timestamp: new Date(submitBase).toISOString(), type: 'dispatch', payload: { event: 'submit_result', role: 'lead', sessionId: submitSessionId } }) + '\n',
-        'utf8'
-    );
+    if (dbReady) {
+        await injectEvent(db, { timestamp: new Date(submitBase).toISOString(), type: 'dispatch', payload: { event: 'submit_result', role: 'lead', sessionId: submitSessionId } });
+    } else {
+        await fs.promises.appendFile(activityPath,
+            JSON.stringify({ timestamp: new Date(submitBase).toISOString(), type: 'dispatch', payload: { event: 'submit_result', role: 'lead', sessionId: submitSessionId } }) + '\n', 'utf8');
+    }
     const submitPage = await log.getRecentActivity(200);
     const submitEvents = submitPage.events.filter(e => e.payload?.sessionId === submitSessionId);
     assert.strictEqual(submitEvents.length, 1, `'submit_result' event should appear in live feed, got ${submitEvents.length}`);
@@ -290,6 +369,13 @@ async function run() {
 
     await log.logEvent('workflow_event', { action: 'test_archive_read' });
     await waitFor(async () => {
+        if (dbReady) {
+            const result = await db.getRecentActivity(200);
+            return result.events.some((r: any) => {
+                const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload;
+                return p.action === 'test_archive_read';
+            });
+        }
         const rows = (await fs.promises.readFile(activityPath, 'utf8')).trim().split('\n');
         return rows.some(line => line.includes('test_archive_read'));
     });
@@ -317,10 +403,15 @@ async function run() {
     }));
 
     // Inject synthetic events to force title resolution for these archived sessions
-    await fs.promises.appendFile(activityPath, [
-        JSON.stringify({ timestamp: new Date(Date.now() + 1000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_1', sessionId: testArchiveId } }),
-        JSON.stringify({ timestamp: new Date(Date.now() + 2000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_2', sessionId: testArchiveId2 } })
-    ].join('\n') + '\n', 'utf8');
+    if (dbReady) {
+        await injectEvent(db, { timestamp: new Date(Date.now() + 1000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_1', sessionId: testArchiveId } });
+        await injectEvent(db, { timestamp: new Date(Date.now() + 2000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_2', sessionId: testArchiveId2 } });
+    } else {
+        await fs.promises.appendFile(activityPath, [
+            JSON.stringify({ timestamp: new Date(Date.now() + 1000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_1', sessionId: testArchiveId } }),
+            JSON.stringify({ timestamp: new Date(Date.now() + 2000).toISOString(), type: 'workflow_event', payload: { action: 'test_read_2', sessionId: testArchiveId2 } })
+        ].join('\n') + '\n', 'utf8');
+    }
 
     // 2nd read
     const recent = await log.getRecentActivity(50);

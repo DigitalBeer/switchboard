@@ -291,6 +291,21 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
         }
 
+        // DB-first: check if any workspace DB has this session
+        for (const workspaceRoot of candidates) {
+            try {
+                const db = await this._getKanbanDb(workspaceRoot);
+                if (db) {
+                    const record = await db.getPlanBySessionId(sessionId);
+                    if (record) {
+                        this._activeWorkspaceRoot = workspaceRoot;
+                        return workspaceRoot;
+                    }
+                }
+            } catch { /* continue to next candidate */ }
+        }
+
+        // DEPRECATED: Filesystem fallback — remove once session files fully eliminated
         for (const workspaceRoot of candidates) {
             const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
             if (fs.existsSync(runSheetPath)) {
@@ -3320,8 +3335,19 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             placeHolder: '~/Google Drive/Switchboard/kanban.db',
                         });
                         if (dbResult !== undefined) {
-                            await dbConfig.update('kanban.dbPath', dbResult.trim() || undefined, vscode.ConfigurationTarget.Workspace);
-                            this._view?.webview.postMessage({ type: 'dbPathUpdated', path: dbResult.trim() || '.switchboard/kanban.db' });
+                            const trimmedPath = dbResult.trim();
+                            const validation = KanbanDatabase.validatePath(trimmedPath);
+                            if (!validation.valid && trimmedPath !== '') {
+                                vscode.window.showErrorMessage(`❌ Invalid path: ${validation.error}`);
+                                return;
+                            }
+                            await dbConfig.update('kanban.dbPath', trimmedPath || undefined, vscode.ConfigurationTarget.Workspace);
+                            // Invalidate so next request uses new path
+                            const wsRoot = this._getWorkspaceRoot();
+                            if (wsRoot) { await KanbanDatabase.invalidateWorkspace(wsRoot); }
+                            this._view?.webview.postMessage({ type: 'dbPathUpdated', path: trimmedPath || '.switchboard/kanban.db' });
+                            void this._refreshSessionStatus();
+                            vscode.window.showInformationMessage('✅ Database path updated successfully.');
                         }
                         break;
                     }
@@ -3331,14 +3357,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             if (wsRoot) {
                                 const db = KanbanDatabase.forWorkspace(wsRoot);
                                 const ready = await db.ensureReady();
-                                this._view?.webview.postMessage({ type: 'dbConnectionResult', success: ready });
                                 if (ready) {
-                                    vscode.window.showInformationMessage('Database connection successful');
+                                    this._view?.webview.postMessage({ type: 'dbConnectionResult', success: true });
+                                    vscode.window.showInformationMessage('✅ Database connection successful');
+                                } else {
+                                    const error = db.lastInitError || 'Unknown initialization error';
+                                    this._view?.webview.postMessage({ type: 'dbConnectionResult', success: false, error });
+                                    vscode.window.showErrorMessage(`❌ Database connection failed: ${error}`);
                                 }
+                            } else {
+                                throw new Error('No active workspace root found.');
                             }
                         } catch (dbErr: any) {
                             this._view?.webview.postMessage({ type: 'dbConnectionResult', success: false, error: dbErr.message });
-                            vscode.window.showErrorMessage(`Database connection failed: ${dbErr.message}`);
+                            vscode.window.showErrorMessage(`⚠️ Database test error: ${dbErr.message}`);
                         }
                         break;
                     }
@@ -3384,8 +3416,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         if (presetPath) {
                             const presetConfig = vscode.workspace.getConfiguration('switchboard');
                             await presetConfig.update('kanban.dbPath', presetPath, vscode.ConfigurationTarget.Workspace);
+                            const wsRoot = this._getWorkspaceRoot();
+                            if (wsRoot) { await KanbanDatabase.invalidateWorkspace(wsRoot); }
                             this._view?.webview.postMessage({ type: 'dbPathUpdated', path: presetPath });
-                            vscode.window.showInformationMessage(`Database location set to ${data.preset}. Folder will be created on first save.`);
+                            vscode.window.showInformationMessage(`✅ Database location set to ${data.preset}.`);
+                            void this._refreshSessionStatus();
                         }
                         break;
                     }
@@ -3398,8 +3433,15 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             placeHolder: '~/GoogleDrive/SwitchboardArchives/{workspace}.duckdb',
                         });
                         if (archResult !== undefined) {
-                            await archConfig.update('archive.dbPath', archResult.trim() || undefined, vscode.ConfigurationTarget.Workspace);
-                            this._view?.webview.postMessage({ type: 'archivePathUpdated', path: archResult.trim() });
+                            const trimmedArch = archResult.trim();
+                            const validation = KanbanDatabase.validatePath(trimmedArch.replace('{workspace}', 'test'));
+                            if (!validation.valid && trimmedArch !== '') {
+                                vscode.window.showErrorMessage(`❌ Invalid archive path: ${validation.error}`);
+                                return;
+                            }
+                            await archConfig.update('archive.dbPath', trimmedArch || undefined, vscode.ConfigurationTarget.Workspace);
+                            this._view?.webview.postMessage({ type: 'archivePathUpdated', path: trimmedArch });
+                            vscode.window.showInformationMessage('✅ Archive path updated successfully.');
                         }
                         break;
                     }
@@ -5702,25 +5744,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
         }
 
-        // TECH-DEBT: Filesystem fallback — remove once session-file creation is fully eliminated
-        if (!planPath) {
-            try {
-                const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-                const content = await fs.promises.readFile(runSheetPath, 'utf8');
-                const sheet = JSON.parse(content);
-                planPath = (typeof sheet.planFile === 'string' && sheet.planFile.trim())
-                    ? sheet.planFile.trim()
-                    : (typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim() ? sheet.brainSourcePath.trim() : '');
-                if (!topic) {
-                    topic = (typeof sheet.topic === 'string' && sheet.topic.trim())
-                        ? sheet.topic.trim()
-                        : '';
-                }
-            } catch {
-                // Session file not found or unreadable — DB was the last hope
-            }
-        }
-
         if (!planPath) {
             throw new Error('No plan file associated with this session.');
         }
@@ -6309,18 +6332,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     if (record && record.kanbanColumn) {
                         effectiveColumn = record.kanbanColumn;
                     }
-                }
-            }
-            // TECH-DEBT: Filesystem fallback for kanban column — remove once session-file creation is fully eliminated
-            if (!effectiveColumn) {
-                try {
-                    const runSheetPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-                    const content = await fs.promises.readFile(runSheetPath, 'utf8');
-                    const sheet = JSON.parse(content);
-                    const customAgentsForColumn = await this.getCustomAgents(resolvedWorkspaceRoot);
-                    effectiveColumn = deriveKanbanColumn(Array.isArray(sheet.events) ? sheet.events : [], customAgentsForColumn);
-                } catch {
-                    // Session file not available — use default
                 }
             }
             effectiveColumn = this._normalizeLegacyKanbanColumn(effectiveColumn || 'CREATED');

@@ -208,6 +208,35 @@ export class KanbanDatabase {
         }
     }
 
+    /**
+     * Validates a potential database path. Checks for directory existence and resolve errors.
+     */
+    public static validatePath(dbPath: string): { valid: boolean; error?: string } {
+        if (!dbPath || dbPath.trim() === '') {
+            return { valid: false, error: 'Path cannot be empty.' };
+        }
+        try {
+            const trimmed = dbPath.trim();
+            const expanded = trimmed.startsWith('~')
+                ? path.join(os.homedir(), trimmed.slice(1))
+                : trimmed;
+            const absolute = path.resolve(expanded);
+            const dir = path.dirname(absolute);
+            if (!fs.existsSync(dir)) {
+                return { valid: false, error: `Parent directory does not exist: ${dir}` };
+            }
+            // Basic check for permissions if directory exists
+            try {
+                fs.accessSync(dir, fs.constants.W_OK);
+            } catch {
+                return { valid: false, error: `Directory is not writable: ${dir}` };
+            }
+            return { valid: true };
+        } catch (e: any) {
+            return { valid: false, error: e.message };
+        }
+    }
+
     private readonly _dbPath: string;
     private _db: SqlJsDatabase | null = null;
     private _initPromise: Promise<boolean> | null = null;
@@ -1081,6 +1110,26 @@ export class KanbanDatabase {
             await this._persist();
         }
         return migrated;
+    }
+
+    /**
+     * Delete all plan events for a session (used by deleteRunSheet).
+     */
+    public async deletePlanEvents(sessionId: string): Promise<boolean> {
+        return this._persistedUpdate(
+            'DELETE FROM plan_events WHERE session_id = ?',
+            [sessionId]
+        );
+    }
+
+    /**
+     * Delete activity log events older than the given ISO timestamp.
+     */
+    public async cleanupActivityLog(beforeTimestamp: string): Promise<boolean> {
+        return this._persistedUpdate(
+            'DELETE FROM activity_log WHERE timestamp < ?',
+            [beforeTimestamp]
+        );
     }
 
     /** Normalize paths to use forward slashes for cross-platform compatibility */
