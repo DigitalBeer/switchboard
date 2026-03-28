@@ -13,6 +13,8 @@
             --panel-bg2: #050505;
             --border-color: #222222;
             --border-bright: #444444;
+            --border-dim: #252525;
+            --bg-dim: #111111;
             --text-primary: #e0e0e0;
             --text-secondary: #777777;
 
@@ -1191,6 +1193,7 @@
         #db-sync-section {
             margin-top: 12px;
         }
+
         .db-sync-toggle {
             display: flex;
             align-items: center;
@@ -1198,131 +1201,246 @@
             cursor: pointer;
             user-select: none;
         }
+
         .db-sync-toggle .section-label {
             color: var(--accent-green);
         }
+
         .db-sync-fields {
             display: none;
             flex-direction: column;
-            gap: 6px;
-            margin-top: 8px;
+            gap: 12px;
+            padding: 12px;
+            background: color-mix(in srgb, var(--panel-bg2) 80%, transparent);
+            backdrop-filter: blur(8px);
+            border: 1px solid var(--border-color);
+            border-top: none;
+            border-radius: 0 0 4px 4px;
+            margin-top: -1px;
         }
+
         .db-sync-fields.open {
             display: flex;
         }
+
         .db-subsection {
-            padding: 8px 0;
+            padding-bottom: 12px;
             border-bottom: 1px solid var(--border-dim);
         }
-        .db-subsection:last-child { border-bottom: none; }
+
+        .db-subsection:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
         .subsection-header {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             font-size: 11px;
             font-weight: 600;
             color: var(--text-primary);
-            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
         }
+
         .db-status-badge {
             margin-left: auto;
-            padding: 1px 6px;
-            border-radius: 3px;
+            padding: 2px 8px;
+            border-radius: 12px;
             font-size: 9px;
-            font-weight: 500;
+            font-weight: 700;
             text-transform: uppercase;
+            letter-spacing: 0.5px;
             background: var(--bg-dim);
             color: var(--text-secondary);
+            border: 1px solid var(--border-dim);
         }
-        .db-status-badge.synced { background: #28a745; color: white; }
-        .db-status-badge.error { background: #dc3545; color: white; }
+
+        .db-status-badge.synced {
+            background: color-mix(in srgb, var(--accent-green) 10%, transparent);
+            color: var(--accent-green);
+            border-color: color-mix(in srgb, var(--accent-green) 40%, transparent);
+            text-shadow: var(--glow-green);
+        }
+
+        .db-status-badge.error {
+            background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+            color: var(--accent-red);
+            border-color: color-mix(in srgb, var(--accent-red) 40%, transparent);
+            text-shadow: var(--glow-red);
+        }
+
         .db-path-display {
             font-family: var(--font-mono);
             font-size: 10px;
             color: var(--text-secondary);
             background: var(--bg-dim);
-            padding: 4px 8px;
-            border-radius: 3px;
+            padding: 6px 10px;
+            border-radius: 4px;
             word-break: break-all;
-            margin-bottom: 6px;
+            margin-bottom: 8px;
+            border: 1px solid var(--border-dim);
         }
-        .db-path-actions { display: flex; gap: 6px; margin-bottom: 6px; }
-        .db-cloud-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+
+        .db-path-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .db-cloud-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
         .db-preset-btn {
             display: flex;
             align-items: center;
-            gap: 3px;
-            padding: 3px 8px;
+            gap: 4px;
+            padding: 4px 10px;
             border: 1px solid var(--border-dim);
             background: var(--bg-dim);
             color: var(--text-secondary);
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
             font-size: 10px;
+            transition: all 0.2s ease;
         }
-        .db-preset-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+
+        .db-preset-btn:hover {
+            border-color: var(--border-bright);
+            background: var(--border-dim);
+            color: var(--text-primary);
+        }
+
         .db-cli-tool-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 4px 0;
+            padding: 6px 0;
+            background: var(--bg-dim);
+            border-radius: 4px;
+            padding: 6px 10px;
+            border: 1px solid var(--border-dim);
         }
+
         .db-tool-status {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 6px;
             font-size: 10px;
             color: var(--text-secondary);
         }
-        .db-status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
-        .db-status-dot.green { background: #28a745; }
-        .db-status-dot.red { background: #dc3545; }
+
+        .db-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .db-status-dot.green {
+            background: var(--accent-green);
+            box-shadow: var(--glow-green);
+        }
+
+        .db-status-dot.red {
+            background: var(--accent-red);
+            box-shadow: var(--glow-red);
+        }
+
         .db-quick-actions {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 4px;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            margin-top: 4px;
         }
+
         .db-action-btn {
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 2px;
-            padding: 6px;
+            justify-content: center;
+            gap: 4px;
+            padding: 8px 4px;
             border: 1px solid var(--border-dim);
             background: var(--bg-dim);
             color: var(--text-secondary);
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
-            font-size: 10px;
+            font-size: 9px;
             text-align: center;
+            transition: all 0.2s ease;
+            text-transform: uppercase;
+            font-weight: 600;
         }
-        .db-action-btn:hover { background: var(--border-dim); color: var(--text-primary); }
-        .db-action-btn.danger { border-color: #dc3545; color: #dc3545; }
-        .db-action-btn.danger:hover { background: rgba(220, 53, 69, 0.1); }
-        .db-action-icon { font-size: 14px; }
+
+        .db-action-btn:hover {
+            background: var(--border-dim);
+            border-color: var(--border-bright);
+            color: var(--text-primary);
+        }
+
+        .db-action-btn.danger {
+            border-color: rgba(220, 53, 69, 0.4);
+            color: #dc3545;
+        }
+
+        .db-action-btn.danger:hover {
+            background: rgba(220, 53, 69, 0.2);
+            border-color: #dc3545;
+        }
+
+        .db-action-icon {
+            font-size: 16px;
+            margin-bottom: 2px;
+        }
+
         .db-secondary-btn {
-            padding: 2px 8px;
+            padding: 4px 12px;
             font-size: 10px;
             background: var(--bg-dim);
             color: var(--text-secondary);
             border: 1px solid var(--border-dim);
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
+            transition: all 0.2s ease;
         }
-        .db-secondary-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+
+        .db-secondary-btn:hover {
+            border-color: var(--border-bright);
+            background: var(--border-dim);
+            color: var(--text-primary);
+        }
+
         .db-primary-btn {
             width: 100%;
-            padding: 4px;
-            font-size: 10px;
-            margin-top: 6px;
+            padding: 6px;
+            font-size: 11px;
+            margin-top: 8px;
             background: var(--bg-dim);
             color: var(--text-secondary);
             border: 1px solid var(--border-dim);
-            border-radius: 3px;
+            border-radius: 4px;
             cursor: pointer;
+            font-family: var(--font-mono);
+            letter-spacing: 1px;
+            transition: all 0.2s ease;
         }
-        .db-primary-btn:hover { background: var(--border-dim); color: var(--text-primary); }
-        .db-primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .db-primary-btn:hover:not(:disabled) {
+            border-color: var(--accent-green);
+            color: var(--accent-green);
+            background: color-mix(in srgb, var(--accent-green) 5%, transparent);
+        }
+
+        .db-primary-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 
@@ -1356,41 +1474,50 @@
             <div style="padding: 16px;">
                 <div class="section-label" style="margin-bottom: 12px;">CONFIGURE CLI AGENTS</div>
                 <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 14px; line-height: 1.4;">
-                    Set commands for each agent role. Uncheck to hide an agent from the sidebar. Leave command empty to skip.
+                    Set commands for each agent role. Uncheck to hide an agent from the sidebar. Leave command empty to
+                    skip.
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="lead" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="lead" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Lead Coder</label><input type="text" id="onboard-cli-lead"
                         placeholder="e.g. copilot --allow-all-tools" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="coder" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="coder" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Coder</label><input type="text" id="onboard-cli-coder"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="reviewer" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="reviewer" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Reviewer</label><input type="text" id="onboard-cli-reviewer"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="planner" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="planner" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Planner</label><input type="text" id="onboard-cli-planner"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="analyst" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="analyst" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Analyst</label><input type="text" id="onboard-cli-analyst"
                         placeholder="e.g. qwen" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="onboard-agent-toggle" data-role="jules" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="onboard-agent-toggle" data-role="jules" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Jules</label>
-                    <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility only</span>
+                    <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility
+                        only</span>
                 </div>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:4px;">
                     <input id="onboard-jules-auto-sync" type="checkbox" style="width:auto; margin:0;">
-                    <span style="font-size:10px; color:var(--text-secondary);">Auto-sync repo before sending to Jules (default OFF)</span>
+                    <span style="font-size:10px; color:var(--text-secondary);">Auto-sync repo before sending to Jules
+                        (default OFF)</span>
                 </label>
                 <div style="margin-top: 12px; display: flex; gap: 8px;">
                     <button id="btn-onboard-save" class="secondary-btn w-full"
@@ -1479,10 +1606,11 @@
             <div class="panel-fields open" id="terminal-operations-fields">
                 <button id="createAgentGrid" class="secondary-btn is-teal w-full">OPEN AGENT TERMINALS</button>
                 <button id="btn-deregister-all" class="secondary-btn error w-full">RESET ALL AGENTS</button>
-                <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px;">Access main program</button>
-                </div>
-                </div>
-                <!-- SETUP -->
+                <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px;">Access main
+                    program</button>
+            </div>
+        </div>
+        <!-- SETUP -->
         <div class="startup-section">
             <div class="startup-toggle" id="startup-toggle">
                 <div class="section-label" style="margin:0">SETUP</div>
@@ -1490,40 +1618,50 @@
             </div>
             <div class="startup-fields" id="startup-fields">
                 <div class="flex gap-2">
-                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>       
-                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>      
+                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>
+                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
                 </div>
-                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP CONFIG</button>
-                <div style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">AGENT VISIBILITY &amp; CLI COMMANDS</div>
+                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP
+                    CONFIG</button>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    AGENT VISIBILITY &amp; CLI COMMANDS</div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="lead" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="lead" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Lead Coder</label><input type="text" data-role="lead"
                         placeholder="e.g. copilot --allow-all-tools" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="coder" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="coder" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Coder</label><input type="text" data-role="coder"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="reviewer" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="reviewer" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Reviewer</label><input type="text" data-role="reviewer"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="planner" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="planner" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Planner</label><input type="text" data-role="planner"
                         placeholder="e.g. gemini --approval-mode auto_edit" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="analyst" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="analyst" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Analyst</label><input type="text" data-role="analyst"
                         placeholder="e.g. qwen" style="flex:1;">
                 </div>
                 <div class="startup-row" style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" class="agent-visible-toggle" data-role="jules" checked style="width:auto; margin:0; flex-shrink:0;">
+                    <input type="checkbox" class="agent-visible-toggle" data-role="jules" checked
+                        style="width:auto; margin:0; flex-shrink:0;">
                     <label style="min-width:70px;">Jules</label>
-                    <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility only</span>
+                    <span style="flex:1; font-size: 10px; color: var(--text-secondary);">Cloud coder visibility
+                        only</span>
                 </div>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="jules-auto-sync-toggle" type="checkbox" style="width:auto; margin:0;">
@@ -1545,19 +1683,23 @@
                     <input id="aggressive-pair-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Aggressive pair programming (shift more tasks to Coder)</span>
                 </label>
-                <div style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">PLAN INGESTION</div>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    PLAN INGESTION</div>
                 <label class="startup-row" style="display:block; margin-top:6px;">
                     <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
-                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard" style="width:100%;">
+                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard"
+                        style="width:100%;">
                 </label>
-                <div style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">CUSTOM AGENTS</div>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    CUSTOM AGENTS</div>
                 <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
                 <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
                 <button id="btn-save-startup" class="secondary-btn w-full"
                     style="margin-top:4px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 250%, transparent);">SAVE
                     CONFIGURATION</button>
-                <button id="btn-open-docs" class="secondary-btn w-full"
-                    style="margin-top:4px;">OPEN DOCS</button>
+                <button id="btn-open-docs" class="secondary-btn w-full" style="margin-top:4px;">OPEN DOCS</button>
 
             </div>
         </div>
@@ -1576,13 +1718,18 @@
                     </div>
                     <div class="db-path-display" id="current-db-path">.switchboard/kanban.db</div>
                     <div class="db-path-actions">
-                        <button onclick="vscode.postMessage({type:'editDbPath'})" class="db-secondary-btn">Edit Path</button>
-                        <button onclick="vscode.postMessage({type:'testDbConnection'})" class="db-secondary-btn">Test</button>
+                        <button id="db-edit-path-btn" class="db-secondary-btn">Edit
+                            Path</button>
+                        <button id="db-test-connection-btn"
+                            class="db-secondary-btn">Test</button>
                     </div>
                     <div class="db-cloud-presets">
-                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'google-drive'})" class="db-preset-btn">📁 Google Drive</button>
-                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'dropbox'})" class="db-preset-btn">📦 Dropbox</button>
-                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'icloud'})" class="db-preset-btn">🍎 iCloud</button>
+                        <button id="db-preset-google-btn"
+                            class="db-preset-btn">📁 Google Drive</button>
+                        <button id="db-preset-dropbox-btn"
+                            class="db-preset-btn">📦 Dropbox</button>
+                        <button id="db-preset-icloud-btn"
+                            class="db-preset-btn">🍎 iCloud</button>
                     </div>
                 </div>
                 <div class="db-subsection">
@@ -1592,7 +1739,8 @@
                     </div>
                     <div class="db-path-display" id="current-archive-path">Not configured</div>
                     <div class="db-path-actions">
-                        <button onclick="vscode.postMessage({type:'editArchivePath'})" class="db-secondary-btn">Set Archive Path</button>
+                        <button id="db-edit-archive-btn" class="db-secondary-btn">Set
+                            Archive Path</button>
                     </div>
                 </div>
                 <div class="db-subsection">
@@ -1601,24 +1749,29 @@
                     </div>
                     <div class="db-cli-tool-row">
                         <span style="font-weight:500; font-size:11px;">DuckDB</span>
-                        <span class="db-tool-status" id="duckdb-status"><span class="db-status-dot red"></span> Not installed</span>
-                        <button onclick="vscode.postMessage({type:'installCliTool',tool:'duckdb'})" class="db-secondary-btn" id="duckdb-install-btn">Install</button>
+                        <span class="db-tool-status" id="duckdb-status"><span class="db-status-dot red"></span> Not
+                            installed</span>
+                        <button class="db-secondary-btn" id="duckdb-install-btn">Install</button>
                     </div>
-                    <button onclick="vscode.postMessage({type:'openCliTerminal',tool:'duckdb'})" class="db-primary-btn" id="open-duckdb-btn" disabled>Open DuckDB Terminal</button>
+                    <button class="db-primary-btn"
+                        id="open-duckdb-btn" disabled>Open DuckDB Terminal</button>
                 </div>
                 <div class="db-subsection">
                     <div class="subsection-header">
                         <span>⚡</span><span>Quick Actions</span>
                     </div>
                     <div class="db-quick-actions">
-                        <button onclick="vscode.postMessage({type:'exportToArchive'})" class="db-action-btn">
-                            <span class="db-action-icon">📤</span>Export Completed
+                        <button id="db-export-btn" class="db-action-btn"
+                            title="Export completed plans to archive">
+                            <span class="db-action-icon">📤</span>EXPORT
                         </button>
-                        <button onclick="vscode.postMessage({type:'viewDbStats'})" class="db-action-btn">
-                            <span class="db-action-icon">📊</span>DB Stats
+                        <button id="db-stats-btn" class="db-action-btn"
+                            title="View database statistics">
+                            <span class="db-action-icon">📊</span>STATS
                         </button>
-                        <button onclick="vscode.postMessage({type:'resetDatabase'})" class="db-action-btn danger">
-                            <span class="db-action-icon">🗑️</span>Reset Database
+                        <button id="db-reset-btn" class="db-action-btn danger"
+                            title="WARNING: Permanently delete database">
+                            <span class="db-action-icon">🗑️</span>RESET
                         </button>
                     </div>
                 </div>
@@ -1634,7 +1787,9 @@
             <div class="status-indicator" id="mcp-status-footer">
                 <div class="tiny-dot" id="mcp-dot"></div>
                 <span id="mcp-text">MCP: CHECKING</span>
-                <span id="mcp-recheck" title="Recheck MCP connection" style="cursor:pointer; margin-left:4px; opacity:0.6; font-size:11px;" onclick="vscode.postMessage({ type: 'recheckMcpConnection' })">&#x21bb;</span>
+                <span id="mcp-recheck" title="Recheck MCP connection"
+                    style="cursor:pointer; margin-left:4px; opacity:0.6; font-size:11px;"
+                    onclick="vscode.postMessage({ type: 'recheckMcpConnection' })">&#x21bb;</span>
             </div>
         </div>
     </div>
@@ -1658,9 +1813,11 @@
             <label class="modal-label" for="custom-agent-name">Agent name</label>
             <input id="custom-agent-name" class="modal-input" type="text" placeholder="e.g. Refactor Specialist">
             <label class="modal-label" for="custom-agent-command">Startup command</label>
-            <input id="custom-agent-command" class="modal-input" type="text" placeholder="e.g. claude --dangerously-skip-permissions">
+            <input id="custom-agent-command" class="modal-input" type="text"
+                placeholder="e.g. claude --dangerously-skip-permissions">
             <label class="modal-label" for="custom-agent-prompt">Prompt instructions</label>
-            <textarea id="custom-agent-prompt" class="modal-textarea" placeholder="Extra instructions to append when this agent is dispatched"></textarea>
+            <textarea id="custom-agent-prompt" class="modal-textarea"
+                placeholder="Extra instructions to append when this agent is dispatched"></textarea>
             <label class="modal-label" for="custom-agent-order">Kanban order</label>
             <input id="custom-agent-order" class="modal-input" type="number" value="400">
             <label class="modal-label" for="custom-agent-dragdrop">Drag &amp; Drop Mode</label>
@@ -1672,7 +1829,8 @@
                 <input id="custom-agent-kanban" type="checkbox" style="width:auto; margin:0;">
                 <span>Show as Kanban column</span>
             </label>
-            <div id="custom-agent-error" style="min-height:16px; color: var(--accent-red); font-size: 11px; margin-top: 6px;"></div>
+            <div id="custom-agent-error"
+                style="min-height:16px; color: var(--accent-red); font-size: 11px; margin-top: 6px;"></div>
             <div class="flex gap-2" style="margin-top: 10px;">
                 <button id="btn-save-custom-agent" class="action-btn w-full">SAVE AGENT</button>
                 <button id="btn-cancel-custom-agent" class="secondary-btn w-full">CANCEL</button>
@@ -2241,8 +2399,8 @@
                 const targetRole = roleLabel((payload.targetRole || '').toString());
                 let topicsStr = '';
                 if (Array.isArray(payload.sessionIds) && payload.sessionIds.length > 0) {
-                    const topics = payload.sessionIds.map(function(id) {
-                        const sheet = currentRunSheets.find(function(s) { return s.sessionId === id; });
+                    const topics = payload.sessionIds.map(function (id) {
+                        const sheet = currentRunSheets.find(function (s) { return s.sessionId === id; });
                         return sheet && sheet.topic ? sheet.topic : id;
                     });
                     topicsStr = ' (' + topics.join(', ') + ')';
@@ -3805,6 +3963,41 @@
                 fields.classList.toggle('open');
                 chevron.classList.toggle('open');
             }
+        });
+
+        // Database & Sync panel button handlers
+        document.getElementById('db-edit-path-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'editDbPath' });
+        });
+        document.getElementById('db-test-connection-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'testDbConnection' });
+        });
+        document.getElementById('db-preset-google-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'setPresetDbPath', preset: 'google-drive' });
+        });
+        document.getElementById('db-preset-dropbox-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'setPresetDbPath', preset: 'dropbox' });
+        });
+        document.getElementById('db-preset-icloud-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'setPresetDbPath', preset: 'icloud' });
+        });
+        document.getElementById('db-edit-archive-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'editArchivePath' });
+        });
+        document.getElementById('duckdb-install-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'installCliTool', tool: 'duckdb' });
+        });
+        document.getElementById('open-duckdb-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'openCliTerminal', tool: 'duckdb' });
+        });
+        document.getElementById('db-export-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'exportToArchive' });
+        });
+        document.getElementById('db-stats-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'viewDbStats' });
+        });
+        document.getElementById('db-reset-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'resetDatabase' });
         });
 
         // Notify extension we are ready to receive data
