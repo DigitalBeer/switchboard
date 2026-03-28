@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as lockfile from 'proper-lockfile';
 import * as cp from 'child_process';
+import { promisify } from 'util';
 import { SessionActionLog, ArchiveSpec, ArchiveResult } from './SessionActionLog';
 import { KanbanProvider } from './KanbanProvider';
 import { sendRobustText, getAntigravityHash } from './terminalUtils';
@@ -166,6 +167,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private _kanbanDbs = new Map<string, KanbanDatabase>();
     private _lastKanbanDbWarnings = new Map<string, string | null>();
     private _notifiedSessions = new Set<string>(); // Track sessions that have been notified of completion
+    private _duckdbTerminal?: vscode.Terminal;
 
     // Batched State Updates
     private _updateQueue: ((state: any) => void)[] = [];
@@ -235,6 +237,22 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     private _getWorkspaceRoots(): string[] {
         return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+    }
+
+    private _getWorkspaceRoot(): string | null {
+        if (this._activeWorkspaceRoot) { return this._activeWorkspaceRoot; }
+        const roots = this._getWorkspaceRoots();
+        return roots.length > 0 ? roots[0] : null;
+    }
+
+    private async _checkCliTools(): Promise<void> {
+        try {
+            const execFileAsync = promisify(cp.execFile);
+            const { stdout } = await execFileAsync('duckdb', ['--version']);
+            this._view?.webview.postMessage({ type: 'cliStatus', tool: 'duckdb', installed: true, version: stdout.trim() });
+        } catch {
+            this._view?.webview.postMessage({ type: 'cliStatus', tool: 'duckdb', installed: false });
+        }
     }
 
     private _resolveWorkspaceRoot(workspaceRoot?: string): string | null {
@@ -1001,6 +1019,21 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     /** Called by the Kanban board to trigger an agent action on a plan session. */
     public async handleKanbanTrigger(role: string, sessionId: string, instruction?: string, workspaceRoot?: string): Promise<boolean> {
         return this._handleTriggerAgentAction(role, sessionId, instruction, workspaceRoot);
+    }
+
+    /** Dispatch a custom prompt string to the agent assigned to the given role. */
+    public async dispatchCustomPromptToRole(role: string, prompt: string, workspaceRoot: string): Promise<boolean> {
+        const resolvedWorkspaceRoot = this._resolveWorkspaceRoot(workspaceRoot);
+        if (!resolvedWorkspaceRoot) { return false; }
+        const targetAgent = await this._getAgentNameForRole(role, resolvedWorkspaceRoot);
+        if (!targetAgent) {
+            vscode.window.showErrorMessage(`No agent assigned to role '${role}'. Please assign a terminal first.`);
+            return false;
+        }
+        if (!this._isValidAgentName(targetAgent)) { return false; }
+        vscode.commands.executeCommand('switchboard.focusTerminalByName', targetAgent);
+        await this._dispatchExecuteMessage(resolvedWorkspaceRoot, targetAgent, prompt, {});
+        return true;
     }
 
     /** Called by the Kanban board to generate a context map for a plan session. */
@@ -2507,12 +2540,18 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         plans: Array<{ topic: string; absolutePath: string }>,
         instruction?: string
     ): string {
-        const { baseInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
+        const { includeInlineChallenge } = this._getPromptInstructionOptions(role, instruction);
+        const accurateCodingEnabled = this._isAccurateCodingEnabled();
+        const pairProgrammingEnabled = this._autobanState.pairProgrammingEnabled;
+        const aggressivePairProgramming = this._isAggressivePairProgrammingEnabled();
+        const advancedReviewerEnabled = this._isAdvancedReviewerEnabled();
         return buildKanbanBatchPrompt(role, plans, {
-            instruction: baseInstruction,
+            instruction,
             includeInlineChallenge,
-            accurateCodingEnabled: this._isAccurateCodingEnabled(),
-            aggressivePairProgramming: this._isAggressivePairProgrammingEnabled()
+            accurateCodingEnabled,
+            pairProgrammingEnabled,
+            aggressivePairProgramming,
+            advancedReviewerEnabled
         });
     }
 
@@ -2862,6 +2901,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             this._view?.webview.postMessage({ type: 'customAgents', customAgents });
                         }
                         this._view?.webview.postMessage({ type: 'loading', value: false });
+                        this._checkCliTools();
                         break;
                     case 'runSetup':
                         vscode.commands.executeCommand('switchboard.setup');
@@ -3061,6 +3101,13 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                                 vscode.ConfigurationTarget.Workspace
                             );
                         }
+                        if (typeof data.advancedReviewerEnabled === 'boolean') {
+                            await vscode.workspace.getConfiguration('switchboard').update(
+                                'reviewer.advancedMode',
+                                data.advancedReviewerEnabled,
+                                vscode.ConfigurationTarget.Workspace
+                            );
+                        }
                         if (typeof data.leadChallengeEnabled === 'boolean') {
                             await vscode.workspace.getConfiguration('switchboard').update(
                                 'leadCoder.inlineChallenge',
@@ -3138,6 +3185,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     case 'getAccurateCodingSetting': {
                         const enabled = this._isAccurateCodingEnabled();
                         this._view?.webview.postMessage({ type: 'accurateCodingSetting', enabled });
+                        break;
+                    }
+                    case 'getAdvancedReviewerSetting': {
+                        const enabled = this._isAdvancedReviewerEnabled();
+                        this._view?.webview.postMessage({ type: 'advancedReviewerSetting', enabled });
                         break;
                     }
                     case 'getLeadChallengeSetting': {
@@ -3259,6 +3311,178 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             this._handleKanbanWorkflowEvent(data.workflow, data.sessionId);
                         }
                         break;
+                    case 'editDbPath': {
+                        const dbConfig = vscode.workspace.getConfiguration('switchboard');
+                        const currentDbPath = dbConfig.get<string>('kanban.dbPath', '');
+                        const dbResult = await vscode.window.showInputBox({
+                            prompt: 'Enter path for kanban database (supports ~ for home dir)',
+                            value: currentDbPath || '',
+                            placeHolder: '~/Google Drive/Switchboard/kanban.db',
+                        });
+                        if (dbResult !== undefined) {
+                            await dbConfig.update('kanban.dbPath', dbResult.trim() || undefined, vscode.ConfigurationTarget.Workspace);
+                            this._view?.webview.postMessage({ type: 'dbPathUpdated', path: dbResult.trim() || '.switchboard/kanban.db' });
+                        }
+                        break;
+                    }
+                    case 'testDbConnection': {
+                        try {
+                            const wsRoot = this._getWorkspaceRoot();
+                            if (wsRoot) {
+                                const db = KanbanDatabase.forWorkspace(wsRoot);
+                                const ready = await db.ensureReady();
+                                this._view?.webview.postMessage({ type: 'dbConnectionResult', success: ready });
+                                if (ready) {
+                                    vscode.window.showInformationMessage('Database connection successful');
+                                }
+                            }
+                        } catch (dbErr: any) {
+                            this._view?.webview.postMessage({ type: 'dbConnectionResult', success: false, error: dbErr.message });
+                            vscode.window.showErrorMessage(`Database connection failed: ${dbErr.message}`);
+                        }
+                        break;
+                    }
+                    case 'setPresetDbPath': {
+                        const homedir = os.homedir();
+                        let presetPath = '';
+                        switch (data.preset) {
+                            case 'google-drive': {
+                                if (process.platform === 'darwin') {
+                                    const cloudStorage = path.join(homedir, 'Library', 'CloudStorage');
+                                    if (fs.existsSync(cloudStorage)) {
+                                        try {
+                                            const entries = fs.readdirSync(cloudStorage);
+                                            const gdEntry = entries.find((e: string) => e.startsWith('GoogleDrive-'));
+                                            if (gdEntry) {
+                                                presetPath = path.join(cloudStorage, gdEntry, 'Switchboard', 'kanban.db');
+                                            }
+                                        } catch { /* ignore */ }
+                                    }
+                                }
+                                if (!presetPath) {
+                                    const fallback = process.platform === 'win32'
+                                        ? path.join(homedir, 'Google Drive', 'Switchboard', 'kanban.db')
+                                        : path.join(homedir, 'Google Drive', 'Switchboard', 'kanban.db');
+                                    const parentDir = path.dirname(fallback);
+                                    if (fs.existsSync(path.dirname(parentDir))) {
+                                        presetPath = fallback;
+                                    }
+                                }
+                                break;
+                            }
+                            case 'dropbox':
+                                presetPath = path.join(homedir, 'Dropbox', 'Switchboard', 'kanban.db');
+                                break;
+                            case 'icloud':
+                                if (process.platform === 'darwin') {
+                                    presetPath = path.join(homedir, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Switchboard', 'kanban.db');
+                                } else {
+                                    vscode.window.showWarningMessage('iCloud Drive preset is only available on macOS.');
+                                }
+                                break;
+                        }
+                        if (presetPath) {
+                            const presetConfig = vscode.workspace.getConfiguration('switchboard');
+                            await presetConfig.update('kanban.dbPath', presetPath, vscode.ConfigurationTarget.Workspace);
+                            this._view?.webview.postMessage({ type: 'dbPathUpdated', path: presetPath });
+                            vscode.window.showInformationMessage(`Database location set to ${data.preset}. Folder will be created on first save.`);
+                        }
+                        break;
+                    }
+                    case 'editArchivePath': {
+                        const archConfig = vscode.workspace.getConfiguration('switchboard');
+                        const currentArchPath = archConfig.get<string>('archive.dbPath', '');
+                        const archResult = await vscode.window.showInputBox({
+                            prompt: 'Enter path for DuckDB archive (supports ~ and {workspace})',
+                            value: currentArchPath || '',
+                            placeHolder: '~/GoogleDrive/SwitchboardArchives/{workspace}.duckdb',
+                        });
+                        if (archResult !== undefined) {
+                            await archConfig.update('archive.dbPath', archResult.trim() || undefined, vscode.ConfigurationTarget.Workspace);
+                            this._view?.webview.postMessage({ type: 'archivePathUpdated', path: archResult.trim() });
+                        }
+                        break;
+                    }
+                    case 'installCliTool': {
+                        if (data.tool === 'duckdb') {
+                            const platform = process.platform;
+                            let cmd = '';
+                            switch (platform) {
+                                case 'darwin': cmd = 'brew install duckdb'; break;
+                                case 'win32': cmd = 'winget install DuckDB.cli'; break;
+                                default: cmd = 'See https://duckdb.org/docs/installation/'; break;
+                            }
+                            const choice = await vscode.window.showInformationMessage(
+                                `Install DuckDB CLI: ${cmd}`,
+                                { modal: true, detail: 'Copy the command and run it in a terminal.' },
+                                'Copy Command', 'Open Docs'
+                            );
+                            if (choice === 'Copy Command') {
+                                await vscode.env.clipboard.writeText(cmd);
+                                vscode.window.showInformationMessage('Install command copied to clipboard');
+                            } else if (choice === 'Open Docs') {
+                                vscode.env.openExternal(vscode.Uri.parse('https://duckdb.org/docs/installation/'));
+                            }
+                        }
+                        break;
+                    }
+                    case 'openCliTerminal': {
+                        if (data.tool === 'duckdb') {
+                            const cliConfig = vscode.workspace.getConfiguration('switchboard');
+                            const archivePath = cliConfig.get<string>('archive.dbPath', '');
+                            if (!archivePath) {
+                                vscode.window.showWarningMessage('Archive path not configured. Set it first in the Database & Sync panel.');
+                                break;
+                            }
+                            const expandedPath = archivePath.replace(/^~/, os.homedir());
+                            if (this._duckdbTerminal && this._duckdbTerminal.exitStatus === undefined) {
+                                this._duckdbTerminal.show();
+                            } else {
+                                const terminal = vscode.window.createTerminal('DuckDB Archive');
+                                this._duckdbTerminal = terminal;
+                                const safePath = expandedPath.replace(/'/g, "'\\''");
+                                terminal.sendText(`duckdb '${safePath}'`);
+                                terminal.show();
+                            }
+                        }
+                        break;
+                    }
+                    case 'exportToArchive': {
+                        vscode.commands.executeCommand('switchboard.exportAllToArchive');
+                        break;
+                    }
+                    case 'viewDbStats': {
+                        const statsRoot = this._getWorkspaceRoot();
+                        if (statsRoot) {
+                            try {
+                                const statsDb = KanbanDatabase.forWorkspace(statsRoot);
+                                await statsDb.ensureReady();
+                                const allPlans = await statsDb.getAllPlans(statsRoot);
+                                const stats = {
+                                    totalPlans: allPlans.length,
+                                    active: allPlans.filter((p: any) => p.status === 'active').length,
+                                    completed: allPlans.filter((p: any) => p.status === 'completed').length,
+                                };
+                                vscode.window.showInformationMessage(
+                                    `📊 Database Stats: ${stats.totalPlans} plans (${stats.active} active, ${stats.completed} completed)`
+                                );
+                            } catch (statsErr: any) {
+                                vscode.window.showErrorMessage(`Failed to get stats: ${statsErr.message}`);
+                            }
+                        }
+                        break;
+                    }
+                    case 'resetDatabase': {
+                        const resetConfirm = await vscode.window.showWarningMessage(
+                            'Reset the kanban database? All plan metadata will be permanently deleted.',
+                            { modal: true },
+                            'Reset Database'
+                        );
+                        if (resetConfirm === 'Reset Database') {
+                            vscode.commands.executeCommand('switchboard.resetKanbanDb');
+                        }
+                        break;
+                    }
                 }
             } catch (error) {
                 const errorMessage = error instanceof Error ? error.message : String(error);
@@ -6114,12 +6338,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             const plan: BatchPromptPlan = { topic, absolutePath: planFileAbsolute };
             const copyInstruction = role === 'coder' ? 'low-complexity' : undefined;
-            const { baseInstruction: resolvedInstruction, includeInlineChallenge } = this._getPromptInstructionOptions(role, copyInstruction);
+            const { baseInstruction: resolvedInstruction } = this._getPromptInstructionOptions(role, copyInstruction);
+            const includeInlineChallenge = this._isLeadInlineChallengeEnabled();
+            const accurateCodingEnabled = this._isAccurateCodingEnabled();
+            const pairProgrammingEnabled = this._autobanState.pairProgrammingEnabled;
+            const aggressivePairProgramming = this._isAggressivePairProgrammingEnabled();
+            const advancedReviewerEnabled = this._isAdvancedReviewerEnabled();
             // Accuracy mode excluded from clipboard prompts — requires MCP tools only in CLI terminals
             let textToCopy = buildKanbanBatchPrompt(role, [plan], {
                 instruction: resolvedInstruction,
                 includeInlineChallenge,
-                accurateCodingEnabled: false
+                accurateCodingEnabled: false, // Always false for clipboard prompts
+                pairProgrammingEnabled,
+                aggressivePairProgramming,
+                advancedReviewerEnabled
             });
             const customAgent = findCustomAgentByRole(customAgents, effectiveColumn);
             if (customAgent?.promptInstructions) {
@@ -7254,6 +7486,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return vscode.workspace.getConfiguration('switchboard').get<boolean>('accurateCoding.enabled', true);
     }
 
+    private _isAdvancedReviewerEnabled(): boolean {
+        return vscode.workspace.getConfiguration('switchboard')
+            .get<boolean>('reviewer.advancedMode', false);
+    }
+
     private _isLeadInlineChallengeEnabled(): boolean {
         return vscode.workspace.getConfiguration('switchboard').get<boolean>('leadCoder.inlineChallenge', false);
     }
@@ -7685,7 +7922,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 - Post adversarial critique and balanced synthesis directly in chat, then update the original plan.`;
             }
         } else if (role === 'reviewer') {
-            messagePayload = buildKanbanBatchPrompt('reviewer', [dispatchPlan]);
+            messagePayload = buildKanbanBatchPrompt('reviewer', [dispatchPlan], { 
+                advancedReviewerEnabled: this._isAdvancedReviewerEnabled() 
+            });
             messageMetadata.phase_gate = {
                 enforce_persona: 'reviewer',
                 review_mode: strictReviewPrompts ? 'direct_execute_strict' : 'direct_execute_light',

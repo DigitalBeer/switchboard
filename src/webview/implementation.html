@@ -1186,6 +1186,143 @@
         .onboard-step .startup-row {
             margin-bottom: 6px;
         }
+
+        /* Database & Sync Panel */
+        #db-sync-section {
+            margin-top: 12px;
+        }
+        .db-sync-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            cursor: pointer;
+            user-select: none;
+        }
+        .db-sync-toggle .section-label {
+            color: var(--accent-green);
+        }
+        .db-sync-fields {
+            display: none;
+            flex-direction: column;
+            gap: 6px;
+            margin-top: 8px;
+        }
+        .db-sync-fields.open {
+            display: flex;
+        }
+        .db-subsection {
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-dim);
+        }
+        .db-subsection:last-child { border-bottom: none; }
+        .subsection-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 6px;
+        }
+        .db-status-badge {
+            margin-left: auto;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 500;
+            text-transform: uppercase;
+            background: var(--bg-dim);
+            color: var(--text-secondary);
+        }
+        .db-status-badge.synced { background: #28a745; color: white; }
+        .db-status-badge.error { background: #dc3545; color: white; }
+        .db-path-display {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--text-secondary);
+            background: var(--bg-dim);
+            padding: 4px 8px;
+            border-radius: 3px;
+            word-break: break-all;
+            margin-bottom: 6px;
+        }
+        .db-path-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+        .db-cloud-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+        .db-preset-btn {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            padding: 3px 8px;
+            border: 1px solid var(--border-dim);
+            background: var(--bg-dim);
+            color: var(--text-secondary);
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+        .db-preset-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+        .db-cli-tool-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        .db-tool-status {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            color: var(--text-secondary);
+        }
+        .db-status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+        .db-status-dot.green { background: #28a745; }
+        .db-status-dot.red { background: #dc3545; }
+        .db-quick-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 4px;
+        }
+        .db-action-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 2px;
+            padding: 6px;
+            border: 1px solid var(--border-dim);
+            background: var(--bg-dim);
+            color: var(--text-secondary);
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+            text-align: center;
+        }
+        .db-action-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+        .db-action-btn.danger { border-color: #dc3545; color: #dc3545; }
+        .db-action-btn.danger:hover { background: rgba(220, 53, 69, 0.1); }
+        .db-action-icon { font-size: 14px; }
+        .db-secondary-btn {
+            padding: 2px 8px;
+            font-size: 10px;
+            background: var(--bg-dim);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-dim);
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .db-secondary-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+        .db-primary-btn {
+            width: 100%;
+            padding: 4px;
+            font-size: 10px;
+            margin-top: 6px;
+            background: var(--bg-dim);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-dim);
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .db-primary-btn:hover { background: var(--border-dim); color: var(--text-primary); }
+        .db-primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     </style>
 </head>
 
@@ -1422,6 +1559,69 @@
                 <button id="btn-open-docs" class="secondary-btn w-full"
                     style="margin-top:4px;">OPEN DOCS</button>
 
+            </div>
+        </div>
+
+        <!-- DATABASE & SYNC -->
+        <div id="db-sync-section">
+            <div class="db-sync-toggle" id="db-sync-toggle-btn">
+                <div class="section-label">DATABASE & SYNC</div>
+                <span class="chevron" id="db-sync-chevron">▶</span>
+            </div>
+            <div class="db-sync-fields" id="db-sync-fields">
+                <div class="db-subsection">
+                    <div class="subsection-header">
+                        <span>☁️</span><span>Cloud Database Location</span>
+                        <span class="db-status-badge" id="cloud-status">local</span>
+                    </div>
+                    <div class="db-path-display" id="current-db-path">.switchboard/kanban.db</div>
+                    <div class="db-path-actions">
+                        <button onclick="vscode.postMessage({type:'editDbPath'})" class="db-secondary-btn">Edit Path</button>
+                        <button onclick="vscode.postMessage({type:'testDbConnection'})" class="db-secondary-btn">Test</button>
+                    </div>
+                    <div class="db-cloud-presets">
+                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'google-drive'})" class="db-preset-btn">📁 Google Drive</button>
+                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'dropbox'})" class="db-preset-btn">📦 Dropbox</button>
+                        <button onclick="vscode.postMessage({type:'setPresetDbPath',preset:'icloud'})" class="db-preset-btn">🍎 iCloud</button>
+                    </div>
+                </div>
+                <div class="db-subsection">
+                    <div class="subsection-header">
+                        <span>📚</span><span>Archive Storage</span>
+                        <span class="db-status-badge" id="archive-status">not configured</span>
+                    </div>
+                    <div class="db-path-display" id="current-archive-path">Not configured</div>
+                    <div class="db-path-actions">
+                        <button onclick="vscode.postMessage({type:'editArchivePath'})" class="db-secondary-btn">Set Archive Path</button>
+                    </div>
+                </div>
+                <div class="db-subsection">
+                    <div class="subsection-header">
+                        <span>🛠️</span><span>CLI Tools</span>
+                    </div>
+                    <div class="db-cli-tool-row">
+                        <span style="font-weight:500; font-size:11px;">DuckDB</span>
+                        <span class="db-tool-status" id="duckdb-status"><span class="db-status-dot red"></span> Not installed</span>
+                        <button onclick="vscode.postMessage({type:'installCliTool',tool:'duckdb'})" class="db-secondary-btn" id="duckdb-install-btn">Install</button>
+                    </div>
+                    <button onclick="vscode.postMessage({type:'openCliTerminal',tool:'duckdb'})" class="db-primary-btn" id="open-duckdb-btn" disabled>Open DuckDB Terminal</button>
+                </div>
+                <div class="db-subsection">
+                    <div class="subsection-header">
+                        <span>⚡</span><span>Quick Actions</span>
+                    </div>
+                    <div class="db-quick-actions">
+                        <button onclick="vscode.postMessage({type:'exportToArchive'})" class="db-action-btn">
+                            <span class="db-action-icon">📤</span>Export Completed
+                        </button>
+                        <button onclick="vscode.postMessage({type:'viewDbStats'})" class="db-action-btn">
+                            <span class="db-action-icon">📊</span>DB Stats
+                        </button>
+                        <button onclick="vscode.postMessage({type:'resetDatabase'})" class="db-action-btn danger">
+                            <span class="db-action-icon">🗑️</span>Reset Database
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -2421,6 +2621,34 @@
                 case 'airlock_coderError': {
                     const cStatus2 = document.getElementById('webai-status');
                     if (cStatus2) cStatus2.innerText = '⚠ ' + (message.message || 'Send to coder failed');
+                    break;
+                }
+                case 'dbPathUpdated': {
+                    const dbPathEl = document.getElementById('current-db-path');
+                    if (dbPathEl) dbPathEl.textContent = message.path || '.switchboard/kanban.db';
+                    updateCloudStatus(message.path || '');
+                    break;
+                }
+                case 'dbConnectionResult': {
+                    const dbPathEl2 = document.getElementById('current-db-path');
+                    if (dbPathEl2) {
+                        dbPathEl2.style.borderLeft = message.success ? '3px solid #28a745' : '3px solid #dc3545';
+                        if (!message.success) dbPathEl2.title = message.error || 'Connection failed';
+                        setTimeout(() => { dbPathEl2.style.borderLeft = ''; }, 2000);
+                    }
+                    break;
+                }
+                case 'cliStatus':
+                    updateCliToolStatus(message.tool, message.installed, message.version);
+                    break;
+                case 'archivePathUpdated': {
+                    const archPathEl = document.getElementById('current-archive-path');
+                    const archStatusEl = document.getElementById('archive-status');
+                    if (archPathEl) archPathEl.textContent = message.path || 'Not configured';
+                    if (archStatusEl) {
+                        archStatusEl.textContent = message.path ? 'configured' : 'not configured';
+                        archStatusEl.className = 'db-status-badge' + (message.path ? ' synced' : '');
+                    }
                     break;
                 }
             }
@@ -3535,6 +3763,48 @@
 
         document.getElementById('btn-onboard-skip').addEventListener('click', () => {
             vscode.postMessage({ type: 'finishOnboarding' });
+        });
+
+        // --- Database & Sync Panel ---
+        function updateCloudStatus(dbPath) {
+            const badge = document.getElementById('cloud-status');
+            if (!badge) return;
+            if (dbPath.includes('Google Drive') || dbPath.includes('GoogleDrive-') || dbPath.includes('Dropbox') || dbPath.includes('iCloud') || dbPath.includes('CloudDocs')) {
+                badge.textContent = 'cloud synced';
+                badge.className = 'db-status-badge synced';
+            } else if (dbPath.includes('.switchboard')) {
+                badge.textContent = 'local';
+                badge.className = 'db-status-badge';
+            } else {
+                badge.textContent = 'custom';
+                badge.className = 'db-status-badge';
+            }
+        }
+
+        function updateCliToolStatus(tool, installed, version) {
+            if (tool === 'duckdb') {
+                const statusEl = document.getElementById('duckdb-status');
+                const installBtn = document.getElementById('duckdb-install-btn');
+                const openBtn = document.getElementById('open-duckdb-btn');
+                if (statusEl && installed) {
+                    statusEl.innerHTML = '<span class="db-status-dot green"></span> v' + (version || 'installed');
+                    if (installBtn) installBtn.style.display = 'none';
+                    if (openBtn) openBtn.disabled = false;
+                } else if (statusEl) {
+                    statusEl.innerHTML = '<span class="db-status-dot red"></span> Not installed';
+                    if (installBtn) installBtn.style.display = '';
+                    if (openBtn) openBtn.disabled = true;
+                }
+            }
+        }
+
+        document.getElementById('db-sync-toggle-btn')?.addEventListener('click', () => {
+            const fields = document.getElementById('db-sync-fields');
+            const chevron = document.getElementById('db-sync-chevron');
+            if (fields && chevron) {
+                fields.classList.toggle('open');
+                chevron.classList.toggle('open');
+            }
         });
 
         // Notify extension we are ready to receive data

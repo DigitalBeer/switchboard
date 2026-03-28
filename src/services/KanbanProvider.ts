@@ -3,8 +3,6 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { SessionActionLog } from './SessionActionLog';
 import { buildKanbanColumns, CustomAgentConfig, parseCustomAgents } from './agentConfig';
 import { deriveKanbanColumn } from './kanbanColumnDerivation';
@@ -67,7 +65,6 @@ export class KanbanProvider implements vscode.Disposable {
     private _lastCards: KanbanCard[] = [];
     private _currentWorkspaceRoot: string | null = null;
     private _columnDragDropModes: Record<string, 'cli' | 'prompt'>;
-    private _duckdbTerminal?: vscode.Terminal;
     private _taskViewerProvider?: TaskViewerProvider;
 
     public setTaskViewerProvider(provider: TaskViewerProvider) {
@@ -1284,7 +1281,6 @@ export class KanbanProvider implements vscode.Disposable {
                 // Initial load: trigger full file→DB sync to ensure DB is populated,
                 // then kanbanProvider.refresh() is called by fullSync after syncing.
                 await vscode.commands.executeCommand('switchboard.fullSync');
-                this._checkCliTools();
                 break;
             case 'selectPlan': {
                 const { sessionId } = msg;
@@ -2009,181 +2005,6 @@ export class KanbanProvider implements vscode.Disposable {
                 this._panel?.webview.postMessage({ type: 'dbPathUpdated', path: dbPath });
                 break;
             }
-            case 'editDbPath': {
-                const config = vscode.workspace.getConfiguration('switchboard');
-                const current = config.get<string>('kanban.dbPath', '');
-                const result = await vscode.window.showInputBox({
-                    prompt: 'Enter path for kanban database (supports ~ for home dir)',
-                    value: current || '',
-                    placeHolder: '~/Google Drive/Switchboard/kanban.db',
-                });
-                if (result !== undefined) {
-                    await config.update('kanban.dbPath', result.trim() || undefined, vscode.ConfigurationTarget.Workspace);
-                    this._panel?.webview.postMessage({ type: 'dbPathUpdated', path: result.trim() || '.switchboard/kanban.db' });
-                }
-                break;
-            }
-            case 'testDbConnection': {
-                try {
-                    const wsRoot = msg.workspaceRoot || this._currentWorkspaceRoot;
-                    if (wsRoot) {
-                        const db = KanbanDatabase.forWorkspace(wsRoot);
-                        const ready = await db.ensureReady();
-                        this._panel?.webview.postMessage({ type: 'dbConnectionResult', success: ready });
-                        if (ready) {
-                            vscode.window.showInformationMessage('Database connection successful');
-                        }
-                    }
-                } catch (error: any) {
-                    this._panel?.webview.postMessage({ type: 'dbConnectionResult', success: false, error: error.message });
-                    vscode.window.showErrorMessage(`Database connection failed: ${error.message}`);
-                }
-                break;
-            }
-            case 'setPresetDbPath': {
-                const homedir = os.homedir();
-                let presetPath = '';
-                switch (msg.preset) {
-                    case 'google-drive': {
-                        if (process.platform === 'darwin') {
-                            const cloudStorage = path.join(homedir, 'Library', 'CloudStorage');
-                            if (fs.existsSync(cloudStorage)) {
-                                try {
-                                    const entries = fs.readdirSync(cloudStorage);
-                                    const gdEntry = entries.find((e: string) => e.startsWith('GoogleDrive-'));
-                                    if (gdEntry) {
-                                        presetPath = path.join(cloudStorage, gdEntry, 'Switchboard', 'kanban.db');
-                                    }
-                                } catch { /* ignore */ }
-                            }
-                        }
-                        if (!presetPath) {
-                            // Platform-aware fallback; only set if parent dir exists
-                            const fallback = process.platform === 'win32'
-                                ? path.join(homedir, 'Google Drive', 'Switchboard', 'kanban.db')
-                                : path.join(homedir, 'Google Drive', 'Switchboard', 'kanban.db');
-                            const parentDir = path.dirname(fallback);
-                            if (fs.existsSync(path.dirname(parentDir))) {
-                                presetPath = fallback;
-                            }
-                        }
-                        break;
-                    }
-                    case 'dropbox':
-                        presetPath = path.join(homedir, 'Dropbox', 'Switchboard', 'kanban.db');
-                        break;
-                    case 'icloud':
-                        if (process.platform === 'darwin') {
-                            presetPath = path.join(homedir, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Switchboard', 'kanban.db');
-                        } else {
-                            vscode.window.showWarningMessage('iCloud Drive preset is only available on macOS.');
-                        }
-                        break;
-                }
-                if (presetPath) {
-                    const config = vscode.workspace.getConfiguration('switchboard');
-                    await config.update('kanban.dbPath', presetPath, vscode.ConfigurationTarget.Workspace);
-                    this._panel?.webview.postMessage({ type: 'dbPathUpdated', path: presetPath });
-                    vscode.window.showInformationMessage(`Database location set to ${msg.preset}. Folder will be created on first save.`);
-                }
-                break;
-            }
-            case 'editArchivePath': {
-                const config = vscode.workspace.getConfiguration('switchboard');
-                const current = config.get<string>('archive.dbPath', '');
-                const result = await vscode.window.showInputBox({
-                    prompt: 'Enter path for DuckDB archive (supports ~ and {workspace})',
-                    value: current || '',
-                    placeHolder: '~/GoogleDrive/SwitchboardArchives/{workspace}.duckdb',
-                });
-                if (result !== undefined) {
-                    await config.update('archive.dbPath', result.trim() || undefined, vscode.ConfigurationTarget.Workspace);
-                    this._panel?.webview.postMessage({ type: 'archivePathUpdated', path: result.trim() });
-                }
-                break;
-            }
-            case 'installCliTool': {
-                if (msg.tool === 'duckdb') {
-                    const platform = process.platform;
-                    let cmd = '';
-                    switch (platform) {
-                        case 'darwin': cmd = 'brew install duckdb'; break;
-                        case 'win32': cmd = 'winget install DuckDB.cli'; break;
-                        default: cmd = 'See https://duckdb.org/docs/installation/'; break;
-                    }
-                    const choice = await vscode.window.showInformationMessage(
-                        `Install DuckDB CLI: ${cmd}`,
-                        { modal: true, detail: 'Copy the command and run it in a terminal.' },
-                        'Copy Command', 'Open Docs'
-                    );
-                    if (choice === 'Copy Command') {
-                        await vscode.env.clipboard.writeText(cmd);
-                        vscode.window.showInformationMessage('Install command copied to clipboard');
-                    } else if (choice === 'Open Docs') {
-                        vscode.env.openExternal(vscode.Uri.parse('https://duckdb.org/docs/installation/'));
-                    }
-                }
-                break;
-            }
-            case 'openCliTerminal': {
-                if (msg.tool === 'duckdb') {
-                    const config = vscode.workspace.getConfiguration('switchboard');
-                    const archivePath = config.get<string>('archive.dbPath', '');
-                    if (!archivePath) {
-                        vscode.window.showWarningMessage('Archive path not configured. Set it first in the Database & Sync panel.');
-                        return;
-                    }
-                    const expandedPath = archivePath.replace(/^~/, os.homedir());
-                    // Reuse existing DuckDB terminal if still open
-                    if (this._duckdbTerminal && this._duckdbTerminal.exitStatus === undefined) {
-                        this._duckdbTerminal.show();
-                    } else {
-                        const terminal = vscode.window.createTerminal('DuckDB Archive');
-                        this._duckdbTerminal = terminal;
-                        // Sanitize path to prevent shell injection
-                        const safePath = expandedPath.replace(/'/g, "'\\''");
-                        terminal.sendText(`duckdb '${safePath}'`);
-                        terminal.show();
-                    }
-                }
-                break;
-            }
-            case 'exportToArchive': {
-                vscode.commands.executeCommand('switchboard.exportAllToArchive');
-                break;
-            }
-            case 'viewDbStats': {
-                const wsRoot = msg.workspaceRoot || this._currentWorkspaceRoot;
-                if (wsRoot) {
-                    try {
-                        const db = KanbanDatabase.forWorkspace(wsRoot);
-                        await db.ensureReady();
-                        const allPlans = await db.getAllPlans(wsRoot);
-                        const stats = {
-                            totalPlans: allPlans.length,
-                            active: allPlans.filter((p: any) => p.status === 'active').length,
-                            completed: allPlans.filter((p: any) => p.status === 'completed').length,
-                        };
-                        vscode.window.showInformationMessage(
-                            `📊 Database Stats: ${stats.totalPlans} plans (${stats.active} active, ${stats.completed} completed)`
-                        );
-                    } catch (error: any) {
-                        vscode.window.showErrorMessage(`Failed to get stats: ${error.message}`);
-                    }
-                }
-                break;
-            }
-            case 'resetDatabase': {
-                const confirm = await vscode.window.showWarningMessage(
-                    'Reset the kanban database? All plan metadata will be permanently deleted.',
-                    { modal: true },
-                    'Reset Database'
-                );
-                if (confirm === 'Reset Database') {
-                    vscode.commands.executeCommand('switchboard.resetKanbanDb');
-                }
-                break;
-            }
             case 'testingFailed': {
                 const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
                 if (!workspaceRoot || !Array.isArray(msg.sessionIds) || msg.sessionIds.length === 0) { break; }
@@ -2237,24 +2058,24 @@ FOCUS DIRECTIVE: Each plan file path above is the single source of truth for tha
                         }
                     }
 
+                    // For sendToLead: dispatch the prompt directly to the lead coder agent
+                    // This bypasses cliTriggersEnabled intentionally — testing failure reports
+                    // should always be deliverable to the lead coder.
+                    if (msg.action === 'sendToLead' && this._taskViewerProvider) {
+                        const dispatched = await this._taskViewerProvider.dispatchCustomPromptToRole('lead', prompt, workspaceRoot);
+                        if (!dispatched) {
+                            vscode.window.showWarningMessage('Prompt copied to clipboard but could not dispatch to lead coder. Paste manually.');
+                        }
+                    }
+
                     await this._refreshBoard(workspaceRoot);
-                    const verb = msg.action === 'sendToLead' ? 'Paste the prompt in your lead coder chat.' : '';
+                    const verb = msg.action === 'sendToLead' ? 'Prompt dispatched to lead coder.' : '';
                     vscode.window.showInformationMessage(
                         `Testing failure prompt copied and ${sourceCards.length} plan(s) moved to Lead Coder. ${verb}`.trim()
                     );
                 }
                 break;
             }
-        }
-    }
-
-    private async _checkCliTools(): Promise<void> {
-        try {
-            const execFileAsync = promisify(execFile);
-            const { stdout } = await execFileAsync('duckdb', ['--version']);
-            this._panel?.webview.postMessage({ type: 'cliStatus', tool: 'duckdb', installed: true, version: stdout.trim() });
-        } catch {
-            this._panel?.webview.postMessage({ type: 'cliStatus', tool: 'duckdb', installed: false });
         }
     }
 
