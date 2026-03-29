@@ -305,15 +305,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             } catch { /* continue to next candidate */ }
         }
 
-        // DEPRECATED: Filesystem fallback — remove once session files fully eliminated
-        for (const workspaceRoot of candidates) {
-            const runSheetPath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-            if (fs.existsSync(runSheetPath)) {
-                this._activeWorkspaceRoot = workspaceRoot;
-                return workspaceRoot;
-            }
-        }
-
         return preferred || orderedRoots[0];
     }
 
@@ -932,6 +923,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
         }
 
+        // Also clean up old tombstones (runs infrequently, safe to do here)
+        const tombstonesPurged = await db.purgeOldTombstones(workspaceId, 30);
+        if (tombstonesPurged > 0) {
+            console.log(`[TaskViewerProvider] Cleaned up ${tombstonesPurged} old tombstones`);
+        }
+
         return workspaceId;
     }
 
@@ -1069,25 +1066,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             : await this._resolveWorkspaceRootForSession(sessionId);
         if (!resolvedWorkspaceRoot) { return false; }
 
-        const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-        if (!fs.existsSync(sessionPath)) {
-            console.warn(`[TaskViewerProvider] No session file for analyst map: ${sessionId}`);
+        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+        if (!db) { return false; }
+        const plan = await db.getPlanBySessionId(sessionId);
+        if (!plan || !plan.planFile) {
+            console.warn(`[TaskViewerProvider] No plan found in DB for analyst map: ${sessionId}`);
             return false;
         }
-
-        let planFileAbsolute: string;
-        try {
-            const sessionContent = await fs.promises.readFile(sessionPath, 'utf8');
-            const session = JSON.parse(sessionContent);
-            if (!session.planFile) {
-                console.warn(`[TaskViewerProvider] No plan file in session: ${sessionId}`);
-                return false;
-            }
-            planFileAbsolute = path.resolve(resolvedWorkspaceRoot, session.planFile);
-        } catch (e) {
-            console.error(`[TaskViewerProvider] Failed to read session for analyst map: ${e}`);
-            return false;
-        }
+        const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, plan.planFile);
 
         if (!fs.existsSync(planFileAbsolute)) {
             console.warn(`[TaskViewerProvider] Plan file not found for analyst map: ${planFileAbsolute}`);
@@ -1293,20 +1279,26 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return false;
         }
 
-        // Resolve valid plan paths from session IDs
+        // Resolve valid plan paths from session IDs via DB
         const validPlans: { sessionId: string; topic: string; absolutePath: string }[] = [];
+        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
         for (const sid of sessionIds) {
             try {
-                const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sid}.json`);
-                if (!fs.existsSync(sessionPath)) { continue; }
-                const content = await fs.promises.readFile(sessionPath, 'utf8');
-                const session = JSON.parse(content);
-                if (!session.planFile) { continue; }
-                const absolutePath = path.resolve(resolvedWorkspaceRoot, session.planFile);
+                let planFile: string | undefined;
+                let topic: string | undefined;
+                if (db) {
+                    const plan = await db.getPlanBySessionId(sid);
+                    if (plan && plan.planFile) {
+                        planFile = plan.planFile;
+                        topic = plan.topic;
+                    }
+                }
+                if (!planFile) { continue; }
+                const absolutePath = path.resolve(resolvedWorkspaceRoot, planFile);
                 if (!fs.existsSync(absolutePath)) { continue; }
                 validPlans.push({
                     sessionId: sid,
-                    topic: session.topic || session.planFile || 'Untitled',
+                    topic: topic || planFile || 'Untitled',
                     absolutePath
                 });
             } catch {
@@ -3092,7 +3084,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         await this.createDraftPlanTicket();
                         break;
                     case 'getRecoverablePlans': {
-                        const plans = this._getRecoverablePlans();
+                        const plans = await this._getRecoverablePlans();
                         this._view?.webview.postMessage({ type: 'recoverablePlans', plans });
                         break;
                     }
@@ -3101,7 +3093,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             const success = await this._handleRestorePlan(data.planId);
                             this._view?.webview.postMessage({ type: 'restorePlanResult', success, planId: data.planId });
                             if (success) {
-                                const plans = this._getRecoverablePlans();
+                                const plans = await this._getRecoverablePlans();
                                 this._view?.webview.postMessage({ type: 'recoverablePlans', plans });
                             }
                         }
@@ -3425,6 +3417,24 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                                 break;
                         }
                         if (presetPath) {
+                            const parentDir = path.dirname(presetPath);
+                            if (!fs.existsSync(parentDir)) {
+                                const choice = await vscode.window.showWarningMessage(
+                                    `Cloud storage directory not found at ${parentDir}. Create it?`,
+                                    'Create Directory', 'Cancel'
+                                );
+                                if (choice === 'Create Directory') {
+                                    try {
+                                        fs.mkdirSync(parentDir, { recursive: true });
+                                    } catch (error) {
+                                        vscode.window.showErrorMessage(`Failed to create directory: ${error instanceof Error ? error.message : String(error)}`);
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+
                             const presetConfig = vscode.workspace.getConfiguration('switchboard');
                             await presetConfig.update('kanban.dbPath', presetPath, vscode.ConfigurationTarget.Workspace);
                             const wsRoot = this._getWorkspaceRoot();
@@ -3432,6 +3442,23 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             this._view?.webview.postMessage({ type: 'dbPathUpdated', path: presetPath });
                             vscode.window.showInformationMessage(`✅ Database location set to ${data.preset}.`);
                             void this._refreshSessionStatus();
+                        } else {
+                            let errorMsg = '';
+                            switch (data.preset) {
+                                case 'google-drive':
+                                    errorMsg = 'Google Drive not found. Please install Google Drive Desktop app or manually set the path.';
+                                    break;
+                                case 'dropbox':
+                                    errorMsg = 'Dropbox folder not found at ~/Dropbox. Please install Dropbox or manually set the path.';
+                                    break;
+                                case 'icloud':
+                                    errorMsg = 'iCloud Drive not found. Please enable iCloud Drive in System Preferences.';
+                                    break;
+                                default:
+                                    errorMsg = `Cloud storage preset "${data.preset}" not found.`;
+                                    break;
+                            }
+                            vscode.window.showErrorMessage(errorMsg);
                         }
                         break;
                     }
@@ -3463,18 +3490,20 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             switch (platform) {
                                 case 'darwin': cmd = 'brew install duckdb'; break;
                                 case 'win32': cmd = 'winget install DuckDB.cli'; break;
-                                default: cmd = 'See https://duckdb.org/docs/installation/'; break;
+                                default:
+                                    vscode.env.openExternal(vscode.Uri.parse('https://duckdb.org/docs/installation/'));
+                                    vscode.window.showInformationMessage('Opening DuckDB installation docs...');
+                                    break;
                             }
-                            const choice = await vscode.window.showInformationMessage(
-                                `Install DuckDB CLI: ${cmd}`,
-                                { modal: true, detail: 'Copy the command and run it in a terminal.' },
-                                'Copy Command', 'Open Docs'
-                            );
-                            if (choice === 'Copy Command') {
-                                await vscode.env.clipboard.writeText(cmd);
-                                vscode.window.showInformationMessage('Install command copied to clipboard');
-                            } else if (choice === 'Open Docs') {
-                                vscode.env.openExternal(vscode.Uri.parse('https://duckdb.org/docs/installation/'));
+
+                            if (cmd) {
+                                let terminal = vscode.window.terminals.find(t => t.name === 'archives');
+                                if (!terminal) {
+                                    terminal = vscode.window.createTerminal({ name: 'archives' });
+                                }
+                                terminal.show();
+                                terminal.sendText(cmd);
+                                vscode.window.showInformationMessage(`Running install command in 'archives' terminal.`);
                             }
                         }
                         break;
@@ -3632,12 +3661,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
         try { this._fsPlansWatcher?.close(); } catch { }
 
-        // Initialize plan + sessions directories
+        // Initialize plans directory
         const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) return;
         const plansRootDir = path.join(workspaceRoot, '.switchboard', 'plans');
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        for (const dir of [plansRootDir, sessionsDir]) {
+        for (const dir of [plansRootDir]) {
             if (!fs.existsSync(dir)) {
                 try {
                     fs.mkdirSync(dir, { recursive: true });
@@ -3700,48 +3728,18 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private _setupSessionWatcher() {
+        // Session file watcher removed — DB is sole source of truth.
+        // Sync is triggered by plan file watcher and DB operations.
         if (this._sessionWatcher) {
             this._sessionWatcher.dispose();
+            this._sessionWatcher = undefined;
         }
         try { this._fsSessionWatcher?.close(); } catch { }
+        this._fsSessionWatcher = undefined;
         if (this._sessionSyncTimer) {
             clearTimeout(this._sessionSyncTimer);
             this._sessionSyncTimer = undefined;
         }
-
-        const workspaceRoot = this._resolveWorkspaceRoot();
-        if (!workspaceRoot) return;
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-
-        if (!fs.existsSync(sessionsDir)) {
-            try { fs.mkdirSync(sessionsDir, { recursive: true }); } catch { }
-        }
-
-        const debouncedSessionSync = () => {
-            if (this._sessionSyncTimer) clearTimeout(this._sessionSyncTimer);
-            this._sessionSyncTimer = setTimeout(() => {
-                this._sessionSyncTimer = undefined;
-                this._syncFilesAndRefreshRunSheets();
-            }, 5000);
-        };
-
-        this._sessionWatcher = vscode.workspace.createFileSystemWatcher('**/.switchboard/sessions/*.json');
-        this._sessionWatcher.onDidCreate(() => debouncedSessionSync());
-        this._sessionWatcher.onDidChange(() => debouncedSessionSync());
-        this._sessionWatcher.onDidDelete(() => debouncedSessionSync());
-
-        const watchSessionDirectory = (dir: string): fs.FSWatcher | undefined => {
-            try {
-                return fs.watch(dir, (_eventType, filename) => {
-                    if (!filename || !filename.toString().endsWith('.json')) return;
-                    debouncedSessionSync();
-                });
-            } catch (e) {
-                console.error(`[TaskViewerProvider] fs.watch fallback failed for '${dir}':`, e);
-                return undefined;
-            }
-        };
-        this._fsSessionWatcher = watchSessionDirectory(sessionsDir);
     }
 
     private _setupBrainWatcher() {
@@ -4353,7 +4351,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return !s || s === '(untitled)' || /^(simple\s+)?implementation\s+plan$/i.test(s.trim());
     }
 
-    private _getRecoverablePlans(): Array<{ planId: string; topic: string; sourceType: string; status: string; brainSourcePath?: string; localPlanPath?: string; updatedAt: string }> {
+    private async _getRecoverablePlans(): Promise<Array<{ planId: string; topic: string; sourceType: string; status: string; brainSourcePath?: string; localPlanPath?: string; updatedAt: string }>> {
         const workspaceRoot = this._resolveWorkspaceRoot() || '';
         const mirrorDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard', 'plans') : '';
 
@@ -4370,18 +4368,19 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             if (m) archivePlanIds.add(m[1]);
         }
 
-        const switchboardDir = workspaceRoot ? path.join(workspaceRoot, '.switchboard') : '';
+        // Get DB handle for topic/date lookups
+        const db = workspaceRoot ? await this._getKanbanDb(workspaceRoot) : undefined;
+
         const recoverable: Array<{ planId: string; topic: string; sourceType: string; status: string; brainSourcePath?: string; localPlanPath?: string; updatedAt: string }> = [];
         for (const entry of Object.values(this._planRegistry.entries)) {
             if (entry.status === 'archived' || entry.status === 'orphan') {
-                // Skip orphan brain plans with no restorable data (brain file gone, no archive plan, no session)
+                // Skip orphan brain plans with no restorable data (brain file gone, no archive plan, no DB record)
                 if (entry.status === 'orphan' && entry.sourceType === 'brain') {
                     const brainExists = entry.brainSourcePath && fs.existsSync(path.resolve(entry.brainSourcePath));
                     if (!brainExists && !archivePlanIds.has(entry.planId)) {
-                        const sessFile = switchboardDir
-                            ? path.join(switchboardDir, 'archive', 'sessions', `antigravity_${entry.planId}.json`)
-                            : '';
-                        if (!sessFile || !fs.existsSync(sessFile)) continue;
+                        const sessionId = `antigravity_${entry.planId}`;
+                        const hasPlanInDb = db ? await db.hasPlan(sessionId) : false;
+                        if (!hasPlanInDb) continue;
                     }
                 }
 
@@ -4426,23 +4425,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     }
                 }
 
-                // Try session log for topic when file-based lookup returned nothing useful
-                if (this._isGenericTopic(topic) && switchboardDir) {
+                // Try DB for topic when file-based lookup returned nothing useful
+                if (this._isGenericTopic(topic) && db) {
                     const sessionId = `antigravity_${entry.planId}`;
-                    const sessionFilePaths = [
-                        path.join(switchboardDir, 'sessions', `${sessionId}.json`),
-                        path.join(switchboardDir, 'archive', 'sessions', `${sessionId}.json`),
-                    ];
-                    for (const sp of sessionFilePaths) {
-                        if (fs.existsSync(sp)) {
-                            try {
-                                const sheet = JSON.parse(fs.readFileSync(sp, 'utf8'));
-                                if (sheet.topic && !this._isGenericTopic(sheet.topic)) {
-                                    topic = sheet.topic;
-                                    break;
-                                }
-                            } catch { }
-                        }
+                    const plan = await db.getPlanBySessionId(sessionId);
+                    if (plan && plan.topic && !this._isGenericTopic(plan.topic)) {
+                        topic = plan.topic;
                     }
                 }
 
@@ -4450,24 +4438,17 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     topic = this._inferTopicFromPath(entry.brainSourcePath || entry.localPlanPath);
                 }
 
-                // Get the best available date from the session file (fixes migration-corrupted dates)
+                // Get the best available date from DB (fixes migration-corrupted dates)
                 let updatedAt = entry.updatedAt;
-                if (switchboardDir) {
+                if (db) {
                     const sessionIds = entry.sourceType === 'brain'
                         ? [`antigravity_${entry.planId}`]
                         : [entry.planId, `antigravity_${entry.planId}`];
-                    let foundDate = false;
                     for (const sid of sessionIds) {
-                        if (foundDate) break;
-                        for (const subdir of ['sessions', path.join('archive', 'sessions')]) {
-                            const sp = path.join(switchboardDir, subdir, `${sid}.json`);
-                            if (fs.existsSync(sp)) {
-                                try {
-                                    const sheet = JSON.parse(fs.readFileSync(sp, 'utf8'));
-                                    const sheetDate = sheet.completedAt || sheet.createdAt;
-                                    if (sheetDate) { updatedAt = sheetDate; foundDate = true; break; }
-                                } catch { }
-                            }
+                        const plan = await db.getPlanBySessionId(sid);
+                        if (plan) {
+                            const planDate = plan.updatedAt || plan.createdAt;
+                            if (planDate) { updatedAt = planDate; break; }
                         }
                     }
                 }
@@ -4569,44 +4550,63 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _restoreRunSheet(workspaceRoot: string, sessionId: string, brainSourcePath?: string): Promise<void> {
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        const archiveSessionsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'sessions');
-        const activeRunSheetPath = path.join(sessionsDir, `${sessionId}.json`);
-        const archivedRunSheetPath = path.join(archiveSessionsDir, `${sessionId}.json`);
         try {
-            let sheet: any | null = null;
-            if (fs.existsSync(activeRunSheetPath)) {
-                const raw = await fs.promises.readFile(activeRunSheetPath, 'utf8');
-                sheet = JSON.parse(raw);
-                if (sheet.completed !== true && !brainSourcePath) return;
-            } else if (fs.existsSync(archivedRunSheetPath)) {
-                const raw = await fs.promises.readFile(archivedRunSheetPath, 'utf8');
-                sheet = JSON.parse(raw);
-            }
-            if (!sheet) return;
-            delete sheet.completed;
-            delete sheet.completedAt;
-            if (brainSourcePath) {
-                sheet.brainSourcePath = brainSourcePath;
-            }
+            // Get plan data from DB
+            const db = await this._getKanbanDb(workspaceRoot);
+            if (!db) return;
+            const plan = await db.getPlanBySessionId(sessionId);
 
-            // Also restore the plan file from archive so planFile remains valid
-            if (typeof sheet.planFile === 'string') {
-                const mirrorAbsPath = path.isAbsolute(sheet.planFile)
-                    ? sheet.planFile
-                    : path.join(workspaceRoot, sheet.planFile);
-                if (!fs.existsSync(mirrorAbsPath)) {
-                    const archivedMirrorPath = path.join(workspaceRoot, '.switchboard', 'archive', 'plans', path.basename(mirrorAbsPath));
-                    if (fs.existsSync(archivedMirrorPath)) {
-                        await fs.promises.mkdir(path.dirname(mirrorAbsPath), { recursive: true });
-                        await fs.promises.copyFile(archivedMirrorPath, mirrorAbsPath);
-                        console.log(`[TaskViewerProvider] Restored plan file from archive: ${path.basename(mirrorAbsPath)}`);
-                    }
+            // Also try to hydrate from SessionActionLog (has events)
+            const log = this._getSessionLog(workspaceRoot);
+            const sheet = await log.getRunSheet(sessionId);
+
+            if (!plan && !sheet) return;
+
+            const planFile = plan?.planFile || sheet?.planFile;
+            if (!planFile) return;
+
+            // If the plan is not completed and no brainSourcePath override, skip
+            const isCompleted = plan?.status === 'completed' || sheet?.completed === true;
+            if (!isCompleted && !brainSourcePath) return;
+
+            // Restore the plan file from archive if it doesn't exist
+            const mirrorAbsPath = path.isAbsolute(planFile)
+                ? planFile
+                : path.join(workspaceRoot, planFile);
+            if (!fs.existsSync(mirrorAbsPath)) {
+                const archivedMirrorPath = path.join(workspaceRoot, '.switchboard', 'archive', 'plans', path.basename(mirrorAbsPath));
+                if (fs.existsSync(archivedMirrorPath)) {
+                    await fs.promises.mkdir(path.dirname(mirrorAbsPath), { recursive: true });
+                    await fs.promises.copyFile(archivedMirrorPath, mirrorAbsPath);
+                    console.log(`[TaskViewerProvider] Restored plan file from archive: ${path.basename(mirrorAbsPath)}`);
                 }
             }
 
-            await fs.promises.mkdir(sessionsDir, { recursive: true });
-            await fs.promises.writeFile(activeRunSheetPath, JSON.stringify(sheet, null, 2));
+            // Update DB: mark plan as active again
+            if (plan) {
+                const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId();
+                if (workspaceId) {
+                    await db.upsertPlans([{
+                        ...plan,
+                        status: 'active' as KanbanPlanRecord['status'],
+                        brainSourcePath: brainSourcePath || plan.brainSourcePath,
+                        kanbanColumn: 'CREATED'
+                    }]);
+                }
+            }
+
+            // Update run sheet to mark as not completed
+            if (sheet) {
+                await log.updateRunSheet(sessionId, (s: any) => {
+                    delete s.completed;
+                    delete s.completedAt;
+                    if (brainSourcePath) {
+                        s.brainSourcePath = brainSourcePath;
+                    }
+                    return s;
+                });
+            }
+
             console.log(`[TaskViewerProvider] Restored run sheet: ${sessionId}`);
         } catch (e) {
             console.error(`[TaskViewerProvider] Failed to restore run sheet ${sessionId}:`, e);
@@ -5130,34 +5130,44 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     private async _reconcileAntigravityPlanMirrors(workspaceRoot: string): Promise<void> {
         const switchboardDir = path.join(workspaceRoot, '.switchboard');
         const sessionsDir = path.join(switchboardDir, 'sessions');
-        const archiveSessionsDir = path.join(switchboardDir, 'archive', 'sessions');
         const stagingDir = path.join(switchboardDir, 'plans');
         const archivePlansDir = path.join(switchboardDir, 'archive', 'plans');
         const orphanPlansDir = path.join(switchboardDir, 'archive', 'orphan_plans');
 
         if (!fs.existsSync(stagingDir)) return;
 
+        // Build set of completed antigravity sessions from DB
         const archivedCompletedSessionIds = new Set<string>();
-        if (fs.existsSync(archiveSessionsDir)) {
-            const archivedRunSheets = await fs.promises.readdir(archiveSessionsDir);
-            for (const file of archivedRunSheets) {
-                if (!file.endsWith('.json')) continue;
-                const runSheetPath = path.join(archiveSessionsDir, file);
-                try {
-                    const sheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
-                    const sessionId = String(sheet?.sessionId || '');
-                    if (!sessionId.startsWith('antigravity_')) continue;
-                    if (sheet?.completed === true) {
-                        archivedCompletedSessionIds.add(sessionId);
+        const dbForReconcile = await this._getKanbanDb(workspaceRoot);
+        if (dbForReconcile) {
+            const wsId = await dbForReconcile.getWorkspaceId() || await dbForReconcile.getDominantWorkspaceId();
+            if (wsId) {
+                const completedPlans = await dbForReconcile.getCompletedPlans(wsId);
+                for (const plan of completedPlans) {
+                    if (plan.sessionId.startsWith('antigravity_')) {
+                        archivedCompletedSessionIds.add(plan.sessionId);
                     }
-                } catch {
-                    // Ignore malformed archived runsheets during duplicate pruning.
                 }
             }
         }
 
+        // Get active mirror names from DB (primary source of truth)
         const activeMirrorNames = new Set<string>();
-        const completedRunSheetPaths: string[] = [];
+        if (dbForReconcile) {
+            const wsId = await dbForReconcile.getWorkspaceId() || await dbForReconcile.getDominantWorkspaceId();
+            if (wsId) {
+                const allPlans = await dbForReconcile.getAllPlans(wsId);
+                for (const plan of allPlans) {
+                    if (!plan.sessionId.startsWith('antigravity_')) continue;
+                    if (plan.status === 'completed' || plan.status === 'deleted' || archivedCompletedSessionIds.has(plan.sessionId)) continue;
+                    if (plan.planFile) activeMirrorNames.add(path.basename(plan.planFile));
+                    const hash = plan.sessionId.replace(/^antigravity_/, '');
+                    if (hash) activeMirrorNames.add(`brain_${hash}.md`);
+                }
+            }
+        }
+
+        // Legacy cleanup: prune stale/unscoped session files if they exist on disk
         if (fs.existsSync(sessionsDir)) {
             const sessionFiles = await fs.promises.readdir(sessionsDir);
             for (const file of sessionFiles) {
@@ -5169,7 +5179,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     if (!sessionId.startsWith('antigravity_')) continue;
 
                     if (sheet?.completed === true) {
-                        completedRunSheetPaths.push(fullPath);
                         continue;
                     }
 
@@ -5227,99 +5236,40 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         }
                         continue;
                     }
-
-                    const planFileName = path.basename(String(sheet?.planFile || ''));
-                    if (/^brain_.+\.md$/i.test(planFileName)) {
-                        activeMirrorNames.add(planFileName);
-                    } else {
-                        const hash = sessionId.replace(/^antigravity_/, '');
-                        if (hash) activeMirrorNames.add(`brain_${hash}.md`);
-                    }
                 } catch {
                     // Ignore malformed runsheets during reconciliation.
                 }
             }
         }
 
+        // Archive mirrors for completed antigravity plans using DB data
         const archivedMirrorNames = new Set<string>();
-        if (fs.existsSync(archiveSessionsDir)) {
-            const archivedRunSheets = await fs.promises.readdir(archiveSessionsDir);
-            for (const file of archivedRunSheets) {
-                if (!file.endsWith('.json')) continue;
-                const runSheetPath = path.join(archiveSessionsDir, file);
-                try {
-                    const sheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
-                    const sessionId = String(sheet?.sessionId || '');
-                    if (!sessionId.startsWith('antigravity_')) continue;
+        for (const completedSessionId of archivedCompletedSessionIds) {
+            const hash = completedSessionId.replace(/^antigravity_/, '');
+            if (!hash) continue;
 
-                    const hash = sessionId.replace(/^antigravity_/, '');
-                    const fallbackName = hash ? `brain_${hash}.md` : '';
-                    const currentName = path.basename(String(sheet?.planFile || ''));
-                    const desiredName = /^brain_.+\.md$/i.test(currentName) ? currentName : fallbackName;
-                    if (!desiredName) continue;
-
-                    const inStaging = path.join(stagingDir, desiredName);
-                    const inArchive = path.join(archivePlansDir, desiredName);
-                    let resolvedArchivePath = inArchive;
-
-                    if (fs.existsSync(inStaging) && !activeMirrorNames.has(desiredName)) {
-                        resolvedArchivePath = await this._moveFileWithCollision(inStaging, inArchive);
-                    } else if (!fs.existsSync(inArchive) && fallbackName) {
-                        const fallbackStaging = path.join(stagingDir, fallbackName);
-                        if (fs.existsSync(fallbackStaging) && !activeMirrorNames.has(fallbackName)) {
-                            resolvedArchivePath = await this._moveFileWithCollision(fallbackStaging, path.join(archivePlansDir, fallbackName));
-                        }
+            // Determine mirror name from DB plan record or canonical pattern
+            let desiredName = `brain_${hash}.md`;
+            if (dbForReconcile) {
+                const plan = await dbForReconcile.getPlanBySessionId(completedSessionId);
+                if (plan?.planFile) {
+                    const planBaseName = path.basename(plan.planFile);
+                    if (/^brain_.+\.md$/i.test(planBaseName)) {
+                        desiredName = planBaseName;
                     }
-
-                    if (fs.existsSync(resolvedArchivePath)) {
-                        const relativeArchivePath = path.relative(workspaceRoot, resolvedArchivePath).replace(/\\/g, '/');
-                        if (sheet.planFile !== relativeArchivePath) {
-                            sheet.planFile = relativeArchivePath;
-                            await fs.promises.writeFile(runSheetPath, JSON.stringify(sheet, null, 2));
-                        }
-                        archivedMirrorNames.add(path.basename(resolvedArchivePath));
-                    }
-                } catch {
-                    // Ignore malformed archived runsheets during reconciliation.
                 }
             }
-        }
 
-        for (const runSheetPath of completedRunSheetPaths) {
-            try {
-                const sheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
-                const sessionId = String(sheet?.sessionId || '');
-                if (!sessionId.startsWith('antigravity_')) continue;
+            const inStaging = path.join(stagingDir, desiredName);
+            const inArchive = path.join(archivePlansDir, desiredName);
+            let resolvedArchivePath = inArchive;
 
-                const hash = sessionId.replace(/^antigravity_/, '');
-                const fallbackName = hash ? `brain_${hash}.md` : '';
-                const currentName = path.basename(String(sheet?.planFile || ''));
-                const desiredName = /^brain_.+\.md$/i.test(currentName) ? currentName : fallbackName;
-                if (!desiredName) continue;
+            if (fs.existsSync(inStaging) && !activeMirrorNames.has(desiredName)) {
+                resolvedArchivePath = await this._moveFileWithCollision(inStaging, inArchive);
+            }
 
-                const inStaging = path.join(stagingDir, desiredName);
-                const inArchive = path.join(archivePlansDir, desiredName);
-                let resolvedArchivePath = inArchive;
-
-                if (fs.existsSync(inStaging) && !activeMirrorNames.has(desiredName)) {
-                    resolvedArchivePath = await this._moveFileWithCollision(inStaging, inArchive);
-                } else if (!fs.existsSync(inArchive) && fallbackName) {
-                    const fallbackStaging = path.join(stagingDir, fallbackName);
-                    if (fs.existsSync(fallbackStaging) && !activeMirrorNames.has(fallbackName)) {
-                        resolvedArchivePath = await this._moveFileWithCollision(fallbackStaging, path.join(archivePlansDir, fallbackName));
-                    }
-                }
-
-                if (fs.existsSync(resolvedArchivePath)) {
-                    const relativeArchivePath = path.relative(workspaceRoot, resolvedArchivePath).replace(/\\/g, '/');
-                    if (sheet.planFile !== relativeArchivePath) {
-                        sheet.planFile = relativeArchivePath;
-                        await fs.promises.writeFile(runSheetPath, JSON.stringify(sheet, null, 2));
-                    }
-                    archivedMirrorNames.add(path.basename(resolvedArchivePath));
-                }
-            } catch {
-                // Ignore malformed completed runsheets during reconciliation.
+            if (fs.existsSync(resolvedArchivePath)) {
+                archivedMirrorNames.add(path.basename(resolvedArchivePath));
             }
         }
 
@@ -5366,16 +5316,31 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const sessionId = `antigravity_${hash}`;
 
         let resolvedBrainPath: string | undefined;
+
+        // Try DB first for brainSourcePath
         try {
-            const runSheetPath = await this._findExistingRunSheetPath(workspaceRoot, sessionId);
-            if (runSheetPath && fs.existsSync(runSheetPath)) {
-                const rs = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
-                if (typeof rs?.brainSourcePath === 'string' && rs.brainSourcePath.trim()) {
-                    resolvedBrainPath = path.resolve(rs.brainSourcePath.trim());
+            const db = await this._getKanbanDb(workspaceRoot);
+            if (db) {
+                const plan = await db.getPlanBySessionId(sessionId);
+                if (plan && typeof plan.brainSourcePath === 'string' && plan.brainSourcePath.trim()) {
+                    resolvedBrainPath = path.resolve(plan.brainSourcePath.trim());
                 }
             }
         } catch {
             // Fall through to registry fallback.
+        }
+
+        // Try SessionActionLog if DB didn't have it
+        if (!resolvedBrainPath) {
+            try {
+                const log = this._getSessionLog(workspaceRoot);
+                const sheet = await log.getRunSheet(sessionId);
+                if (sheet && typeof sheet.brainSourcePath === 'string' && sheet.brainSourcePath.trim()) {
+                    resolvedBrainPath = path.resolve(sheet.brainSourcePath.trim());
+                }
+            } catch {
+                // Fall through to registry fallback.
+            }
         }
 
         if (!resolvedBrainPath) {
@@ -5411,32 +5376,24 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     private async _hasArchivedCompletedRunSheet(workspaceRoot: string, sessionId: string): Promise<boolean> {
-        const archiveSessionsDir = path.join(workspaceRoot, '.switchboard', 'archive', 'sessions');
-        if (!fs.existsSync(archiveSessionsDir)) return false;
-
-        let entries: string[] = [];
-        try {
-            entries = await fs.promises.readdir(archiveSessionsDir);
-        } catch {
-            return false;
+        // Check DB for completed status
+        const db = await this._getKanbanDb(workspaceRoot);
+        if (db) {
+            const plan = await db.getPlanBySessionId(sessionId);
+            if (plan && plan.status === 'completed') {
+                return true;
+            }
         }
 
-        const exactName = `${sessionId}.json`;
-        const archivedPrefix = `${sessionId}_archived_`;
-
-        for (const entry of entries) {
-            if (!entry.endsWith('.json')) continue;
-            if (entry !== exactName && !entry.startsWith(archivedPrefix)) continue;
-
-            try {
-                const fullPath = path.join(archiveSessionsDir, entry);
-                const parsed = JSON.parse(await fs.promises.readFile(fullPath, 'utf8'));
-                if (parsed?.completed === true) {
-                    return true;
-                }
-            } catch {
-                // Ignore malformed files during archived completion checks.
+        // Also check SessionActionLog for completed flag
+        try {
+            const log = this._getSessionLog(workspaceRoot);
+            const sheet = await log.getRunSheet(sessionId);
+            if (sheet?.completed === true) {
+                return true;
             }
+        } catch {
+            // Ignore errors during completion checks.
         }
 
         return false;
@@ -5447,7 +5404,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         if (!resolvedWorkspaceRoot) return;
         await this._activateWorkspaceContext(resolvedWorkspaceRoot);
         const stagingDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'plans');
-        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
 
         try {
             await this._ensureTombstonesLoaded(resolvedWorkspaceRoot);
@@ -5476,24 +5432,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const mirrorFilename = `brain_${pathHash}.md`;
             const mirrorPath = path.join(stagingDir, mirrorFilename);
             const runSheetId = `antigravity_${pathHash}`;
-            const runSheetPath = path.join(sessionsDir, `${runSheetId}.json`);
-            const existingRunSheetPath = await this._findExistingRunSheetPath(resolvedWorkspaceRoot, runSheetId);
-            const runSheetKnown = await this._runSheetExists(resolvedWorkspaceRoot, runSheetId);
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            const runSheetKnown = db ? await db.hasPlan(runSheetId) : false;
 
             // Hard-stop: never recreate active antigravity runsheets/mirrors when a completed
             // archived sibling already exists for this deterministic session ID.
             if (await this._hasArchivedCompletedRunSheet(resolvedWorkspaceRoot, runSheetId)) {
-                if (fs.existsSync(runSheetPath)) {
-                    try {
-                        const activeSheet = JSON.parse(await fs.promises.readFile(runSheetPath, 'utf8'));
-                        if (activeSheet?.completed !== true) {
-                            await fs.promises.unlink(runSheetPath);
-                            console.log(`[TaskViewerProvider] Removed stale active runsheet shadowed by archived completion: ${runSheetId}`);
-                        }
-                    } catch {
-                        // Ignore malformed/locked runsheets; reconciliation pass handles leftovers.
-                    }
-                }
                 return;
             }
 
@@ -5566,34 +5510,30 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             this._recentMirrorWrites.set(stableMirrorPath, setTimeout(() => this._recentMirrorWrites.delete(stableMirrorPath), 2000));
             await fs.promises.writeFile(mirrorPath, content);
 
-            // Create/update runsheet — merge events to protect task history
-            if (!fs.existsSync(sessionsDir)) { fs.mkdirSync(sessionsDir, { recursive: true }); }
-
+            // Create/update runsheet via DB-backed SessionActionLog
             // DB-level dedup: if this brain plan's session already exists in kanban.db,
-            // skip session file creation. The mirror .md is still written (content may differ),
-            // but we don't need a new .json runsheet.
-            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            // skip runsheet creation. The mirror .md is still written (content may differ).
             if (db) {
                 const alreadyInDb = await db.hasPlan(runSheetId);
                 if (alreadyInDb) {
-                    console.log(`[TaskViewerProvider] Brain plan already in DB (session: ${runSheetId}), skipping runsheet file creation`);
+                    console.log(`[TaskViewerProvider] Brain plan already in DB (session: ${runSheetId}), skipping runsheet creation`);
                     await this._syncFilesAndRefreshRunSheets(resolvedWorkspaceRoot);
                     return;
                 }
             }
 
+            // Get existing events from DB if available
             let existingEvents: any[] = [];
             let originalCreatedAt: string | undefined;
-            if (existingRunSheetPath && fs.existsSync(existingRunSheetPath)) {
-                try {
-                    const existing = JSON.parse(await fs.promises.readFile(existingRunSheetPath, 'utf8'));
-                    existingEvents = Array.isArray(existing.events) ? existing.events : [];
-                    originalCreatedAt = existing.createdAt;
-                } catch { }
+            const log = this._getSessionLog(resolvedWorkspaceRoot);
+            const existingSheet = await log.getRunSheet(runSheetId);
+            if (existingSheet) {
+                existingEvents = Array.isArray(existingSheet.events) ? existingSheet.events : [];
+                originalCreatedAt = existingSheet.createdAt;
             }
-            // Append a new Implementation event only if not already recorded for this mtime
+
             const mtimeKey = new Date(mtimeMs).toISOString();
-            const alreadyLogged = existingEvents.some(e => e.timestamp === mtimeKey && e.workflow === 'Implementation');
+            const alreadyLogged = existingEvents.some((e: any) => e.timestamp === mtimeKey && e.workflow === 'Implementation');
             if (!alreadyLogged) {
                 existingEvents.push({ workflow: 'Implementation', timestamp: mtimeKey, action: 'start' });
             }
@@ -5606,7 +5546,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 source: 'antigravity',
                 events: existingEvents
             };
-            await fs.promises.writeFile(runSheetPath, JSON.stringify(runSheet, null, 2));
+
+            if (existingSheet) {
+                await log.updateRunSheet(runSheetId, () => runSheet);
+            } else {
+                await log.createRunSheet(runSheetId, runSheet);
+            }
 
             console.log(`[TaskViewerProvider] Mirrored brain plan: ${topic}`);
             await this._syncFilesAndRefreshRunSheets(resolvedWorkspaceRoot);
@@ -6871,47 +6816,46 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const resolvedWorkspaceRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
         if (!resolvedWorkspaceRoot) return;
         await this._activateWorkspaceContext(resolvedWorkspaceRoot);
-        const sessionsDir = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions');
         const relPath = path.relative(resolvedWorkspaceRoot, uri.fsPath).replace(/\\/g, '/');
         try {
             const content = await fs.promises.readFile(uri.fsPath, 'utf8');
             const h1Match = content.match(/^#\s+(.+)$/m);
             if (!h1Match) return;
             const newTopic = h1Match[1].trim();
-            if (!fs.existsSync(sessionsDir)) return;
-            const files = fs.readdirSync(sessionsDir).filter(f => f.endsWith('.json'));
-            for (const file of files) {
-                const sheetPath = path.join(sessionsDir, file);
-                try {
-                    const sheetContent = await fs.promises.readFile(sheetPath, 'utf8');
-                    const sheet = JSON.parse(sheetContent);
-                    const sheetRelPath = (sheet.planFile || '').replace(/\\/g, '/');
-                    if (sheetRelPath === relPath && sheet.topic !== newTopic) {
-                        const sessionId = path.basename(file, '.json');
-                        const log = this._getSessionLog(resolvedWorkspaceRoot);
-                        await log.updateRunSheet(sessionId, (s: any) => {
-                            s.topic = newTopic;
-                            return s;
-                        });
-                        const planId = this._getPlanIdForRunSheet(sheet);
-                        if (planId) {
-                            const entry = this._planRegistry.entries[planId];
-                            if (entry && entry.topic !== newTopic) {
-                                entry.topic = newTopic;
-                                entry.updatedAt = new Date().toISOString();
-                                await this._savePlanRegistry(resolvedWorkspaceRoot);
-                            }
-                        }
-                        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
-                        if (db) {
-                            await db.updateTopic(sessionId, newTopic);
-                        }
-                        await this._refreshRunSheets(resolvedWorkspaceRoot);
-                        return;
-                    }
-                } catch { }
+
+            const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+            if (!db) return;
+            const workspaceId = await db.getWorkspaceId() || await db.getDominantWorkspaceId();
+            if (!workspaceId) return;
+            const plan = await db.getPlanByPlanFile(relPath, workspaceId);
+            if (!plan) return;
+            if (plan.topic === newTopic) return;
+
+            // Update topic in DB
+            await db.updateTopic(plan.sessionId, newTopic);
+
+            // Update run sheet topic via SessionActionLog (already DB-backed)
+            const log = this._getSessionLog(resolvedWorkspaceRoot);
+            await log.updateRunSheet(plan.sessionId, (s: any) => {
+                s.topic = newTopic;
+                return s;
+            });
+
+            // Update plan registry
+            const planId = plan.sessionId.startsWith('antigravity_')
+                ? plan.sessionId.replace(/^antigravity_/, '')
+                : plan.sessionId;
+            const entry = this._planRegistry.entries[planId];
+            if (entry && entry.topic !== newTopic) {
+                entry.topic = newTopic;
+                entry.updatedAt = new Date().toISOString();
+                await this._savePlanRegistry(resolvedWorkspaceRoot);
             }
-        } catch { }
+
+            await this._refreshRunSheets(resolvedWorkspaceRoot);
+        } catch (e) {
+            console.error('[TaskViewerProvider] Failed to sync plan title:', e);
+        }
     }
 
     private async _updateSessionRunSheet(sessionId: string, workflow: string, outcome?: string, isStop: boolean = false, workspaceRoot?: string) {
@@ -7714,30 +7658,26 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             return false;
         }
 
-        // 1. Get Plan File Path from Session
-        const sessionPath = path.join(resolvedWorkspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-        if (!fs.existsSync(sessionPath)) {
-            clearDispatchLock();
-            vscode.window.showErrorMessage(`Session file not found: ${sessionId}`);
-            return false;
+        // 1. Get Plan File Path — DB-first, filesystem fallback
+        let planFileRelative: string | undefined;
+        let sessionTopic: string | undefined;
+
+        const db = await this._getKanbanDb(resolvedWorkspaceRoot);
+        if (db) {
+            const plan = await db.getPlanBySessionId(sessionId);
+            if (plan && plan.planFile) {
+                planFileRelative = plan.planFile;
+                sessionTopic = plan.topic || plan.planFile || 'Untitled';
+            }
         }
 
-        let planFileRelative: string;
-        let sessionTopic: string;
-        try {
-            const sessionContent = await fs.promises.readFile(sessionPath, 'utf8');
-            const session = JSON.parse(sessionContent);
-            planFileRelative = session.planFile;
-            sessionTopic = session.topic || session.planFile || 'Untitled';
-            if (!planFileRelative) {
-                clearDispatchLock();
-                vscode.window.showErrorMessage('No plan file associated with this session.');
-                return false;
-            }
-        } catch (e) {
+        if (!planFileRelative) {
             clearDispatchLock();
-            vscode.window.showErrorMessage(`Failed to read session file: ${e}`);
+            vscode.window.showErrorMessage(`Plan not found in database for session: ${sessionId}`);
             return false;
+        }
+        if (!sessionTopic) {
+            sessionTopic = planFileRelative || 'Untitled';
         }
 
         const planFileAbsolute = path.resolve(resolvedWorkspaceRoot, planFileRelative);
@@ -8292,9 +8232,7 @@ Create this file exactly as specified, then continue your work.`);
             throw new Error('No workspace folder found.');
         }
         const plansDir = path.join(workspaceRoot, '.switchboard', 'plans');
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
         fs.mkdirSync(plansDir, { recursive: true });
-        fs.mkdirSync(sessionsDir, { recursive: true });
 
         const now = new Date();
         const timestamp = this._formatPlanTimestamp(now);
@@ -8314,8 +8252,8 @@ Create this file exactly as specified, then continue your work.`);
             await fs.promises.writeFile(planFileAbsolute, content, 'utf8');
 
             const sessionId = `sess_${Date.now()}`;
-            const runSheetPath = path.join(sessionsDir, `${sessionId}.json`);
-            const runSheet = {
+            const log = this._getSessionLog(workspaceRoot);
+            await log.createRunSheet(sessionId, {
                 sessionId,
                 planFile: planFileRelative,
                 topic: title,
@@ -8325,8 +8263,7 @@ Create this file exactly as specified, then continue your work.`);
                     timestamp: now.toISOString(),
                     action: 'start'
                 }]
-            };
-            await fs.promises.writeFile(runSheetPath, JSON.stringify(runSheet, null, 2));
+            });
 
             // Register local plan in ownership registry
             const wsId = await this._getOrCreateWorkspaceId(workspaceRoot);
