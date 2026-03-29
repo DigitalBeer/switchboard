@@ -617,7 +617,6 @@ function buildDispatchAuthEnvelope(message) {
     };
 }
 
-const ACTIVITY_LOG_FILENAME = 'activity.jsonl';
 const MCP_SENSITIVE_KEY_RE = /(api[_-]?key|password|passwd|secret|token|authorization|cookie|private[_-]?key)/i;
 
 function sanitizeAuditPayload(value, key = 'root') {
@@ -639,14 +638,32 @@ function sanitizeAuditPayload(value, key = 'root') {
 
 async function appendWorkflowAuditEvent(type, payload, workspaceRoot = getWorkspaceRoot()) {
     try {
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        await fs.promises.mkdir(sessionsDir, { recursive: true });
-        const row = {
-            timestamp: new Date().toISOString(),
-            type,
-            payload: sanitizeAuditPayload(payload || {})
-        };
-        await fs.promises.appendFile(path.join(sessionsDir, ACTIVITY_LOG_FILENAME), `${JSON.stringify(row)}\n`, 'utf8');
+        const dbPath = path.join(workspaceRoot, '.switchboard', 'kanban.db');
+        if (!fs.existsSync(dbPath)) return;
+        const sanitized = sanitizeAuditPayload(payload || {});
+        const timestamp = new Date().toISOString();
+        const SQL = await getSqlJs(workspaceRoot);
+        const dbBytes = fs.readFileSync(dbPath);
+        const db = new SQL.Database(new Uint8Array(dbBytes));
+        try {
+            db.run(
+                `INSERT INTO activity_log (timestamp, event_type, payload, correlation_id, session_id)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [timestamp, type, JSON.stringify(sanitized), null, null]
+            );
+            const data = db.export();
+            const suffix = crypto.randomBytes(4).toString('hex');
+            const tmpPath = `${dbPath}.${suffix}.tmp`;
+            try {
+                fs.writeFileSync(tmpPath, Buffer.from(data));
+                fs.renameSync(tmpPath, dbPath);
+            } catch (persistErr) {
+                try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+                throw persistErr;
+            }
+        } finally {
+            if (typeof db.close === 'function') db.close();
+        }
     } catch (error) {
         console.error(`[audit] Failed to append workflow audit event '${type}': ${error?.message || error}`);
     }
@@ -654,29 +671,40 @@ async function appendWorkflowAuditEvent(type, payload, workspaceRoot = getWorksp
 
 async function appendRunSheetEvent(sessionId, eventPayload, workspaceRoot = getWorkspaceRoot()) {
     if (!sessionId) return;
+    const dbPath = path.join(workspaceRoot, '.switchboard', 'kanban.db');
+    if (!fs.existsSync(dbPath)) return;
     try {
-        const filePath = path.join(workspaceRoot, '.switchboard', 'sessions', `${sessionId}.json`);
-        let sheet;
+        const SQL = await getSqlJs(workspaceRoot);
+        const dbBytes = fs.readFileSync(dbPath);
+        const db = new SQL.Database(new Uint8Array(dbBytes));
         try {
-            const content = await fs.promises.readFile(filePath, 'utf8');
-            sheet = JSON.parse(content);
-        } catch {
-            return; // Only append if runsheet exists
-        }
-        if (!Array.isArray(sheet.events)) {
-            sheet.events = [];
-        }
-        sheet.events.push({
-            timestamp: new Date().toISOString(),
-            ...eventPayload
-        });
-        const tmpPath = `${filePath}.${Date.now()}.tmp`;
-        try {
-            await fs.promises.writeFile(tmpPath, JSON.stringify(sheet, null, 2), 'utf8');
-            await fs.promises.rename(tmpPath, filePath);
-        } catch (renameErr) {
-            try { await fs.promises.unlink(tmpPath); } catch { /* best-effort cleanup */ }
-            throw renameErr;
+            const deviceId = require('os').hostname();
+            const timestamp = eventPayload.timestamp || new Date().toISOString();
+            db.run(
+                `INSERT INTO plan_events (session_id, event_type, workflow, action, timestamp, device_id, payload)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    sessionId,
+                    eventPayload.type || eventPayload.eventType || 'workflow_event',
+                    eventPayload.workflow || '',
+                    eventPayload.action || '',
+                    timestamp,
+                    deviceId,
+                    JSON.stringify(eventPayload)
+                ]
+            );
+            const data = db.export();
+            const suffix = crypto.randomBytes(4).toString('hex');
+            const tmpPath = `${dbPath}.${suffix}.tmp`;
+            try {
+                fs.writeFileSync(tmpPath, Buffer.from(data));
+                fs.renameSync(tmpPath, dbPath);
+            } catch (persistErr) {
+                try { fs.unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+                throw persistErr;
+            }
+        } finally {
+            if (typeof db.close === 'function') db.close();
         }
     } catch (e) {
         console.error(`[audit] Failed to append runsheet event to ${sessionId}: ${e?.message || e}`);
@@ -685,31 +713,51 @@ async function appendRunSheetEvent(sessionId, eventPayload, workspaceRoot = getW
 
 /**
  * Find the most recently active (non-completed) run sheet.
- * Returns the sheet object, or null if none found.
+ * Returns an object with at least { sessionId }, or null if none found.
  */
 async function findMostRecentActiveRunSheet(workspaceRoot = getWorkspaceRoot()) {
+    const dbPath = path.join(workspaceRoot, '.switchboard', 'kanban.db');
+    if (!fs.existsSync(dbPath)) return null;
     try {
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        if (!fs.existsSync(sessionsDir)) return null;
-        const files = await fs.promises.readdir(sessionsDir);
-        const sheets = [];
-        for (const file of files) {
-            if (!file.endsWith('.json') || file === ACTIVITY_LOG_FILENAME) continue;
+        const SQL = await getSqlJs(workspaceRoot);
+        const dbBytes = fs.readFileSync(dbPath);
+        const db = new SQL.Database(new Uint8Array(dbBytes));
+        try {
+            // Read workspace_id from config table
+            let workspaceId = null;
             try {
-                const content = await fs.promises.readFile(path.join(sessionsDir, file), 'utf8');
-                const sheet = JSON.parse(content);
-                if (sheet.completed !== true && sheet.sessionId) {
-                    sheets.push(sheet);
+                const cfgStmt = db.prepare("SELECT value FROM config WHERE key = 'workspace_id'");
+                if (cfgStmt.step()) {
+                    workspaceId = cfgStmt.getAsObject().value;
                 }
-            } catch { }
+                cfgStmt.free();
+            } catch { /* config table may not exist */ }
+            if (!workspaceId) return null;
+
+            const stmt = db.prepare(
+                `SELECT session_id, topic, created_at, updated_at, kanban_column
+                 FROM plans
+                 WHERE workspace_id = ? AND status = 'active'
+                 ORDER BY updated_at DESC
+                 LIMIT 1`,
+                [workspaceId]
+            );
+            let result = null;
+            if (stmt.step()) {
+                const row = stmt.getAsObject();
+                result = {
+                    sessionId: row.session_id,
+                    topic: row.topic || '',
+                    createdAt: row.created_at || '',
+                    lastActivity: row.updated_at || '',
+                    kanbanColumn: row.kanban_column || ''
+                };
+            }
+            stmt.free();
+            return result;
+        } finally {
+            if (typeof db.close === 'function') db.close();
         }
-        if (sheets.length === 0) return null;
-        sheets.sort((a, b) => {
-            const aTime = a.lastActivity || a.createdAt || '';
-            const bTime = b.lastActivity || b.createdAt || '';
-            return bTime.localeCompare(aTime);
-        });
-        return sheets[0];
     } catch (e) {
         console.error(`[audit] Failed to find most recent run sheet: ${e?.message || e}`);
         return null;
@@ -2236,9 +2284,8 @@ function registerTools(server) {
             const workspaceRoot = getWorkspaceRoot();
             const sbDir = path.join(workspaceRoot, '.switchboard');
             const dbPath = path.join(sbDir, 'kanban.db');
-            const identityPath = path.join(sbDir, 'workspace_identity.json');
 
-            // Read workspace ID: DB first, legacy JSON fallback
+            // Read workspace ID from DB only
             let workspaceId = null;
             try {
                 if (fs.existsSync(dbPath)) {
@@ -2256,20 +2303,10 @@ function registerTools(server) {
                     }
                 }
             } catch (e) {
-                // DB read failed, try legacy file
+                // DB read failed
             }
             if (!workspaceId) {
-                try {
-                    if (fs.existsSync(identityPath)) {
-                        const identity = JSON.parse(fs.readFileSync(identityPath, 'utf8'));
-                        workspaceId = identity.workspaceId;
-                    }
-                } catch (e) {
-                    // Legacy file also failed
-                }
-            }
-            if (!workspaceId) {
-                return { isError: true, content: [{ type: "text", text: "Error: Not a switchboard workspace — no workspace identity in DB or legacy file." }] };
+                return { isError: true, content: [{ type: "text", text: "Error: Not a switchboard workspace — no workspace identity in DB." }] };
             }
 
             const columnDefinitions = getKanbanColumnDefinitions(workspaceRoot);
@@ -3169,7 +3206,7 @@ function registerTools(server) {
                         }
                         if (targetSessionId) {
                             // Route through IPC so the extension's mutex serialises the write.
-                            // Direct file write here races with the extension's file-watcher write.
+                            // Fallback writes directly to kanban.db via sql.js.
                             if (process.send) {
                                 process.send({ type: 'appendRunSheetEvent', sessionId: targetSessionId, event: { workflow: 'improve-plan' } });
                             } else {
@@ -3268,6 +3305,152 @@ function registerTools(server) {
                 return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
             } catch (e) {
                 return { isError: true, content: [{ type: "text", text: `Query failed: ${e.message}` }] };
+            }
+        }
+    );
+
+    // --- Export Conversation Tool ---
+    server.tool(
+        "export_conversation",
+        {
+            file_path: z.string().describe("Absolute path to temporary markdown file containing conversation"),
+            metadata: z.object({
+                conversation_date: z.string().optional().describe("Date of conversation (YYYY-MM-DD)"),
+                topic: z.string().optional().describe("Short topic/summary of conversation"),
+                project: z.string().optional().describe("Project name"),
+                tags: z.array(z.string()).optional().describe("Tags for categorization")
+            }).optional().describe("Optional metadata for better searchability")
+        },
+        async ({ file_path, metadata }) => {
+            const os = require('os');
+            const workspaceRoot = getWorkspaceRoot();
+
+            // Security: only allow reads from os.tmpdir()
+            const tmpDir = os.tmpdir();
+            const resolvedFilePath = path.resolve(file_path);
+            if (!resolvedFilePath.startsWith(tmpDir)) {
+                return { isError: true, content: [{ type: "text", text: `Security error: file_path must be within the system temp directory (${tmpDir}).` }] };
+            }
+
+            // Validate file exists, is not empty, and not >10MB
+            if (!fs.existsSync(resolvedFilePath)) {
+                return { isError: true, content: [{ type: "text", text: `File not found: ${resolvedFilePath}` }] };
+            }
+            const stat = fs.statSync(resolvedFilePath);
+            if (stat.size === 0) {
+                return { isError: true, content: [{ type: "text", text: "File is empty." }] };
+            }
+            if (stat.size > 10 * 1024 * 1024) {
+                return { isError: true, content: [{ type: "text", text: "File exceeds 10MB limit." }] };
+            }
+
+            // Read content
+            const content = fs.readFileSync(resolvedFilePath, 'utf8');
+
+            // Extract title from first H1 or use first 50 chars
+            const h1Match = content.match(/^#\s+(.+)$/m);
+            const title = h1Match ? h1Match[1].trim() : content.slice(0, 50).replace(/\n/g, ' ').trim();
+
+            const conversationId = crypto.randomUUID();
+
+            // Resolve archive DB path from VS Code settings
+            let archivePath = '';
+            try {
+                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
+                if (fs.existsSync(settingsPath)) {
+                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+                    archivePath = settings['switchboard.archive.dbPath'] || '';
+                }
+            } catch { /* ignore */ }
+
+            if (!archivePath) {
+                return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
+            }
+
+            let resolvedPath = archivePath.trim();
+            if (resolvedPath.startsWith('~')) {
+                resolvedPath = path.join(os.homedir(), resolvedPath.slice(1));
+            }
+            if (resolvedPath.includes('{workspace}')) {
+                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
+            }
+            if (!path.isAbsolute(resolvedPath)) {
+                resolvedPath = path.join(workspaceRoot, resolvedPath);
+            }
+
+            // Build INSERT
+            const meta = metadata || {};
+            const escapeSql = (s) => (s || '').replace(/'/g, "''");
+            const tagsLiteral = Array.isArray(meta.tags) && meta.tags.length > 0
+                ? `['${meta.tags.map(t => escapeSql(t)).join("', '")}']`
+                : 'NULL';
+            const metadataJson = metadata ? `'${escapeSql(JSON.stringify(metadata))}'` : 'NULL';
+
+            const insertSql = `INSERT INTO conversations (id, conversation_date, topic, title, content, tags, project, metadata, file_path_original) VALUES ('${escapeSql(conversationId)}', ${meta.conversation_date ? `'${escapeSql(meta.conversation_date)}'` : 'NULL'}, ${meta.topic ? `'${escapeSql(meta.topic)}'` : 'NULL'}, '${escapeSql(title)}', '${escapeSql(content)}', ${tagsLiteral}, ${meta.project ? `'${escapeSql(meta.project)}'` : 'NULL'}, ${metadataJson}, '${escapeSql(resolvedFilePath)}');`;
+
+            try {
+                await execFileAsync('duckdb', [resolvedPath, insertSql]);
+                // Delete temp file after successful insert
+                try { fs.unlinkSync(resolvedFilePath); } catch { /* ignore */ }
+                return { content: [{ type: "text", text: JSON.stringify({ success: true, conversationId, title }) }] };
+            } catch (e) {
+                return { isError: true, content: [{ type: "text", text: JSON.stringify({ success: false, error: e.message }) }] };
+            }
+        }
+    );
+
+    // --- Search Archive Tool ---
+    server.tool(
+        "search_archive",
+        {
+            query: z.string().describe("Search query (keywords)"),
+            limit: z.number().optional().describe("Maximum results (default 10)")
+        },
+        async ({ query, limit = 10 }) => {
+            const os = require('os');
+            const workspaceRoot = getWorkspaceRoot();
+
+            // Resolve archive DB path from VS Code settings
+            let archivePath = '';
+            try {
+                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
+                if (fs.existsSync(settingsPath)) {
+                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+                    archivePath = settings['switchboard.archive.dbPath'] || '';
+                }
+            } catch { /* ignore */ }
+
+            if (!archivePath) {
+                return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
+            }
+
+            let resolvedPath = archivePath.trim();
+            if (resolvedPath.startsWith('~')) {
+                resolvedPath = path.join(os.homedir(), resolvedPath.slice(1));
+            }
+            if (resolvedPath.includes('{workspace}')) {
+                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
+            }
+            if (!path.isAbsolute(resolvedPath)) {
+                resolvedPath = path.join(workspaceRoot, resolvedPath);
+            }
+
+            if (!fs.existsSync(resolvedPath)) {
+                return { content: [{ type: "text", text: "No archive database found. Complete and archive some plans first." }] };
+            }
+
+            const escapeSql = (s) => (s || '').replace(/'/g, "''");
+            const safeQuery = escapeSql(query);
+            const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+
+            const searchSql = `SELECT id, title, topic, conversation_date, project, exported_at, LEFT(content, 200) AS snippet FROM conversations WHERE content ILIKE '%${safeQuery}%' OR title ILIKE '%${safeQuery}%' OR topic ILIKE '%${safeQuery}%' ORDER BY exported_at DESC LIMIT ${safeLimit};`;
+
+            try {
+                const { stdout } = await execFileAsync('duckdb', ['-readonly', '-json', resolvedPath, searchSql]);
+                const results = JSON.parse(stdout || '[]');
+                return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+            } catch (e) {
+                return { isError: true, content: [{ type: "text", text: `Search failed: ${e.message}` }] };
             }
         }
     );

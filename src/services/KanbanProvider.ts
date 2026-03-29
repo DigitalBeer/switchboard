@@ -59,6 +59,7 @@ export class KanbanProvider implements vscode.Disposable {
     private _isRefreshing: boolean = false;
     private _refreshPending: boolean = false;
     private _cliTriggersEnabled: boolean;
+    private _dynamicComplexityRoutingEnabled: boolean;
     private _lastColumnsSignature: string | null = null;
     private _autobanState?: AutobanConfigState;
     private _kanbanDbs = new Map<string, KanbanDatabase>();
@@ -76,11 +77,19 @@ export class KanbanProvider implements vscode.Disposable {
         private readonly _context: vscode.ExtensionContext
     ) {
         this._cliTriggersEnabled = this._context.workspaceState.get<boolean>('kanban.cliTriggersEnabled', true);
+        this._dynamicComplexityRoutingEnabled = this._context.workspaceState.get<boolean>(
+            'kanban.dynamicComplexityRoutingEnabled',
+            true
+        );
         this._columnDragDropModes = this._context.workspaceState.get<Record<string, 'cli' | 'prompt'>>('kanban.columnDragDropModes', {});
     }
 
     public get cliTriggersEnabled(): boolean {
         return this._cliTriggersEnabled;
+    }
+
+    public get dynamicComplexityRoutingEnabled(): boolean {
+        return this._dynamicComplexityRoutingEnabled;
     }
 
     private _getWorkspaceRoots(): string[] {
@@ -174,8 +183,8 @@ export class KanbanProvider implements vscode.Disposable {
     }
 
     /**
-     * Watch .switchboard/sessions/ for new or changed runsheet files
-     * so the Kanban board updates automatically.
+     * Dispose legacy session/state file watchers.
+     * DB is the sole source of truth; no file watchers needed.
      */
     private _setupSessionWatcher() {
         // DB-first: KanbanProvider has NO file watchers.
@@ -265,6 +274,11 @@ export class KanbanProvider implements vscode.Disposable {
 
             this._panel.webview.postMessage({ type: 'cliTriggersState', enabled: this._cliTriggersEnabled });
 
+            this._panel.webview.postMessage({
+                type: 'dynamicComplexityRoutingState',
+                enabled: this._dynamicComplexityRoutingEnabled
+            });
+
             let agentNames: Record<string, string> = {};
             let visibleAgents: Record<string, boolean> = {};
             try {
@@ -333,10 +347,8 @@ export class KanbanProvider implements vscode.Disposable {
             const db = this._getKanbanDb(workspaceRoot);
             const ready = await db.ensureReady();
             if (ready) {
-                // Try config table first
                 const stored = await db.getWorkspaceId();
                 if (stored) return stored;
-                // Config table empty/missing — derive from plans table directly
                 const derived = await db.getDominantWorkspaceId();
                 if (derived) {
                     await db.setWorkspaceId(derived);
@@ -346,22 +358,6 @@ export class KanbanProvider implements vscode.Disposable {
         } catch (e) {
             console.error('[KanbanProvider] _readWorkspaceId failed:', e);
         }
-
-        // Legacy file fallback (one-time migration)
-        const legacyPath = path.join(workspaceRoot, '.switchboard', 'workspace_identity.json');
-        try {
-            if (fs.existsSync(legacyPath)) {
-                const parsed = JSON.parse(await fs.promises.readFile(legacyPath, 'utf8'));
-                const workspaceId = typeof parsed?.workspaceId === 'string' ? parsed.workspaceId.trim() : '';
-                if (workspaceId) {
-                    const db = this._getKanbanDb(workspaceRoot);
-                    if (await db.ensureReady()) {
-                        await db.setWorkspaceId(workspaceId);
-                    }
-                    return workspaceId;
-                }
-            }
-        } catch { /* ignore legacy file errors */ }
         return null;
     }
 
@@ -656,10 +652,19 @@ export class KanbanProvider implements vscode.Disposable {
         });
     }
 
-    private _generateBatchExecutionPrompt(cards: KanbanCard[], workspaceRoot: string): string {
-        const hasHighComplexity = cards.some(card => !this._isLowComplexity(card));
-        const role = hasHighComplexity ? 'lead' : 'coder';
-        const instruction = hasHighComplexity ? undefined : 'low-complexity';
+    private _generateBatchExecutionPrompt(cards: KanbanCard[], workspaceRoot: string, overrideRole?: 'lead' | 'coder'): string {
+        let role: 'lead' | 'coder';
+        let instruction: string | undefined;
+        if (overrideRole) {
+            role = overrideRole;
+            instruction = overrideRole === 'coder' ? 'low-complexity' : undefined;
+        } else {
+            const hasHighComplexity = this._dynamicComplexityRoutingEnabled
+                ? cards.some(card => !this._isLowComplexity(card))
+                : true;  // When disabled, treat all as high complexity → route to lead
+            role = hasHighComplexity ? 'lead' : 'coder';
+            instruction = hasHighComplexity ? undefined : 'low-complexity';
+        }
         // Accuracy mode is NOT included in copy-to-clipboard prompts — it requires MCP tools
         // only available in CLI terminal sessions (autoban dispatch handles accuracy separately).
         const pairProgrammingEnabled = this._autobanState?.pairProgrammingEnabled ?? false;
@@ -1157,13 +1162,41 @@ export class KanbanProvider implements vscode.Disposable {
     }
 
     private async _resolveComplexityRoutedRole(workspaceRoot: string, sessionId: string): Promise<'lead' | 'coder'> {
-        const log = this._getSessionLog(workspaceRoot);
-        const sheet = await log.getRunSheet(sessionId);
-        if (!sheet?.planFile) {
+        // When dynamic complexity routing is disabled, all tasks route to lead
+        if (!this._dynamicComplexityRoutingEnabled) {
             return 'lead';
         }
-        const complexity = await this.getComplexityFromPlan(workspaceRoot, sheet.planFile);
-        return complexity === 'Low' ? 'coder' : 'lead';
+        // DB-first: resolve planFile from plans table directly.
+        // The old path went through getRunSheet → plan_events, which returns null
+        // when a plan has no events yet, silently defaulting to 'lead'.
+        let planFile: string | undefined;
+        try {
+            const db = this._getKanbanDb(workspaceRoot);
+            if (await db.ensureReady()) {
+                const record = await db.getPlanBySessionId(sessionId);
+                if (record?.planFile) {
+                    planFile = record.planFile;
+                }
+            }
+        } catch {
+            // fall through to run sheet fallback
+        }
+
+        // Fallback: try the run sheet path (covers edge cases where plan isn't in DB yet)
+        if (!planFile) {
+            const log = this._getSessionLog(workspaceRoot);
+            const sheet = await log.getRunSheet(sessionId);
+            planFile = sheet?.planFile;
+        }
+
+        if (!planFile) {
+            console.warn(`[KanbanProvider] No planFile found for session ${sessionId} — defaulting to 'lead'`);
+            return 'lead';
+        }
+        const complexity = await this.getComplexityFromPlan(workspaceRoot, planFile);
+        const role = complexity === 'Low' ? 'coder' : 'lead';
+        console.log(`[KanbanProvider] Complexity routing: session=${sessionId} complexity=${complexity} → role=${role}`);
+        return role;
     }
 
     /** Partition session IDs by their complexity-routed role ('lead' or 'coder'). */
@@ -1392,6 +1425,17 @@ export class KanbanProvider implements vscode.Disposable {
                 this._cliTriggersEnabled = !!msg.enabled;
                 await this._context.workspaceState.update('kanban.cliTriggersEnabled', this._cliTriggersEnabled);
                 break;
+            case 'toggleDynamicComplexityRouting':
+                this._dynamicComplexityRoutingEnabled = !!msg.enabled;
+                try {
+                    await this._context.workspaceState.update(
+                        'kanban.dynamicComplexityRoutingEnabled',
+                        this._dynamicComplexityRoutingEnabled
+                    );
+                } catch (err) {
+                    console.error('[KanbanProvider] Failed to persist dynamicComplexityRoutingEnabled:', err);
+                }
+                break;
             case 'setColumnDragDropMode': {
                 const { columnId, mode } = msg;
                 if (columnId && (mode === 'cli' || mode === 'prompt')) {
@@ -1531,7 +1575,8 @@ export class KanbanProvider implements vscode.Disposable {
                     vscode.window.showInformationMessage('No LOW-complexity PLAN REVIEWED plans available for batch coding prompt.');
                     break;
                 }
-                const prompt = this._generateBatchExecutionPrompt(sourceCards, workspaceRoot);
+                // Explicit low-complexity button always uses coder role, bypassing the toggle
+                const prompt = this._generateBatchExecutionPrompt(sourceCards, workspaceRoot, 'coder');
                 await vscode.env.clipboard.writeText(prompt);
                 const advanced = await this._advanceSessionsInColumn(sourceCards.map(card => card.sessionId), 'PLAN REVIEWED', 'handoff', workspaceRoot);
                 await this._refreshBoard(workspaceRoot);
