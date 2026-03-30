@@ -45,7 +45,11 @@ Because the AUTOBAN stores all plan state locally in SQLite, it enables asynchro
 
 Standard "vibe coding" — the plan-code-plan-code loop in a single IDE chat — forces you to burn through your daily quotas linearly. If you hit your Windsurf limit mid-feature, your work stops until tomorrow. Your context is trapped in an ephemeral chat window, and you're held hostage by API reset timers.
 
-Switchboard holds the context for you so you can spread work out across days to better manage quota spend.
+Switchboard holds the context for you so you can spread work out across days to better manage quota spend. Furthermore, you can configure the database path (`switchboard.kanban.dbPath`) to point to a cloud-synced folder (like Google Drive or Dropbox), enabling seamless multi-machine handovers and allowing teams to share execution pipelines.
+
+### Historical Profiling & Archiving
+
+Completed plans aren't just deleted—they are automatically sent to a DuckDB archive database. This allows you to semantically search past tasks, query historical features, and review how complex systems were implemented over time without cluttering your active AUTOBAN. You can easily query this archive using chat workflows like `/archive`.
 
 ### Plan Import
 
@@ -78,6 +82,10 @@ This saves tokens — but the code review step becomes more important. With more
 
 Select multiple cards in the AUTOBAN to send them as a batch to an agent. This saves quota because every time you send a prompt, you're also sending hidden system instructions and asking the agent to spin up research tasks. Batching means the agent only does this once. All task batches include an instruction for the agent to use its native subagents if available, so that you still get focused attention on each task. 
 
+### Advanced Agent Rigor
+
+When you feel automated outputs are slipping in quality, you can dial up the rigor. Enable features like `switchboard.reviewer.advancedMode` to force the Reviewer to perform deep regression traces (checking for orphaned references and race conditions), or enable `switchboard.leadCoder.inlineChallenge` to force the Lead Coder to adversarially challenge a plan before writing any code. You can also enforce unified strict prompting (`switchboard.team.strictPrompts`) so that all agents act with maximum scrutiny.
+
 ### AUTOBAN Automation
 
 Press the **START AUTOBAN** button at the top of the AUTOBAN to start processing plans through stages on an automated timer. This automation uses no API keys, and does not waste quota on 'orchestrator' agents. Instead, Switchboard spins up multiple terminals per role, with each terminal running a separate CLI agent, and rotates plans gatling-style. Every few minutes a plan is sent to an agent, and by the time the rotation completes, the first terminal is free for a new plan. Each CLI is also instructed to use its own native subagent features, so at full speed you have multiple terminals each running their own subagents to chew through a large backlog.
@@ -91,7 +99,7 @@ Highlight text within a plan to send a targeted comment to the Planner agent ref
 
 ### Google Jules Integration
 
-If you're running low on quota and have a Google Pro subscription, press a button in the AUTOBAN to start sending tasks to Jules, which gives you 100 free Gemini requests per day. This works well for low-priority backlog items.
+If you're running low on quota and have a Google Pro subscription, press a button in the AUTOBAN to start sending tasks to Jules, which gives you 100 free Gemini requests per day. This works well for low-priority backlog items. To ensure repository safety, Switchboard can automatically run `git add/commit/push` before dispatching files to Jules (`switchboard.jules.autoSync`).
 
 ### Cross-IDE Workflows
 
@@ -127,6 +135,8 @@ Use these within the Antigravity or Windsurf chat to quickly get a plan generate
 | :--- | :--- |
 | `/chat` | Ideation mode — discuss requirements before any plan is written. |
 | `/improve-plan` | Deep planning, dependency checks, and adversarial review in one pass. |
+| `/archive` | Query or search the historical DuckDB plan archive. |
+| `/export` | Export the current conversation to the plan archive database. |
 
 
 

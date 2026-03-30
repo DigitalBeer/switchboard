@@ -434,9 +434,15 @@ export class SessionActionLog {
         if (!db) { return null; }
 
         const dbSheet = await db.getRunSheet(sessionId);
-        if (!dbSheet) { return null; }
-
         const record = await db.getPlanBySessionId(sessionId);
+
+        // If we have a plan record but no events yet (e.g., brain plans, custom folder plans),
+        // return a minimal runsheet from the record with empty events
+        if (!dbSheet) {
+            if (!record) { return null; }
+            return this._composeHydratedSheet(sessionId, [], record);
+        }
+
         return this._composeHydratedSheet(sessionId, dbSheet.events, record);
     }
 

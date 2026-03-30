@@ -1490,7 +1490,7 @@ export class KanbanProvider implements vscode.Disposable {
                 if (!workspaceRoot) break;
                 
                 // Import ArchiveManager and archive the selected plans
-                const { ArchiveManager } = await import('./ArchiveManager.js');
+                const { ArchiveManager } = await import('./ArchiveManager');
                 const archiveMgr = new ArchiveManager(workspaceRoot);
                 
                 // Check if archive is configured

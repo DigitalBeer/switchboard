@@ -302,19 +302,69 @@ function normalizeAgentKey(value: string | undefined | null): string {
         .trim();
 }
 
+function isPathWithin(parentDir: string, filePath: string): boolean {
+    const normalizedParent = path.resolve(parentDir);
+    const normalizedFile = path.resolve(filePath);
+    return normalizedFile === normalizedParent || normalizedFile.startsWith(normalizedParent + path.sep);
+}
+
 function isPathWithinRoot(candidate: string, root: string): boolean {
+    // Allow Antigravity brain directory (~/.gemini/antigravity/brain)
+    const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+    if (isPathWithin(brainDir, candidate)) return true;
+
+    // Allow configured custom plan folder (switchboard.kanban.plansFolder)
+    try {
+        const config = vscode.workspace.getConfiguration('switchboard');
+        const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+        if (customFolder) {
+            const expanded = customFolder.startsWith('~')
+                ? path.join(os.homedir(), customFolder.slice(1))
+                : customFolder;
+            const resolved = path.resolve(expanded);
+            if (isPathWithin(resolved, candidate)) return true;
+        }
+    } catch { /* ignore config errors */ }
+
     const rel = path.relative(root, candidate);
     return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 function findWorkspaceRootForPath(candidate: string): string | null {
     const absoluteCandidate = path.resolve(candidate);
+
+    // First: check if it's directly inside one of the VS Code workspace folders.
+    // Use a direct path.relative check — NOT isPathWithinRoot — so the brain/custom-folder
+    // allow-list in isPathWithinRoot doesn't short-circuit before the fallback below.
     for (const folder of vscode.workspace.workspaceFolders || []) {
         const workspaceRoot = folder.uri.fsPath;
-        if (isPathWithinRoot(absoluteCandidate, workspaceRoot)) {
+        const rel = path.relative(workspaceRoot, absoluteCandidate);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
             return workspaceRoot;
         }
     }
+
+    // Second: if the path is in an allowed external directory (brain or custom folder),
+    // fall back to the preferred workspace root so the command has a root to operate against.
+    const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+    if (isPathWithin(brainDir, absoluteCandidate)) {
+        return getPreferredWorkspaceRoot();
+    }
+
+    try {
+        const config = vscode.workspace.getConfiguration('switchboard');
+        const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+        if (customFolder) {
+            const expanded = customFolder.startsWith('~')
+                ? path.join(os.homedir(), customFolder.slice(1))
+                : customFolder;
+            const resolved = path.resolve(expanded);
+            if (isPathWithin(resolved, absoluteCandidate)) {
+                return getPreferredWorkspaceRoot();
+            }
+        }
+    } catch { /* ignore */ }
+
     return null;
 }
 

@@ -24,8 +24,7 @@
     "AI"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:antigravity.getChromeDevtoolsMcpUrl"
+    "onStartupFinished"
   ],
   "contributes": {
     "viewsContainers": {
@@ -75,10 +74,6 @@
       {
         "command": "switchboard.cleanWorkspace",
         "title": "Switchboard: Clean Working Memory"
-      },
-      {
-        "command": "antigravity.getChromeDevtoolsMcpUrl",
-        "title": "Switchboard: Get MCP Inspector URL"
       },
       {
         "command": "switchboard.openKanban",
@@ -296,7 +291,7 @@
     "@types/uuid": "^10.0.0",
     "@vscode/codicons": "^0.0.44",
     "adm-zip": "^0.5.16",
-    "chrome-devtools-mcp": "^0.17.1",
+
     "docx": "^9.6.0",
     "dompurify": "^3.3.1",
     "jsdom": "^28.0.0",

@@ -3670,6 +3670,23 @@ What would you like to find?`;
                         await this._handleSendAnalystMessage(instruction);
                         break;
                     }
+                    case 'pluginTutorial': {
+                        const readmeUri = vscode.Uri.joinPath(this._context.extensionUri, 'README.md');
+                        let readmeExists = false;
+                        try {
+                            await vscode.workspace.fs.stat(readmeUri);
+                            readmeExists = true;
+                        } catch {
+                            // README not found in extension install — fall back to knowledge-based tutorial
+                        }
+
+                        const instruction = readmeExists
+                            ? `Please read the Switchboard plugin README at ${readmeUri.fsPath} and offer to guide me through an interactive tutorial of its features. Start by presenting a numbered menu of the major features (for example: AUTOBAN, Pair Programming, Airlock, Kanban Workflow, Archive) and ask me which one I'd like to learn about first. Adapt your explanations to my current workspace context where possible.`
+                            : `I'd like a guided tutorial of the Switchboard plugin features. Please give me an overview of the main capabilities — such as AUTOBAN, Pair Programming, Airlock, Kanban Workflow, and Archive — and offer to walk me through any of them step by step. Ask me which feature I'd like to start with.`;
+
+                        await this._handleSendAnalystMessage(instruction);
+                        break;
+                    }
                     case 'resetDatabase': {
                         const resetConfirm = await vscode.window.showWarningMessage(
                             'Reset the kanban database? All plan metadata will be permanently deleted.',
