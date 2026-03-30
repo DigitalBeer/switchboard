@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const { createRequire } = require('module');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const os = require('os');
 const execFileAsync = promisify(execFile);
 const runtimeRequire = createRequire(__filename);
 
@@ -285,6 +286,34 @@ function isPathWithinRoot(resolvedPath, rootDir) {
 
 function getWorkspaceRoot() {
     return process.env.SWITCHBOARD_WORKSPACE_ROOT || process.cwd();
+}
+
+/**
+ * Resolve the archive DB path from .vscode/settings.json.
+ * Returns the absolute path or null if not configured.
+ */
+function resolveArchiveDbPath(workspaceRoot) {
+    let archivePath = '';
+    try {
+        const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
+        if (fs.existsSync(settingsPath)) {
+            const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            archivePath = settings['switchboard.archive.dbPath'] || '';
+        }
+    } catch { /* ignore */ }
+    if (!archivePath) { return null; }
+
+    let resolved = archivePath.trim();
+    if (resolved.startsWith('~')) {
+        resolved = path.join(os.homedir(), resolved.slice(1));
+    }
+    if (resolved.includes('{workspace}')) {
+        resolved = resolved.replace(/\{workspace\}/g, path.basename(workspaceRoot));
+    }
+    if (!path.isAbsolute(resolved)) {
+        resolved = path.join(workspaceRoot, resolved);
+    }
+    return resolved;
 }
 
 let sqlJsInitPromise = null;
@@ -3248,33 +3277,11 @@ function registerTools(server) {
         },
         async ({ sql, limit = 100 }) => {
             const workspaceRoot = getWorkspaceRoot();
+            const resolvedPath = resolveArchiveDbPath(workspaceRoot);
 
-            // Read archive path from config
-            let archivePath = '';
-            try {
-                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
-                if (fs.existsSync(settingsPath)) {
-                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-                    archivePath = settings['switchboard.archive.dbPath'] || '';
-                }
-            } catch { /* ignore */ }
-
-            if (!archivePath) {
+            if (!resolvedPath) {
                 return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
             }
-
-            // Resolve path
-            let resolvedPath = archivePath.trim();
-            if (resolvedPath.startsWith('~')) {
-                resolvedPath = path.join(require('os').homedir(), resolvedPath.slice(1));
-            }
-            if (resolvedPath.includes('{workspace}')) {
-                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
-            }
-            if (!path.isAbsolute(resolvedPath)) {
-                resolvedPath = path.join(workspaceRoot, resolvedPath);
-            }
-
             if (!fs.existsSync(resolvedPath)) {
                 return { content: [{ type: "text", text: "No archive database found. Complete and archive some plans first." }] };
             }
@@ -3322,21 +3329,23 @@ function registerTools(server) {
             }).optional().describe("Optional metadata for better searchability")
         },
         async ({ file_path, metadata }) => {
-            const os = require('os');
             const workspaceRoot = getWorkspaceRoot();
 
-            // Security: only allow reads from os.tmpdir()
-            const tmpDir = os.tmpdir();
+            // Security: resolve symlinks then verify path is within os.tmpdir()
+            const tmpDir = fs.realpathSync(os.tmpdir());
             const resolvedFilePath = path.resolve(file_path);
-            if (!resolvedFilePath.startsWith(tmpDir)) {
-                return { isError: true, content: [{ type: "text", text: `Security error: file_path must be within the system temp directory (${tmpDir}).` }] };
-            }
 
-            // Validate file exists, is not empty, and not >10MB
+            // Validate file exists before resolving symlinks
             if (!fs.existsSync(resolvedFilePath)) {
                 return { isError: true, content: [{ type: "text", text: `File not found: ${resolvedFilePath}` }] };
             }
-            const stat = fs.statSync(resolvedFilePath);
+            const realFilePath = fs.realpathSync(resolvedFilePath);
+            if (!realFilePath.startsWith(tmpDir)) {
+                return { isError: true, content: [{ type: "text", text: `Security error: file_path must resolve to the system temp directory (${tmpDir}).` }] };
+            }
+
+            // Validate not empty and not >10MB
+            const stat = fs.statSync(realFilePath);
             if (stat.size === 0) {
                 return { isError: true, content: [{ type: "text", text: "File is empty." }] };
             }
@@ -3345,7 +3354,7 @@ function registerTools(server) {
             }
 
             // Read content
-            const content = fs.readFileSync(resolvedFilePath, 'utf8');
+            const content = fs.readFileSync(realFilePath, 'utf8');
 
             // Extract title from first H1 or use first 50 chars
             const h1Match = content.match(/^#\s+(.+)$/m);
@@ -3353,29 +3362,18 @@ function registerTools(server) {
 
             const conversationId = crypto.randomUUID();
 
-            // Resolve archive DB path from VS Code settings
-            let archivePath = '';
-            try {
-                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
-                if (fs.existsSync(settingsPath)) {
-                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-                    archivePath = settings['switchboard.archive.dbPath'] || '';
-                }
-            } catch { /* ignore */ }
-
-            if (!archivePath) {
+            const resolvedPath = resolveArchiveDbPath(workspaceRoot);
+            if (!resolvedPath) {
                 return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
             }
 
-            let resolvedPath = archivePath.trim();
-            if (resolvedPath.startsWith('~')) {
-                resolvedPath = path.join(os.homedir(), resolvedPath.slice(1));
-            }
-            if (resolvedPath.includes('{workspace}')) {
-                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
-            }
-            if (!path.isAbsolute(resolvedPath)) {
-                resolvedPath = path.join(workspaceRoot, resolvedPath);
+            // Ensure conversations table exists before INSERT
+            const schemaPath = path.join(__dirname, '../services/archiveSchema.sql');
+            if (fs.existsSync(schemaPath)) {
+                try {
+                    const schema = fs.readFileSync(schemaPath, 'utf8');
+                    await execFileAsync('duckdb', [resolvedPath, '-c', schema]);
+                } catch { /* schema may already exist — safe to ignore */ }
             }
 
             // Build INSERT
@@ -3386,12 +3384,12 @@ function registerTools(server) {
                 : 'NULL';
             const metadataJson = metadata ? `'${escapeSql(JSON.stringify(metadata))}'` : 'NULL';
 
-            const insertSql = `INSERT INTO conversations (id, conversation_date, topic, title, content, tags, project, metadata, file_path_original) VALUES ('${escapeSql(conversationId)}', ${meta.conversation_date ? `'${escapeSql(meta.conversation_date)}'` : 'NULL'}, ${meta.topic ? `'${escapeSql(meta.topic)}'` : 'NULL'}, '${escapeSql(title)}', '${escapeSql(content)}', ${tagsLiteral}, ${meta.project ? `'${escapeSql(meta.project)}'` : 'NULL'}, ${metadataJson}, '${escapeSql(resolvedFilePath)}');`;
+            const insertSql = `INSERT INTO conversations (id, conversation_date, topic, title, content, tags, project, metadata, file_path_original) VALUES ('${escapeSql(conversationId)}', ${meta.conversation_date ? `'${escapeSql(meta.conversation_date)}'` : 'NULL'}, ${meta.topic ? `'${escapeSql(meta.topic)}'` : 'NULL'}, '${escapeSql(title)}', '${escapeSql(content)}', ${tagsLiteral}, ${meta.project ? `'${escapeSql(meta.project)}'` : 'NULL'}, ${metadataJson}, '${escapeSql(realFilePath)}');`;
 
             try {
-                await execFileAsync('duckdb', [resolvedPath, insertSql]);
+                await execFileAsync('duckdb', [resolvedPath, '-c', insertSql]);
                 // Delete temp file after successful insert
-                try { fs.unlinkSync(resolvedFilePath); } catch { /* ignore */ }
+                try { fs.unlinkSync(realFilePath); } catch { /* ignore */ }
                 return { content: [{ type: "text", text: JSON.stringify({ success: true, conversationId, title }) }] };
             } catch (e) {
                 return { isError: true, content: [{ type: "text", text: JSON.stringify({ success: false, error: e.message }) }] };
@@ -3407,34 +3405,12 @@ function registerTools(server) {
             limit: z.number().optional().describe("Maximum results (default 10)")
         },
         async ({ query, limit = 10 }) => {
-            const os = require('os');
             const workspaceRoot = getWorkspaceRoot();
+            const resolvedPath = resolveArchiveDbPath(workspaceRoot);
 
-            // Resolve archive DB path from VS Code settings
-            let archivePath = '';
-            try {
-                const settingsPath = path.join(workspaceRoot, '.vscode', 'settings.json');
-                if (fs.existsSync(settingsPath)) {
-                    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-                    archivePath = settings['switchboard.archive.dbPath'] || '';
-                }
-            } catch { /* ignore */ }
-
-            if (!archivePath) {
+            if (!resolvedPath) {
                 return { isError: true, content: [{ type: "text", text: "Archive not configured. Set switchboard.archive.dbPath in VS Code settings." }] };
             }
-
-            let resolvedPath = archivePath.trim();
-            if (resolvedPath.startsWith('~')) {
-                resolvedPath = path.join(os.homedir(), resolvedPath.slice(1));
-            }
-            if (resolvedPath.includes('{workspace}')) {
-                resolvedPath = resolvedPath.replace(/\{workspace\}/g, path.basename(workspaceRoot));
-            }
-            if (!path.isAbsolute(resolvedPath)) {
-                resolvedPath = path.join(workspaceRoot, resolvedPath);
-            }
-
             if (!fs.existsSync(resolvedPath)) {
                 return { content: [{ type: "text", text: "No archive database found. Complete and archive some plans first." }] };
             }

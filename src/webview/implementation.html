@@ -1221,11 +1221,12 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 11px;
+            font-family: var(--font-mono);
+            font-size: 10px;
             font-weight: 600;
-            color: var(--text-primary);
+            color: var(--text-secondary);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
             margin-bottom: 8px;
         }
 
@@ -1274,30 +1275,50 @@
             margin-bottom: 8px;
         }
 
-        .db-cloud-presets {
+        .db-location-options {
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column;
             gap: 6px;
+            margin-bottom: 8px;
         }
 
-        .db-preset-btn {
+        .db-radio-option {
             display: flex;
             align-items: center;
-            gap: 4px;
-            padding: 4px 10px;
-            border: 1px solid var(--border-dim);
-            background: var(--bg-dim);
-            color: var(--text-secondary);
+            gap: 8px;
+            padding: 6px 8px;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
             transition: all 0.2s ease;
         }
 
-        .db-preset-btn:hover {
-            border-color: var(--border-bright);
-            background: var(--border-dim);
+        .db-radio-option:hover {
+            background: var(--bg-dim);
             color: var(--text-primary);
+        }
+
+        .db-radio-option input[type="radio"] {
+            width: auto;
+            margin: 0;
+            flex-shrink: 0;
+        }
+
+        .db-custom-path-input {
+            width: 100%;
+            padding: 6px 10px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            background: var(--bg-dim);
+            border: 1px solid var(--border-dim);
+            border-radius: 4px;
+            color: var(--text-primary);
+            margin-top: 4px;
+        }
+
+        .db-custom-path-input:not(.hidden) {
+            display: block;
         }
 
         .db-cli-tool-row {
@@ -1592,21 +1613,6 @@
                 <button id="btn-deregister-all" class="secondary-btn error w-full">RESET ALL AGENTS</button>
                 <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px;">Access main
                     program</button>
-            </div>
-        </div>
-        <!-- SETUP -->
-        <div class="startup-section">
-            <div class="startup-toggle" id="startup-toggle">
-                <div class="section-label" style="margin:0">SETUP</div>
-                <span class="chevron" id="startup-chevron">▶</span>
-            </div>
-            <div class="startup-fields" id="startup-fields">
-                <div class="flex gap-2">
-                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>
-                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
-                </div>
-                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP
-                    CONFIG</button>
                 <div
                     style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
                     AGENT VISIBILITY &amp; CLI COMMANDS</div>
@@ -1651,6 +1657,29 @@
                     <input id="jules-auto-sync-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Auto-sync repo before sending to Jules</span>
                 </label>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    CUSTOM AGENTS</div>
+                <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+                <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
+            </div>
+        </div>
+        <!-- SETUP -->
+        <div class="startup-section">
+            <div class="startup-toggle" id="startup-toggle">
+                <div class="section-label" style="margin:0">SETUP</div>
+                <span class="chevron" id="startup-chevron">▶</span>
+            </div>
+            <div class="startup-fields" id="startup-fields">
+                <div class="flex gap-2">
+                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>
+                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
+                </div>
+                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP
+                    CONFIG</button>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    PROMPT CONTROLS</div>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="accurate-coding-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Accurate coding mode for Coder prompts</span>
@@ -1667,19 +1696,6 @@
                     <input id="aggressive-pair-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Aggressive pair programming (shift more tasks to Coder)</span>
                 </label>
-                <div
-                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
-                    PLAN INGESTION</div>
-                <label class="startup-row" style="display:block; margin-top:6px;">
-                    <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
-                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard"
-                        style="width:100%;">
-                </label>
-                <div
-                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
-                    CUSTOM AGENTS</div>
-                <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
-                <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
                 <button id="btn-save-startup" class="secondary-btn w-full"
                     style="margin-top:4px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 250%, transparent);">SAVE
                     CONFIGURATION</button>
@@ -1695,39 +1711,58 @@
                 <span class="chevron" id="db-sync-chevron">▶</span>
             </div>
             <div class="db-sync-fields" id="db-sync-fields">
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    PLAN INGESTION</div>
+                <label class="startup-row" style="display:block; margin-top:6px;">
+                    <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
+                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard"
+                        style="width:100%;">
+                </label>
                 <div class="db-subsection">
                     <div class="subsection-header">
-                        <span>☁️</span><span>Cloud Database Location</span>
-                        <span class="db-status-badge" id="cloud-status">local</span>
+                        <span>Database Location</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4;">
+                        Using a cloud location (Google Drive, Dropbox, iCloud) allows plan metadata to sync across machines without git merge conflicts. The database file stays in sync automatically via your cloud provider.
                     </div>
                     <div class="db-path-display" id="current-db-path">.switchboard/kanban.db</div>
-                    <div class="db-path-actions">
-                        <button id="db-edit-path-btn" class="db-secondary-btn">Edit
-                            Path</button>
-                        <button id="db-test-connection-btn"
-                            class="db-secondary-btn">Test</button>
-                        <button id="db-use-local-btn" class="db-secondary-btn">Use Local DB</button>
+                    <div class="db-location-options">
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="local" checked>
+                            <span>Local (.switchboard/kanban.db)</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="google-drive">
+                            <span>Google Drive App</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="dropbox">
+                            <span>Dropbox</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="icloud">
+                            <span>iCloud</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="custom">
+                            <span>Custom Path</span>
+                        </label>
+                        <input type="text" id="db-custom-path-input" class="db-custom-path-input hidden" placeholder="Enter custom database path...">
                     </div>
-                    <div class="db-cloud-presets">
-                        <button id="db-preset-google-btn"
-                            class="db-preset-btn">Google Drive App</button>
-                        <button id="db-preset-dropbox-btn"
-                            class="db-preset-btn">Dropbox</button>
-                        <button id="db-preset-icloud-btn"
-                            class="db-preset-btn">iCloud</button>
-                    </div>
+                    <button id="db-update-location-btn" class="db-action-btn w-full" style="margin-top: 8px;">Update Location</button>
                 </div>
 
                 <div class="db-subsection">
                     <div class="subsection-header">
-                        <span>🔄</span><span>Rebuild Database</span>
+                        <span>Rebuild Database</span>
                     </div>
                     <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4;">
-                        If the database is corrupted, this will restore it from plan files. All plan metadata will be rebuilt from your .switchboard/sessions/ directory.
+                        If the database is corrupted, this will delete and recreate it from your plan files in .switchboard/plans/. Plan metadata will be restored from the markdown files.
                     </div>
                     <button id="db-reset-btn" class="db-action-btn danger w-full"
                         title="WARNING: Permanently delete and rebuild database">
-                        <span class="db-action-icon">🗑️</span>REBUILD DATABASE
+                        REBUILD DATABASE
                     </button>
                 </div>
             </div>
@@ -2097,11 +2132,37 @@
         const btnGrid = document.getElementById('createAgentGrid');
         if (btnGrid) {
             btnGrid.addEventListener('click', () => {
-                btnGrid.innerText = 'OPENING...';
+                btnGrid.innerText = 'SAVING & OPENING...';
                 btnGrid.classList.add('dispatching');
                 btnGrid.classList.remove('is-teal');
                 btnGrid.disabled = true;
-                vscode.postMessage({ type: 'createAgentGrid' });
+                // Collect current CLI commands and custom agent state
+                const commands = { ...lastStartupCommands };
+                document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
+                    const role = input.dataset.role;
+                    commands[role] = input.value.trim();
+                });
+                const visibleAgents = {};
+                document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
+                    const role = cb.dataset.role;
+                    if (role) visibleAgents[role] = cb.checked;
+                });
+                const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
+                const advancedReviewerEnabled = !!document.getElementById('advanced-reviewer-toggle')?.checked;
+                const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
+                const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
+                const aggressivePairProgramming = !!document.getElementById('aggressive-pair-toggle')?.checked;
+                const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
+                // Save config first, then launch on acknowledgement
+                btnGrid._pendingLaunch = true;
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, advancedReviewerEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, planIngestionFolder, customAgents: lastCustomAgents });
+                // Safety fallback: launch anyway if save ack doesn't arrive
+                btnGrid._saveTimeout = setTimeout(() => {
+                    if (btnGrid._pendingLaunch) {
+                        btnGrid._pendingLaunch = false;
+                        vscode.postMessage({ type: 'createAgentGrid' });
+                    }
+                }, 3000);
                 if (btnGrid._gridResultTimeout) clearTimeout(btnGrid._gridResultTimeout);
                 btnGrid._gridResultTimeout = setTimeout(() => {
                     // Safety reset if backend never responds
@@ -2151,6 +2212,12 @@
                 if (fields && chevron) {
                     const isOpen = fields.classList.toggle('open');
                     chevron.classList.toggle('open', isOpen);
+                    if (isOpen) {
+                        vscode.postMessage({ type: 'getStartupCommands' });
+                        vscode.postMessage({ type: 'getVisibleAgents' });
+                        vscode.postMessage({ type: 'getCustomAgents' });
+                        vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
+                    }
                 }
             });
         }
@@ -2173,14 +2240,10 @@
                     const isOpen = fields.classList.toggle('open');
                     chevron.classList.toggle('open', isOpen);
                     if (isOpen) {
-                        vscode.postMessage({ type: 'getStartupCommands' });
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
                         vscode.postMessage({ type: 'getAdvancedReviewerSetting' });
                         vscode.postMessage({ type: 'getLeadChallengeSetting' });
-                        vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
                         vscode.postMessage({ type: 'getAggressivePairSetting' });
-                        vscode.postMessage({ type: 'getVisibleAgents' });
-                        vscode.postMessage({ type: 'getCustomAgents' });
                     }
                 }
             });
@@ -2190,12 +2253,12 @@
         if (btnSaveStartup) {
             btnSaveStartup.addEventListener('click', () => {
                 const commands = { ...lastStartupCommands };
-                document.querySelectorAll('#startup-fields input[type="text"][data-role]').forEach(input => {
+                document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
                     const role = input.dataset.role;
                     commands[role] = input.value.trim();
                 });
                 const visibleAgents = {};
-                document.querySelectorAll('#startup-fields input[type="checkbox"][data-role]').forEach(cb => {
+                document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
                     const role = cb.dataset.role;
                     if (role) visibleAgents[role] = cb.checked;
                 });
@@ -2260,6 +2323,8 @@
         let lastPlanIngestionFolder = '';
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let lastCustomAgents = [];
+        let currentDbPath = '';
+        let workspaceRoot = '';
         // Autoban engine state (received from backend)
         let autobanState = {
             enabled: false,
@@ -2494,6 +2559,18 @@
                     if (message.dispatchReadiness !== undefined) { lastDispatchReadiness = message.dispatchReadiness || {}; }
                     renderAgentList();
                     break;
+                case 'saveStartupCommandsResult': {
+                    const gridBtn = document.getElementById('createAgentGrid');
+                    if (gridBtn && gridBtn._pendingLaunch) {
+                        gridBtn._pendingLaunch = false;
+                        if (gridBtn._saveTimeout) {
+                            clearTimeout(gridBtn._saveTimeout);
+                            gridBtn._saveTimeout = null;
+                        }
+                        vscode.postMessage({ type: 'createAgentGrid' });
+                    }
+                    break;
+                }
                 case 'createAgentGridResult': {
                     const gridBtn = document.getElementById('createAgentGrid');
                     if (gridBtn) {
@@ -2556,7 +2633,7 @@
                     if (message.commands) {
                         lastStartupCommands = message.commands;
                         lastPlanIngestionFolder = message.planIngestionFolder || '';
-                        document.querySelectorAll('#startup-fields input[type="text"][data-role]').forEach(input => {
+                        document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
                             input.value = message.commands[input.dataset.role] || '';
                         });
                         const planIngestionFolderInput = document.getElementById('plan-ingestion-folder-input');
@@ -2578,7 +2655,7 @@
                 case 'visibleAgents':
                     if (message.agents) {
                         lastVisibleAgents = { ...lastVisibleAgents, ...message.agents };
-                        document.querySelectorAll('#startup-fields .agent-visible-toggle').forEach(cb => {
+                        document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
                             const role = cb.dataset.role;
                             if (role && role in lastVisibleAgents) cb.checked = lastVisibleAgents[role];
                         });
@@ -2740,8 +2817,40 @@
                 }
                 case 'dbPathUpdated': {
                     const dbPathEl = document.getElementById('current-db-path');
-                    if (dbPathEl) dbPathEl.textContent = message.path || '.switchboard/kanban.db';
-                    updateCloudStatus(message.path || '');
+                    if (dbPathEl) {
+                        dbPathEl.textContent = message.path || '.switchboard/kanban.db';
+                        dbPathEl.style.opacity = '';
+                        dbPathEl.style.fontStyle = '';
+                    }
+                    if (message.workspaceRoot) {
+                        workspaceRoot = message.workspaceRoot;
+                    }
+                    currentDbPath = message.path || '.switchboard/kanban.db';
+                    
+                    // Restore correct radio button selection based on current path
+                    const path = message.path || '';
+                    const homedir = path.includes('~') ? path : '';
+                    let selectedValue = 'local';
+                    
+                    if (path.includes('GoogleDrive') || path.includes('Google Drive')) {
+                        selectedValue = 'google-drive';
+                    } else if (path.includes('Dropbox')) {
+                        selectedValue = 'dropbox';
+                    } else if (path.includes('iCloud') || path.includes('com~apple~CloudDocs')) {
+                        selectedValue = 'icloud';
+                    } else if (path && !path.includes('.switchboard/kanban.db')) {
+                        selectedValue = 'custom';
+                        const customInput = document.getElementById('db-custom-path-input');
+                        if (customInput) {
+                            customInput.value = path;
+                            customInput.classList.remove('hidden');
+                        }
+                    }
+                    
+                    const radioToSelect = document.querySelector(`input[name="db-location"][value="${selectedValue}"]`);
+                    if (radioToSelect) {
+                        radioToSelect.checked = true;
+                    }
                     break;
                 }
                 case 'dbConnectionResult': {
@@ -3779,9 +3888,13 @@
             archiveBtn.style.marginTop = '4px';
             archiveBtn.style.width = '100%';
             archiveBtn.style.opacity = '0.85';
-            archiveBtn.innerText = '📦 QUERY ARCHIVES';
+            archiveBtn.innerText = pendingDispatch ? 'DISPATCHING...' : '📦 QUERY ARCHIVES';
             archiveBtn.title = 'Ask Analyst to query archived plans';
+            archiveBtn.disabled = !isReady || pendingDispatch;
             archiveBtn.onclick = () => {
+                markDispatchPending('analyst');
+                archiveBtn.disabled = true;
+                archiveBtn.innerText = 'DISPATCHING...';
                 vscode.postMessage({ type: 'queryArchives' });
             };
             container.appendChild(archiveBtn);
@@ -3880,50 +3993,94 @@
             vscode.postMessage({ type: 'finishOnboarding' });
         });
 
-        // --- Database & Sync Panel ---
-        function updateCloudStatus(dbPath) {
-            const badge = document.getElementById('cloud-status');
-            if (!badge) return;
-            if (dbPath.includes('Google Drive') || dbPath.includes('GoogleDrive-') || dbPath.includes('Dropbox') || dbPath.includes('iCloud') || dbPath.includes('CloudDocs')) {
-                badge.textContent = 'cloud synced';
-                badge.className = 'db-status-badge synced';
-            } else if (dbPath.includes('.switchboard')) {
-                badge.textContent = 'local';
-                badge.className = 'db-status-badge';
-            } else {
-                badge.textContent = 'custom';
-                badge.className = 'db-status-badge';
-            }
-        }
-
+        // Database & Sync panel toggle
         document.getElementById('db-sync-toggle-btn')?.addEventListener('click', () => {
             const fields = document.getElementById('db-sync-fields');
             const chevron = document.getElementById('db-sync-chevron');
             if (fields && chevron) {
-                fields.classList.toggle('open');
-                chevron.classList.toggle('open');
+                const isOpen = fields.classList.toggle('open');
+                chevron.classList.toggle('open', isOpen);
+                if (isOpen) {
+                    vscode.postMessage({ type: 'getStartupCommands' });
+                }
             }
         });
 
         // Database & Sync panel button handlers
-        document.getElementById('db-edit-path-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'editDbPath' });
+        const dbLocationRadios = document.querySelectorAll('input[name="db-location"]');
+        const dbCustomPathInput = document.getElementById('db-custom-path-input');
+        const dbPathDisplay = document.getElementById('current-db-path');
+        
+        // Compute proposed path based on selected location
+        function getProposedPath(location) {
+            if (!workspaceRoot) return '...';
+            const baseName = 'kanban.db';
+            switch (location) {
+                case 'local':
+                    return `${workspaceRoot}/.switchboard/${baseName}`;
+                case 'google-drive':
+                    return `~/Library/CloudStorage/GoogleDrive-*/.switchboard/${baseName}`;
+                case 'dropbox':
+                    return `~/Dropbox/.switchboard/${baseName}`;
+                case 'icloud':
+                    return `~/Library/Mobile Documents/com~apple~CloudDocs/.switchboard/${baseName}`;
+                case 'custom':
+                    return dbCustomPathInput?.value?.trim() || 'Enter custom path...';
+                default:
+                    return currentDbPath;
+            }
+        }
+        
+        // Show/hide custom path input and preview proposed path
+        dbLocationRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (radio.checked) {
+                    // Show proposed path as preview
+                    if (dbPathDisplay) {
+                        const proposed = getProposedPath(radio.value);
+                        dbPathDisplay.textContent = proposed;
+                        dbPathDisplay.style.opacity = '0.7';
+                        dbPathDisplay.style.fontStyle = 'italic';
+                    }
+                    
+                    if (radio.value === 'custom') {
+                        dbCustomPathInput.classList.remove('hidden');
+                        dbCustomPathInput.focus();
+                    } else {
+                        dbCustomPathInput.classList.add('hidden');
+                    }
+                }
+            });
         });
-        document.getElementById('db-test-connection-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'testDbConnection' });
+        
+        // Update preview when custom path input changes
+        dbCustomPathInput?.addEventListener('input', () => {
+            const customRadio = document.querySelector('input[name="db-location"][value="custom"]');
+            if (customRadio?.checked && dbPathDisplay) {
+                const proposed = dbCustomPathInput.value.trim() || 'Enter custom path...';
+                dbPathDisplay.textContent = proposed;
+            }
         });
-        document.getElementById('db-use-local-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setLocalDb' });
+
+        document.getElementById('db-update-location-btn')?.addEventListener('click', () => {
+            const selectedRadio = document.querySelector('input[name="db-location"]:checked');
+            if (!selectedRadio) return;
+            
+            const location = selectedRadio.value;
+            if (location === 'custom') {
+                const customPath = dbCustomPathInput.value.trim();
+                if (!customPath) {
+                    alert('Please enter a custom database path');
+                    return;
+                }
+                vscode.postMessage({ type: 'setCustomDbPath', path: customPath });
+            } else if (location === 'local') {
+                vscode.postMessage({ type: 'setLocalDb' });
+            } else {
+                vscode.postMessage({ type: 'setPresetDbPath', preset: location });
+            }
         });
-        document.getElementById('db-preset-google-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'google-drive' });
-        });
-        document.getElementById('db-preset-dropbox-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'dropbox' });
-        });
-        document.getElementById('db-preset-icloud-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'icloud' });
-        });
+        
         document.getElementById('db-reset-btn')?.addEventListener('click', () => {
             vscode.postMessage({ type: 'resetDatabase' });
         });

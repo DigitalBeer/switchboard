@@ -119,3 +119,33 @@ Add a TECH-DEBT comment above the filesystem fallback:
 
 ## Agent Recommendation
 **Send to Coder** — Refactoring within established patterns, clear fallback strategy, well-scoped. No architectural changes.
+
+## Reviewer Pass — 2026-03-29
+
+### Findings Summary
+
+| Severity | Finding | Location |
+|----------|---------|----------|
+| MAJOR | Dead `sessionsDir` property — declared/assigned but never read after DB migration | `SessionActionLog.ts:33,51` |
+| MAJOR | No-op migration stubs (`_migrateActivityLog`, `_migrateSessionFiles`) lack `@deprecated` tags and removal timeline | `SessionActionLog.ts:776-782` |
+| MAJOR | Empty-Map fallback on DB failure (lines 403-405) lacked documentation explaining degradation semantics | `SessionActionLog.ts:403` |
+| NIT | `console.error` used instead of plan-specified `console.warn` — acceptable; error-level is appropriate for a catch block | `SessionActionLog.ts:399` |
+| NIT | `getAllPlans` returns all statuses including `deleted` — correct for title-map use case (historical titles needed for activity feed) | `KanbanDatabase.ts:770` |
+| NIT | Plan Section 1 specified `Record<string, string>` return type; implementation uses `Map<string, string>` — correct, callers use `.get()` | `SessionActionLog.ts:375` |
+
+### Files Changed
+
+- **`src/services/SessionActionLog.ts`**
+  - Removed dead `sessionsDir` property and constructor assignment (lines 33, 51)
+  - Added `@deprecated` JSDoc + removal timeline to no-op migration stubs
+  - Added TECH-DEBT comment on empty-Map fallback path documenting degradation behavior
+
+### Validation Results
+
+- `npx tsc --noEmit` — **PASS** (exit code 0, no errors)
+
+### Remaining Risks
+
+- **No-op migration stubs + `_migrationDone` flag**: These exist solely to guard the no-op methods. The entire `_ensureDbReady` migration block (lines 65-69) can be removed in v1.6, simplifying to a direct `ensureReady()` check.
+- **5-second TTL on empty-Map cache**: If the DB is temporarily unavailable, titles degrade to session IDs for up to 5 seconds. Acceptable but worth monitoring.
+- **`console.error` noise**: During extension activation, if the DB isn't ready yet, the error log at line 399 may fire once. Low impact but could confuse log readers.

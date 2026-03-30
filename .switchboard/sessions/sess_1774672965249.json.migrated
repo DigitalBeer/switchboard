@@ -21,6 +21,18 @@
       "timestamp": "2026-03-28T10:32:58.851Z",
       "action": "stop",
       "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-coder-coded",
+      "timestamp": "2026-03-28T12:48:13.377Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-28T12:50:35.812Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
     }
   ],
   "planFile": ".switchboard/plans/feature_plan_20260328_154245_add_chat_mode_copy_button.md",

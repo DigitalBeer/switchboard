@@ -18,6 +18,8 @@ This project relies on **Switchboard Workflows** defined in `.agent/workflows`.
 | `/improve-plan` | **`improve-plan.md`** | Deep planning, dependency checks, and adversarial review. |
 | `/challenge`, `/challenge --self` | **`challenge.md`** | Internal adversarial review workflow (no delegation). |
 | `/chat` | **`chat.md`** | Activate chat consultation workflow. |
+| `/archive` | **`archive.md`** | Query or search the plan archive. |
+| `/export` | **`export.md`** | Export current conversation to archive. |
 
 
 ### ⚠️ MANDATORY PRE-FLIGHT CHECK
@@ -64,4 +66,17 @@ Plans are executed via Kanban board workflow, not delegation.
 ```
 
 Conversational routing: when the intent is to advance a kanban card or send a plan to the next agent/stage, prefer `move_kanban_card(sessionId, target)` over raw `send_message`. The `target` may be a kanban column label, a built-in role, or a kanban-enabled custom agent name; generic conversational `coded` / `team` targets are smart-routed by plan complexity.
+
+### 📚 Available Skills
+
+Skills provide specialized capabilities and domain knowledge. Invoke with `skill: "<name>"`.
+
+| Skill | When to Use |
+|-------|-------------|
+| `archive` | User asks to "search archives", "query archives", "find old plans", "export conversation" |
+| `review` | User asks to review code changes, a PR, or specific files |
+
+**Usage**: Call `skill: "archive"` before performing archive operations to access detailed tool documentation and examples.
+
+**Skill Files Location**: `.agent/skills/` (distributed with plugin)
 

@@ -237,6 +237,203 @@ export class KanbanDatabase {
         }
     }
 
+    private static _migrationInProgress = false;
+
+    /**
+     * Migrate data from sourcePath to targetPath if target is empty/missing and source has plans.
+     * Returns migration result. Safe to call even if source/target don't exist.
+     */
+    public static async migrateIfNeeded(
+        sourcePath: string,
+        targetPath: string
+    ): Promise<{ migrated: boolean; skipped: string | null }> {
+        if (path.resolve(sourcePath) === path.resolve(targetPath)) {
+            return { migrated: false, skipped: 'same_path' };
+        }
+        if (KanbanDatabase._migrationInProgress) {
+            return { migrated: false, skipped: 'migration_in_progress' };
+        }
+        KanbanDatabase._migrationInProgress = true;
+        try {
+            if (!fs.existsSync(sourcePath)) {
+                return { migrated: false, skipped: 'source_not_found' };
+            }
+            const sourceHasPlans = await KanbanDatabase.dbFileHasPlans(sourcePath);
+            if (!sourceHasPlans) {
+                return { migrated: false, skipped: 'source_empty' };
+            }
+
+            if (fs.existsSync(targetPath)) {
+                const targetHasPlans = await KanbanDatabase.dbFileHasPlans(targetPath);
+                if (targetHasPlans) {
+                    return { migrated: false, skipped: 'target_has_data' };
+                }
+            }
+
+            await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+            await fs.promises.copyFile(sourcePath, targetPath);
+            console.log(`[KanbanDatabase] Migrated DB from ${sourcePath} to ${targetPath}`);
+
+            const backupPath = `${sourcePath}.backup.${Date.now()}`;
+            await fs.promises.rename(sourcePath, backupPath);
+            console.log(`[KanbanDatabase] Source backed up to ${backupPath}`);
+
+            return { migrated: true, skipped: null };
+        } catch (error) {
+            console.error('[KanbanDatabase] Migration failed:', error);
+            return { migrated: false, skipped: `error: ${error instanceof Error ? error.message : String(error)}` };
+        } finally {
+            KanbanDatabase._migrationInProgress = false;
+        }
+    }
+
+    /**
+     * Open a DB file read-only and check if it contains any active plans.
+     * Returns false if file is missing, corrupt, or has no plans.
+     */
+    public static async dbFileHasPlans(dbPath: string): Promise<boolean> {
+        try {
+            const SQL = await KanbanDatabase._loadSqlJs();
+            const buffer = await fs.promises.readFile(dbPath);
+            const db = new SQL.Database(new Uint8Array(buffer));
+            try {
+                const stmt = db.prepare("SELECT COUNT(*) as cnt FROM plans WHERE status = 'active'");
+                if (stmt.step()) {
+                    const count = Number(stmt.getAsObject().cnt);
+                    stmt.free();
+                    return count > 0;
+                }
+                stmt.free();
+                return false;
+            } finally {
+                if (db.close) { db.close(); }
+            }
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Count active plans in a DB file. Returns 0 on error.
+     */
+    public static async countPlansInFile(dbPath: string): Promise<number> {
+        try {
+            const SQL = await KanbanDatabase._loadSqlJs();
+            const buffer = await fs.promises.readFile(dbPath);
+            const db = new SQL.Database(new Uint8Array(buffer));
+            try {
+                const stmt = db.prepare("SELECT COUNT(*) as cnt FROM plans WHERE status = 'active'");
+                if (stmt.step()) {
+                    const count = Number(stmt.getAsObject().cnt);
+                    stmt.free();
+                    return count;
+                }
+                stmt.free();
+                return 0;
+            } finally {
+                if (db.close) { db.close(); }
+            }
+        } catch {
+            return 0;
+        }
+    }
+
+    /**
+     * Merge active plans from source DB into target DB. Conflicts resolved by newest updated_at.
+     * Returns number of plans merged. Backs up source after successful merge.
+     */
+    public static async reconcileDatabases(sourcePath: string, targetPath: string): Promise<number> {
+        const SQL = await KanbanDatabase._loadSqlJs();
+        const srcBuf = await fs.promises.readFile(sourcePath);
+        const tgtBuf = await fs.promises.readFile(targetPath);
+        const srcDb = new SQL.Database(new Uint8Array(srcBuf));
+        const tgtDb = new SQL.Database(new Uint8Array(tgtBuf));
+
+        try {
+            // Get column names from BOTH databases and use the intersection
+            // to handle schema version mismatches safely
+            const srcColStmt = srcDb.prepare("PRAGMA table_info(plans)");
+            const srcColumns = new Set<string>();
+            while (srcColStmt.step()) {
+                srcColumns.add(String(srcColStmt.getAsObject().name));
+            }
+            srcColStmt.free();
+
+            const tgtColStmt = tgtDb.prepare("PRAGMA table_info(plans)");
+            const tgtColumns = new Set<string>();
+            while (tgtColStmt.step()) {
+                tgtColumns.add(String(tgtColStmt.getAsObject().name));
+            }
+            tgtColStmt.free();
+
+            // Only use columns that exist in both databases
+            const columns = [...srcColumns].filter(c => tgtColumns.has(c));
+            if (columns.length === 0) return 0;
+
+            const planIdCol = 'plan_id';
+            const updatedAtCol = 'updated_at';
+
+            // Read all active plans from source using getAsObject
+            const srcStmt = srcDb.prepare("SELECT * FROM plans WHERE status = 'active'");
+            const srcRows: Record<string, unknown>[] = [];
+            while (srcStmt.step()) {
+                srcRows.push(srcStmt.getAsObject());
+            }
+            srcStmt.free();
+            if (srcRows.length === 0) return 0;
+
+            tgtDb.run('BEGIN TRANSACTION');
+            let merged = 0;
+            try {
+                for (const srcRow of srcRows) {
+                    const planId = String(srcRow[planIdCol] ?? '');
+                    // Check if target has this plan with a newer updated_at
+                    const chkStmt = tgtDb.prepare("SELECT updated_at FROM plans WHERE plan_id = ?", [planId]);
+                    let skip = false;
+                    if (chkStmt.step()) {
+                        const tgtUpdated = String(chkStmt.getAsObject().updated_at);
+                        const srcUpdated = String(srcRow[updatedAtCol] ?? '');
+                        if (srcUpdated <= tgtUpdated) skip = true;
+                    }
+                    chkStmt.free();
+                    if (skip) continue;
+
+                    // Build ordered values array from the intersection columns
+                    const values = columns.map(c => srcRow[c] ?? null);
+                    const placeholders = columns.map(() => '?').join(', ');
+                    tgtDb.run(`INSERT OR REPLACE INTO plans (${columns.join(', ')}) VALUES (${placeholders})`, values);
+                    merged++;
+                }
+                tgtDb.run('COMMIT');
+            } catch (txErr) {
+                try { tgtDb.run('ROLLBACK'); } catch { /* best effort */ }
+                throw txErr;
+            }
+
+            // Persist target
+            const data = tgtDb.export();
+            const tmpPath = targetPath + '.tmp.' + Date.now();
+            await fs.promises.writeFile(tmpPath, Buffer.from(data));
+            await fs.promises.rename(tmpPath, targetPath);
+
+            // Backup source
+            const backupPath = `${sourcePath}.backup.${Date.now()}`;
+            await fs.promises.rename(sourcePath, backupPath);
+
+            return merged;
+        } finally {
+            if (srcDb.close) { srcDb.close(); }
+            if (tgtDb.close) { tgtDb.close(); }
+        }
+    }
+
+    /**
+     * Returns the default local DB path for a workspace.
+     */
+    public static defaultDbPath(workspaceRoot: string): string {
+        return path.join(path.resolve(workspaceRoot), '.switchboard', 'kanban.db');
+    }
+
     private readonly _dbPath: string;
     private _db: SqlJsDatabase | null = null;
     private _initPromise: Promise<boolean> | null = null;
@@ -435,8 +632,8 @@ export class KanbanDatabase {
         const stmt = this._db.prepare(
             `SELECT ${PLAN_COLUMNS} FROM plans
              WHERE workspace_id = ? AND status = 'active'
-             ORDER BY updated_at ASC`,
-             [workspaceId]
+             ORDER BY updated_at DESC`,
+            [workspaceId]
         );
         return this._readRows(stmt);
     }
@@ -687,6 +884,60 @@ export class KanbanDatabase {
         return purged;
     }
 
+    /**
+     * Permanently delete tombstoned plans older than the specified threshold.
+     * Default: 30 days. Returns number of records purged.
+     */
+    public async purgeOldTombstones(
+        workspaceId: string,
+        olderThanDays: number = 30
+    ): Promise<number> {
+        if (!(await this.ensureReady()) || !this._db) return 0;
+        if (olderThanDays < 1) {
+            console.warn(`[KanbanDatabase] purgeOldTombstones called with olderThanDays=${olderThanDays}; clamping to 1`);
+            olderThanDays = 1;
+        }
+
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - olderThanDays);
+        const cutoffIso = cutoff.toISOString();
+
+        // Count matching rows first since the local type doesn't expose getRowsModified
+        const countStmt = this._db.prepare(
+            `SELECT COUNT(*) as cnt FROM plans
+             WHERE workspace_id = ?
+               AND status = 'deleted'
+               AND updated_at < ?`,
+            [workspaceId, cutoffIso]
+        );
+        let purged = 0;
+        try {
+            if (countStmt.step()) {
+                purged = (countStmt.getAsObject() as any).cnt as number;
+            }
+        } finally {
+            countStmt.free();
+        }
+
+        if (purged === 0) return 0;
+
+        try {
+            this._db.run(
+                `DELETE FROM plans
+                 WHERE workspace_id = ?
+                   AND status = 'deleted'
+                   AND updated_at < ?`,
+                [workspaceId, cutoffIso]
+            );
+            await this._persist();
+            console.log(`[KanbanDatabase] Purged ${purged} old tombstones older than ${olderThanDays} days`);
+            return purged;
+        } catch (e) {
+            console.error('[KanbanDatabase] Failed to purge old tombstones:', e);
+            return 0;
+        }
+    }
+
     /** Check if a plan ID is tombstoned. */
     public async isTombstoned(planId: string): Promise<boolean> {
         if (!(await this.ensureReady()) || !this._db) return false;
@@ -933,6 +1184,41 @@ export class KanbanDatabase {
             }
         } catch (e) {
             console.error('[KanbanDatabase] V3 migration workspace consolidation failed:', e);
+        }
+
+        // V6: fix workspace_id mismatch — if config workspace_id exists but doesn't match the
+        // dominant plans workspace_id, update config to match the plans (the plans are authoritative)
+        try {
+            const cfgStmt = this._db.prepare("SELECT value FROM config WHERE key = 'workspace_id'");
+            const hasCfgWsId = cfgStmt.step();
+            const cfgWsId = hasCfgWsId ? String(cfgStmt.getAsObject().value) : null;
+            cfgStmt.free();
+
+            if (cfgWsId) {
+                const domStmt = this._db.prepare(
+                    "SELECT workspace_id, COUNT(*) as cnt FROM plans GROUP BY workspace_id ORDER BY cnt DESC LIMIT 1"
+                );
+                if (domStmt.step()) {
+                    const dominantWsId = String(domStmt.getAsObject().workspace_id);
+                    domStmt.free();
+                    if (dominantWsId && dominantWsId !== cfgWsId) {
+                        // Config has a stale/wrong workspace_id; unify under the dominant one
+                        this._db.run(
+                            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                            ['workspace_id', dominantWsId]
+                        );
+                        this._db.run(
+                            "UPDATE plans SET workspace_id = ? WHERE workspace_id != ?",
+                            [dominantWsId, dominantWsId]
+                        );
+                        console.log(`[KanbanDatabase] V6 migration: corrected workspace_id from ${cfgWsId} to ${dominantWsId}`);
+                    }
+                } else {
+                    domStmt.free();
+                }
+            }
+        } catch (e) {
+            console.error('[KanbanDatabase] V6 migration workspace_id fix failed:', e);
         }
 
         // V4: add tags column

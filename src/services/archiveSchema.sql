@@ -34,3 +34,20 @@ CREATE TABLE IF NOT EXISTS archive_metadata (
 INSERT INTO archive_metadata (key, value)
 VALUES ('schema_version', '1')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP;
+
+-- Conversations archive table (for /export command)
+CREATE TABLE IF NOT EXISTS conversations (
+    id VARCHAR PRIMARY KEY,
+    exported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    conversation_date DATE,
+    topic TEXT,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tags TEXT[],
+    project TEXT,
+    metadata JSON,
+    file_path_original TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_date ON conversations(conversation_date DESC);
+CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project);

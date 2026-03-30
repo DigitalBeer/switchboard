@@ -2971,6 +2971,12 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             const customAgents = await this.getCustomAgents();
                             this._view?.webview.postMessage({ type: 'customAgents', customAgents });
                         }
+                        // Push toggle settings so auto-save doesn't overwrite with defaults
+                        this._view?.webview.postMessage({ type: 'accurateCodingSetting', enabled: this._isAccurateCodingEnabled() });
+                        this._view?.webview.postMessage({ type: 'advancedReviewerSetting', enabled: this._isAdvancedReviewerEnabled() });
+                        this._view?.webview.postMessage({ type: 'leadChallengeSetting', enabled: this._isLeadInlineChallengeEnabled() });
+                        this._view?.webview.postMessage({ type: 'julesAutoSyncSetting', enabled: this._isJulesAutoSyncEnabled() });
+                        this._view?.webview.postMessage({ type: 'aggressivePairSetting', enabled: this._isAggressivePairProgrammingEnabled() });
                         this._view?.webview.postMessage({ type: 'loading', value: false });
                         break;
                     case 'runSetup':

@@ -901,6 +901,41 @@
             filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.1);
         }
 
+        .complexity-routing-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            border: 1px solid var(--border-color);
+            background: var(--panel-bg);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s;
+            margin-right: 4px;
+        }
+
+        .complexity-routing-btn:hover {
+            border-color: var(--accent-teal-dim);
+            background: color-mix(in srgb, var(--accent-teal) 8%, transparent);
+            box-shadow: var(--glow-teal);
+        }
+
+        .complexity-routing-btn img {
+            width: 16px;
+            height: 16px;
+            filter: grayscale(1) brightness(0.7);
+            transition: all 0.15s;
+        }
+
+        .complexity-routing-btn.is-active img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(0.9);
+        }
+
+        .complexity-routing-btn:hover img {
+            filter: sepia(1) saturate(3) hue-rotate(140deg) brightness(1.1);
+        }
+
         .mode-toggle.mode-prompt img {
             filter: sepia(1) saturate(1.5) hue-rotate(0deg) brightness(0.9);
         }
@@ -1079,6 +1114,7 @@
         let lastAgentNames = {};
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let cliTriggersEnabled = true;
+        let dynamicComplexityRoutingEnabled = true;
         let autobanConfig = null; // Received from backend: { enabled, batchSize, rules }
         let autobanCountdownTimer = null;
         let autobanColumns = columnDefinitions.filter(col => col.autobanEnabled).map(col => col.id);
@@ -1103,10 +1139,12 @@
         const ICON_IMPORT_CLIPBOARD = '{{ICON_IMPORT_CLIPBOARD}}';
         const ICON_CLI = '{{ICON_CLI}}';
         const ICON_PROMPT = '{{ICON_PROMPT}}';
+        const ICON_DYNAMIC_ROUTING = '{{ICON_77}}';
         const ICON_RECOVER_SELECTED = '{{ICON_55}}';
         const ICON_TESTING_FAIL = '{{ICON_85}}';
         const ICON_CHAT = '{{ICON_CHAT}}';
         const ICON_CODE_MAP = '{{ICON_CODE_MAP}}';
+        const ICON_ARCHIVE_SELECTED = '{{ICON_54}}';
 
         function getActiveWorkspaceRoot() {
             return currentWorkspaceRoot || (workspaceItems[0] && workspaceItems[0].workspaceRoot) || '';
@@ -1141,6 +1179,13 @@
             }
             if (offBadge) {
                 offBadge.hidden = !!cliTriggersEnabled;
+            }
+        }
+
+        function updateComplexityRoutingToggleUi() {
+            const toggle = document.getElementById('complexity-routing-toggle');
+            if (toggle) {
+                toggle.classList.toggle('is-active', !!dynamicComplexityRoutingEnabled);
             }
         }
 
@@ -1263,6 +1308,12 @@
                        </div>` 
                     : '';
 
+                const complexityRoutingToggle = isPlanReviewed
+                    ? `<div id="complexity-routing-toggle" class="complexity-routing-btn ${dynamicComplexityRoutingEnabled ? 'is-active' : ''}" data-tooltip="Toggle complexity routing (low→coder, high→lead)">
+                           <img src="${ICON_DYNAMIC_ROUTING}" alt="Dynamic Routing">
+                       </div>`
+                    : '';
+
                 const rightSide = isCreated
                     ? `<div style="display: flex; align-items: center; gap: 8px; line-height: 1;">
                             <button class="btn-add-plan" id="btn-add-plan" data-tooltip="Add Plan">+</button>
@@ -1271,6 +1322,7 @@
                        </div>`
                     : `<div style="display: flex; align-items: center; gap: 4px;">
                             ${modeToggle}
+                            ${complexityRoutingToggle}
                             <span class="column-count" id="count-${escapeAttr(def.id)}">0</span>
                        </div>`;
                 const subline = hasAgent
@@ -1281,6 +1333,9 @@
                 let buttonArea = '';
                 if (isCompleted) {
                     buttonArea = `<div class="column-button-area">
+                        <button class="column-icon-btn archive-selected-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Archive selected plans to DuckDB">
+                            <img src="${ICON_ARCHIVE_SELECTED}" alt="Archive Selected">
+                        </button>
                         <button class="column-icon-btn recover-selected-btn" data-column="${escapeAttr(def.id)}" data-tooltip="Recover selected plans back to active board">
                             <img src="${ICON_RECOVER_SELECTED}" alt="Recover Selected">
                         </button>
@@ -1382,6 +1437,7 @@
                     postKanbanMessage({ type: 'setColumnDragDropMode', columnId, mode: nextMode });
                 });
             });
+
 
             // Column icon button handlers
             document.querySelectorAll('.column-icon-btn').forEach(btn => {
@@ -1747,6 +1803,18 @@
             postKanbanMessage({ type: 'recoverSelected', sessionIds: selected });
         });
 
+        // Archive Selected handler
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.archive-selected-btn');
+            if (!btn) return;
+            const selected = getSelectedInColumn('COMPLETED');
+            if (selected.length === 0) {
+                vscode.postMessage({ type: 'showInfo', message: 'No cards selected. Use checkboxes to select cards to archive.' });
+                return;
+            }
+            postKanbanMessage({ type: 'archiveSelected', sessionIds: selected });
+        });
+
         // Recover All handler
         document.addEventListener('click', (e) => {
             const btn = e.target.closest('.recover-all-btn');
@@ -2027,6 +2095,10 @@
                     cliTriggersEnabled = msg.enabled !== false;
                     updateCliToggleUi();
                     break;
+                case 'dynamicComplexityRoutingState':
+                    dynamicComplexityRoutingEnabled = msg.enabled !== false;
+                    updateComplexityRoutingToggleUi();
+                    break;
                 case 'visibleAgents':
                     if (msg.agents) {
                         lastVisibleAgents = { ...lastVisibleAgents, ...msg.agents };
@@ -2241,6 +2313,15 @@
         });
         document.getElementById('testing-fail-feedback').addEventListener('input', function() {
             this.style.borderColor = '';
+        });
+
+        // Complexity routing toggle handler (event delegation to avoid memory leak)
+        document.addEventListener('click', (e) => {
+            const toggle = e.target.closest('#complexity-routing-toggle');
+            if (!toggle) return;
+            dynamicComplexityRoutingEnabled = !dynamicComplexityRoutingEnabled;
+            updateComplexityRoutingToggleUi();
+            postKanbanMessage({ type: 'toggleDynamicComplexityRouting', enabled: dynamicComplexityRoutingEnabled });
         });
 
         // Signal to extension that webview is ready to receive data

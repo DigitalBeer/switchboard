@@ -1461,6 +1461,55 @@ export class KanbanProvider implements vscode.Disposable {
                 }
                 break;
             }
+            case 'archiveSelected': {
+                const sessionIds: string[] = msg.sessionIds || [];
+                if (sessionIds.length === 0) break;
+                
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (!workspaceRoot) break;
+                
+                // Import ArchiveManager and archive the selected plans
+                const { ArchiveManager } = await import('./ArchiveManager');
+                const archiveMgr = new ArchiveManager(workspaceRoot);
+                
+                // Check if archive is configured
+                if (!archiveMgr.isConfigured) {
+                    vscode.window.showWarningMessage('Archive path not configured. Please set it in the Database Operations panel first.');
+                    break;
+                }
+                
+                // Check DuckDB CLI
+                const cliStatus = await archiveMgr.checkDuckDbCli();
+                if (!cliStatus.installed) {
+                    vscode.window.showWarningMessage('DuckDB CLI not found. Please install DuckDB to use the archive feature.');
+                    break;
+                }
+                
+                // Get plan data from database
+                const db = this._getKanbanDb(workspaceRoot);
+                const plansToArchive = [];
+                for (const sid of sessionIds) {
+                    const plan = await db.getPlanBySessionId(sid);
+                    if (plan) plansToArchive.push(plan);
+                }
+                
+                if (plansToArchive.length === 0) {
+                    vscode.window.showWarningMessage('No valid plans found to archive.');
+                    break;
+                }
+                
+                // Archive each plan
+                let archived = 0;
+                for (const plan of plansToArchive) {
+                    const success = await archiveMgr.archivePlan(plan);
+                    if (success) archived++;
+                }
+                
+                if (archived > 0) {
+                    vscode.window.showInformationMessage(`📦 Archived ${archived} plan(s) to DuckDB.`);
+                }
+                break;
+            }
             case 'recoverAll': {
                 const count = msg.count || 0;
                 const confirm = await vscode.window.showWarningMessage(
@@ -2254,6 +2303,7 @@ FOCUS DIRECTIVE: Each plan file path above is the single source of truth for tha
             '{{ICON_55}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-55.png')).toString(),
             '{{ICON_85}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-85.png')).toString(),
             '{{ICON_CHAT}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-65.png')).toString(),
+            '{{ICON_77}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-77.png')).toString(),
             '{{ICON_CODE_MAP}}': webview.asWebviewUri(vscode.Uri.joinPath(iconDir, '25-1-100 Sci-Fi Flat icons-90.png')).toString(),
         };
         for (const [placeholder, uri] of Object.entries(iconMap)) {

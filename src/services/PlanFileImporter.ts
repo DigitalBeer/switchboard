@@ -26,9 +26,30 @@ export async function importPlanFiles(workspaceRoot: string): Promise<number> {
         return 0;
     }
 
-    const workspaceId = await db.getWorkspaceId()
-        || await db.getDominantWorkspaceId()
-        || crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 12);
+    let workspaceId = await db.getWorkspaceId()
+        || await db.getDominantWorkspaceId();
+
+    if (!workspaceId) {
+        // Mirror the legacy-file fallback used by TaskViewerProvider._getOrCreateWorkspaceId()
+        // so imported plans use the same workspace ID the kanban board queries against.
+        const legacyIdPath = path.join(workspaceRoot, '.switchboard', 'workspace_identity.json');
+        try {
+            if (fs.existsSync(legacyIdPath)) {
+                const data = JSON.parse(await fs.promises.readFile(legacyIdPath, 'utf-8'));
+                if (typeof data?.workspaceId === 'string' && data.workspaceId.length > 0) {
+                    workspaceId = data.workspaceId;
+                }
+            }
+        } catch { /* ignore parse errors */ }
+    }
+
+    if (!workspaceId) {
+        workspaceId = crypto.createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 12);
+    }
+
+    // Persist the resolved workspace ID so downstream consumers (board queries,
+    // _getOrCreateWorkspaceId) find it in the config table immediately.
+    await db.setWorkspaceId(workspaceId);
 
     const now = new Date().toISOString();
     const records: KanbanPlanRecord[] = [];

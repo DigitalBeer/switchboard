@@ -93,6 +93,10 @@
         "title": "Switchboard: Reset Kanban Database"
       },
       {
+        "command": "switchboard.reconcileKanbanDbs",
+        "title": "Switchboard: Reconcile Kanban Databases"
+      },
+      {
         "command": "switchboard.archiveCurrentPlan",
         "title": "Switchboard: Archive Current Plan"
       },
