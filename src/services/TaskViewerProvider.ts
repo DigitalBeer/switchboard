@@ -394,6 +394,23 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     // F-05/F-06 SECURITY: Path containment check using path.relative
     private _isPathWithinRoot(candidate: string, root: string): boolean {
+        // Allow Antigravity brain directory
+        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        if (this._isPathWithin(brainDir, candidate)) return true;
+
+        // Allow configured custom plan folder
+        try {
+            const config = vscode.workspace.getConfiguration('switchboard');
+            const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+            if (customFolder) {
+                const expanded = customFolder.startsWith('~')
+                    ? path.join(os.homedir(), customFolder.slice(1))
+                    : customFolder;
+                const resolved = path.resolve(expanded);
+                if (this._isPathWithin(resolved, candidate)) return true;
+            }
+        } catch { /* ignore config errors */ }
+
         const rel = path.relative(root, candidate);
         return !rel.startsWith('..') && !path.isAbsolute(rel);
     }
@@ -3223,6 +3240,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         if (data.onboardingComplete === true) {
                             this._view?.webview.postMessage({ type: 'onboardingProgress', step: 'cli_saved' });
                         }
+                        this._view?.webview.postMessage({ type: 'saveStartupCommandsResult', success: true });
                         break;
                     case 'getStartupCommands': {
                         const cmds = await this.getStartupCommands();
@@ -3365,9 +3383,10 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                         }
                         break;
                     case 'getDbPath': {
+                        const wsRootForPath = this._getWorkspaceRoot();
                         const gdbConfig = vscode.workspace.getConfiguration('switchboard');
                         const gdbPath = gdbConfig.get<string>('kanban.dbPath', '');
-                        this._view?.webview.postMessage({ type: 'dbPathUpdated', path: gdbPath || '.switchboard/kanban.db' });
+                        this._view?.webview.postMessage({ type: 'dbPathUpdated', path: gdbPath || '.switchboard/kanban.db', workspaceRoot: wsRootForPath || '' });
                         break;
                     }
                     case 'setLocalDb': {
@@ -3466,6 +3485,52 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                             this._view?.webview.postMessage({ type: 'dbConnectionResult', success: false, error: dbErr.message });
                             vscode.window.showErrorMessage(`⚠️ Database test error: ${dbErr.message}`);
                         }
+                        break;
+                    }
+                    case 'setCustomDbPath': {
+                        const customPath = data.path;
+                        if (!customPath || !customPath.trim()) {
+                            vscode.window.showErrorMessage('Custom database path cannot be empty.');
+                            break;
+                        }
+                        
+                        const validation = KanbanDatabase.validatePath(customPath);
+                        if (!validation.valid) {
+                            vscode.window.showErrorMessage(`❌ Invalid path: ${validation.error}`);
+                            break;
+                        }
+                        
+                        const wsRoot = this._getWorkspaceRoot();
+                        if (!wsRoot) {
+                            vscode.window.showErrorMessage('No workspace root found.');
+                            break;
+                        }
+                        
+                        const customConfig = vscode.workspace.getConfiguration('switchboard');
+                        const oldDbPath = customConfig.get<string>('kanban.dbPath', '');
+                        const oldResolvedPath = this._resolveDbPathSetting(oldDbPath, wsRoot);
+                        const newResolvedPath = this._resolveDbPathSetting(customPath, wsRoot);
+                        
+                        // Attempt migration before switching
+                        const migResult = await KanbanDatabase.migrateIfNeeded(oldResolvedPath, newResolvedPath);
+                        if (migResult.skipped === 'target_has_data') {
+                            const migChoice = await vscode.window.showWarningMessage(
+                                'Both the current and target databases contain plans. Automatic migration skipped.',
+                                'Open Reconciliation', 'Continue Anyway'
+                            );
+                            if (migChoice === 'Open Reconciliation') {
+                                vscode.commands.executeCommand('switchboard.reconcileKanbanDbs');
+                                break;
+                            }
+                        } else if (migResult.migrated) {
+                            vscode.window.showInformationMessage('✅ Migrated plans to custom database location.');
+                        }
+                        
+                        await customConfig.update('kanban.dbPath', customPath, vscode.ConfigurationTarget.Workspace);
+                        await KanbanDatabase.invalidateWorkspace(wsRoot);
+                        this._view?.webview.postMessage({ type: 'dbPathUpdated', path: customPath, workspaceRoot: wsRoot });
+                        vscode.window.showInformationMessage('✅ Database location set to custom path.');
+                        void this._refreshSessionStatus();
                         break;
                     }
                     case 'setPresetDbPath': {
@@ -4336,13 +4401,21 @@ What would you like to find?`;
 
     private async _registerPlan(workspaceRoot: string, entry: PlanRegistryEntry): Promise<void> {
         this._planRegistry.entries[entry.planId] = entry;
+        // Brain plans use 'antigravity_' prefix for sessionId to match their runsheet
+        const sessionId = entry.sourceType === 'brain'
+            ? `antigravity_${entry.planId}`
+            : entry.planId;
         // Write single entry to DB directly (faster than full save)
         const db = await this._getKanbanDb(workspaceRoot);
         if (db) {
-            const existing = await db.getPlanBySessionId(entry.planId);
+            // Check for existing row with target sessionId to avoid UNIQUE constraint violation
+            const existing = await db.getPlanBySessionId(sessionId);
+            if (existing && existing.planId !== entry.planId) {
+                await db.deletePlan(sessionId);
+            }
             await db.upsertPlans([{
                 planId: entry.planId,
-                sessionId: entry.planId,
+                sessionId: sessionId,
                 topic: entry.topic || '(untitled)',
                 planFile: entry.localPlanPath || '',
                 kanbanColumn: existing?.kanbanColumn || 'CREATED',
