@@ -968,6 +968,22 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 await this._activateWorkspaceContext(workspaceRoot);
                 await this._collectAndSyncKanbanSnapshot(workspaceRoot, true);
 
+                // Remove duplicate kanban entries caused by the plan watcher firing for brain/
+                // ingested mirror files before _mirrorBrainPlan/_syncConfiguredPlanFolder had
+                // a chance to write the authoritative runsheet.
+                try {
+                    const db = await this._getKanbanDb(workspaceRoot);
+                    const wsId = this._workspaceId || await this._getOrCreateWorkspaceId(workspaceRoot);
+                    if (db && wsId) {
+                        const removed = await db.cleanupSpuriousMirrorPlans(wsId);
+                        if (removed > 0) {
+                            console.log(`[TaskViewerProvider] Cleaned up ${removed} spurious mirror plan(s) on startup`);
+                        }
+                    }
+                } catch (cleanupErr) {
+                    console.error(`[TaskViewerProvider] Mirror plan cleanup failed for ${workspaceRoot}:`, cleanupErr);
+                }
+
                 // Orphan detection: check if configured DB is empty but default location has plans
                 try {
                     const db = KanbanDatabase.forWorkspace(workspaceRoot);
@@ -4142,7 +4158,9 @@ What would you like to find?`;
             if (alreadyExists) {
                 await this._handlePlanTitleSync(mirrorUri, workspaceRoot);
             } else {
-                await this._handlePlanCreation(mirrorUri, workspaceRoot);
+                // Pass _internal=true so the mirror-file guard in _handlePlanCreation is bypassed.
+                // The plan watcher may also fire for this file; without _internal it correctly no-ops.
+                await this._handlePlanCreation(mirrorUri, workspaceRoot, true);
             }
         }
 
@@ -4440,7 +4458,12 @@ What would you like to find?`;
                 planId: entry.planId,
                 sessionId: sessionId,
                 topic: entry.topic || '(untitled)',
-                planFile: entry.localPlanPath || '',
+                // For brain plans use the mirror path so the file is always accessible within
+                // the workspace. mirrorPath is just the filename (e.g. brain_<hash>.md); prepend
+                // the staging directory to form a workspace-relative path.
+                planFile: entry.mirrorPath
+                    ? path.join('.switchboard', 'plans', entry.mirrorPath).replace(/\\/g, '/')
+                    : (entry.localPlanPath || ''),
                 kanbanColumn: existing?.kanbanColumn || 'CREATED',
                 status: (entry.status === 'orphan' ? 'archived' : entry.status) as KanbanPlanRecord['status'],
                 complexity: existing?.complexity || 'Unknown',
@@ -5701,7 +5724,26 @@ What would you like to find?`;
         }
     }
 
-    private async _handlePlanCreation(uri: vscode.Uri, workspaceRoot?: string) {
+    private async _handlePlanCreation(uri: vscode.Uri, workspaceRoot?: string, _internal: boolean = false) {
+        const basename = path.basename(uri.fsPath);
+
+        // Brain mirror files (brain_<64-hex>.md) are managed exclusively by _mirrorBrainPlan.
+        // The plan watcher must never create an independent local runsheet for them — doing so
+        // produces a duplicate kanban card with a different plan_id/session_id.
+        if (!_internal && /^brain_[0-9a-f]{64}\.md$/i.test(basename)) {
+            const wsRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+            if (wsRoot) { await this._syncFilesAndRefreshRunSheets(wsRoot); }
+            return;
+        }
+
+        // Managed-import mirrors (ingested_<64-hex>.md) are handled directly by
+        // _syncConfiguredPlanFolder. Suppress watcher-triggered duplicate calls.
+        if (!_internal && /^ingested_[0-9a-f]{64}\.md$/i.test(basename)) {
+            const wsRoot = this._resolveWorkspaceRootForPath(uri.fsPath, workspaceRoot);
+            if (wsRoot) { await this._syncFilesAndRefreshRunSheets(wsRoot); }
+            return;
+        }
+
         const stablePath = this._normalizePendingPlanPath(uri.fsPath);
         if (this._pendingPlanCreations.has(stablePath)) {
             console.log(`[TaskViewerProvider] Ignoring internal plan creation: ${uri.fsPath}`);

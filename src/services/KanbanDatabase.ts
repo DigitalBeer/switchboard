@@ -938,6 +938,108 @@ export class KanbanDatabase {
         }
     }
 
+    /**
+     * Remove duplicate kanban entries created when the plan watcher fires for mirror files
+     * before the authoritative runsheet (antigravity_* or ingested_*) is written.
+     * Keeps the canonical entry (session_id LIKE 'antigravity_%') and deletes any
+     * spurious local entry pointing to the same brain_ or ingested_ mirror file.
+     * Also removes brain-source entries with an empty plan_file since they cannot be
+     * opened by agents and will be re-created correctly on the next sync.
+     */
+    public async cleanupSpuriousMirrorPlans(workspaceId: string): Promise<number> {
+        if (!(await this.ensureReady()) || !this._db) return 0;
+
+        // Find mirror plan_file values that have more than one active entry
+        const dupStmt = this._db.prepare(
+            `SELECT plan_file, COUNT(*) as cnt FROM plans
+             WHERE workspace_id = ? AND status = 'active'
+               AND plan_file IS NOT NULL AND plan_file != ''
+               AND (plan_file LIKE '%/.switchboard/plans/brain_%.md'
+                 OR plan_file LIKE '%.switchboard/plans/brain_%.md'
+                 OR plan_file LIKE '%/.switchboard/plans/ingested_%.md'
+                 OR plan_file LIKE '%.switchboard/plans/ingested_%.md')
+             GROUP BY plan_file
+             HAVING cnt > 1`,
+            [workspaceId]
+        );
+        const dupFiles: string[] = [];
+        try {
+            while (dupStmt.step()) {
+                dupFiles.push(String((dupStmt.getAsObject() as any).plan_file));
+            }
+        } finally {
+            dupStmt.free();
+        }
+
+        let removed = 0;
+
+        for (const planFile of dupFiles) {
+            // Delete the spurious watcher-created entry (session_id LIKE 'sess_%').
+            // Brain plans use 'antigravity_*' and ingested plans use a plain hash as
+            // their canonical session_id — neither starts with 'sess_'. The watcher
+            // always generates 'sess_<timestamp>' IDs, so this correctly targets only
+            // the spurious duplicates regardless of plan type.
+            const countStmt = this._db.prepare(
+                `SELECT COUNT(*) as cnt FROM plans
+                 WHERE workspace_id = ? AND status = 'active' AND plan_file = ?
+                   AND session_id LIKE 'sess_%'`,
+                [workspaceId, planFile]
+            );
+            let spuriousCount = 0;
+            try {
+                if (countStmt.step()) {
+                    spuriousCount = (countStmt.getAsObject() as any).cnt as number;
+                }
+            } finally {
+                countStmt.free();
+            }
+            if (spuriousCount > 0) {
+                this._db.run(
+                    `DELETE FROM plans
+                     WHERE workspace_id = ? AND status = 'active' AND plan_file = ?
+                       AND session_id LIKE 'sess_%'`,
+                    [workspaceId, planFile]
+                );
+                removed += spuriousCount;
+                console.log(`[KanbanDatabase] Removed ${spuriousCount} spurious mirror plan(s) for: ${planFile}`);
+            }
+        }
+
+        // Also remove brain-source plans with an empty plan_file — they cannot be opened
+        // and will be re-created correctly on the next mirror sync.
+        const emptyCountStmt = this._db.prepare(
+            `SELECT COUNT(*) as cnt FROM plans
+             WHERE workspace_id = ? AND status = 'active'
+               AND source_type = 'brain'
+               AND (plan_file IS NULL OR plan_file = '')`,
+            [workspaceId]
+        );
+        let emptyCount = 0;
+        try {
+            if (emptyCountStmt.step()) {
+                emptyCount = (emptyCountStmt.getAsObject() as any).cnt as number;
+            }
+        } finally {
+            emptyCountStmt.free();
+        }
+        if (emptyCount > 0) {
+            this._db.run(
+                `DELETE FROM plans
+                 WHERE workspace_id = ? AND status = 'active'
+                   AND source_type = 'brain'
+                   AND (plan_file IS NULL OR plan_file = '')`,
+                [workspaceId]
+            );
+            removed += emptyCount;
+            console.log(`[KanbanDatabase] Removed ${emptyCount} brain plan(s) with empty plan_file`);
+        }
+
+        if (removed > 0) {
+            await this._persist();
+        }
+        return removed;
+    }
+
     /** Check if a plan ID is tombstoned. */
     public async isTombstoned(planId: string): Promise<boolean> {
         if (!(await this.ensureReady()) || !this._db) return false;
