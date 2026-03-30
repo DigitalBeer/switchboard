@@ -30,7 +30,6 @@ type QueueItem = {
 
 export class SessionActionLog {
     private readonly _workspaceRoot: string;
-    private readonly sessionsDir: string;
     private readonly queue: QueueItem[] = [];
     private isFlushing = false;
     private flushScheduled = false;
@@ -38,7 +37,6 @@ export class SessionActionLog {
     private _titleCache: Map<string, string> | null = null;
     private _titleCacheTimestamp = 0;
     private _kanbanDb: KanbanDatabase | null = null;
-    private _migrationDone = false;
     private static readonly TITLE_CACHE_TTL_MS = 5_000;
     private static readonly MAX_RETRIES = 4;
     private static readonly BASE_BACKOFF_MS = 200;
@@ -48,7 +46,6 @@ export class SessionActionLog {
 
     constructor(workspaceRoot: string) {
         this._workspaceRoot = workspaceRoot;
-        this.sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
     }
 
     private _getDb(): KanbanDatabase {
@@ -62,11 +59,6 @@ export class SessionActionLog {
         const db = this._getDb();
         const ready = await db.ensureReady();
         if (!ready) return null;
-        if (!this._migrationDone) {
-            this._migrationDone = true;
-            await this._migrateActivityLog();
-            await this._migrateSessionFiles();
-        }
         return db;
     }
 
@@ -400,6 +392,8 @@ export class SessionActionLog {
             }
         }
 
+        // TECH-DEBT: DB unavailable — cache empty map to avoid repeated failures within TTL window.
+        // If DB is persistently down, titles degrade to session IDs (handled by _aggregateEvents fallback).
         this._titleCache = new Map();
         this._titleCacheTimestamp = now;
         return this._titleCache;
@@ -629,9 +623,6 @@ export class SessionActionLog {
         return this._hydrateRunSheet(sessionId);
     }
 
-    /** @deprecated Dead code — no callers remain after DB migration. Retained for one release cycle. */
-    async deleteFile(_relativePath: string): Promise<void> { }
-
     async getCompletedRunSheets(): Promise<any[]> {
         try {
             const db = await this._ensureDbReady();
@@ -690,10 +681,6 @@ export class SessionActionLog {
     private _normalizePlanFilePath(planFile: string): string {
         const normalized = String(planFile || '').replace(/\\/g, '/').trim();
         return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
-    }
-
-    async deleteDispatchLog(_dispatchId: string): Promise<void> {
-        // No-op: legacy .jsonl cleanup no longer needed
     }
 
     /**
@@ -769,16 +756,6 @@ export class SessionActionLog {
                 this._scheduleFlush();
             }
         }
-    }
-
-    // --- One-time migration methods ---
-
-    private async _migrateActivityLog(): Promise<void> {
-        // No-op: migration window has passed
-    }
-
-    private async _migrateSessionFiles(): Promise<void> {
-        // No-op: migration window has passed
     }
 
     private _sanitizePayload(type: string, payload: Record<string, any>): Record<string, any> {

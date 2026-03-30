@@ -3993,7 +3993,6 @@ What would you like to find?`;
         const runSheet = await log.findRunSheetByPlanFile(relativePlanPath, { includeCompleted: true });
         if (runSheet?.sessionId) {
             await log.deleteRunSheet(runSheet.sessionId);
-            await log.deleteDispatchLog(runSheet.sessionId);
         }
 
         let registryChanged = false;
@@ -6827,7 +6826,6 @@ What would you like to find?`;
             }
 
             await log.deleteRunSheet(sessionId);
-            await log.deleteDispatchLog(sessionId);
             this._activeDispatchSessions.delete(sessionId);
 
             const db = await this._getKanbanDb(resolvedWorkspaceRoot);
