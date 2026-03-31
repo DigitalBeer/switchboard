@@ -1,159 +1,207 @@
 # Switchboard
 
-**Save money by combining your AI subscriptions into one seamless pipeline**
+**Drag and drop AI orchestration for VS Code — run your entire agent team without typing a single prompt**
 
-Some AI coding tools force a choice between the $20 peasant tier and the $200 elite tier. Switchboard gives you a third option — combine multiple mid-tier subscriptions (like Google Pro, Copilot Pro, and Windsurf) into a single workflow, then apply intelligent routing to make them last. 
+Most AI orchestration frameworks either burn API credits running a meta-agent, or require complex infrastructure before you can delegate a single task. Switchboard does neither. No API keys. No orchestrator agent. A visual pipeline builder that unifies the CLI and chat agents you already pay for — and actively dispatches to them.
 
-Switchboard uses a **AUTOBAN** as the central pipeline control surface to automate CLI agents, IDE chat agents, and NotebookLM in one place, effectively extending your premium quota by up to 50%.
+Drag a card, press a button, and the right prompt goes to the right agent. You design the pipeline. The board runs it.
 
-Unlike other orchestration frameworks like OpenCode, Switchboard uses no API keys and no orchestrator agent. Most systems burn API credits coordinating between models, or run a persistent meta-agent that costs tokens just to exist. Switchboard does neither — your existing subscriptions do the work, and the routing logic runs locally for free.
+![Switchboard Savings](docs/savings.PNG)
 
-*By Grabthar's Hammer, what a savings.*
+---
 
-Switchboard coordinates this with no authentication hacks. Just the official VS Code API (`terminal.sendText`) and a local SQLite database running in your repo. There are no proxy servers, no ToS breaches, and all coordination is local.
+## How it works
 
-## What a real session looks like
+- **A visual kanban auto-triggers agents via drag and drop** — run entire agent teams without typing a single prompt
+- **Works across both CLI and IDE agents** (Windsurf, Cursor, Antigravity, Copilot CLI, Gemini CLI) — combine all your subscriptions, not just CLIs
+- **Batch and parallelise** — send entire columns of plans to agents in one prompt, with instructions to spawn subagents. Multiple tasks execute simultaneously without you doing anything
+- **Assign by complexity** — put an Opus subscription in the Planner slot and it will organise which tasks can be sent to cheap agents based on a complexity threshold you set
+- **Amplify other tools** — put Claude Code, OpenCode, Copilot Squads, or anything else into the kanban to route between them
+- **No repo pollution** — kanban state, routing rules and archived plans live in a multi-repo database on Google Drive, so you can share across machines without random files appearing in every commit
 
-Here's one workflow combining Windsurf, Copilot CLI, and Gemini CLI. Switchboard works across many combinations, this is just one example:
+With Switchboard, you can have Windsurf plan, route dynamically to Copilot Opus or Gemini CLI Flash based on the complexity your planner agent decides, then tell Opus in Cursor to review everyone's work. All while drinking a beer, since you only need one hand to operate Switchboard.
 
-1. Enter your CLI agent startup commands into the setup menu. Switchboard boots them in VS Code terminals and tracks their PIDs so it can dispatch automated messages using the official VS Code API terminal.sendText.
+---
 
-2. Create 5 plans in the **AUTOBAN** (a kanban-style routing board for tasks and agents) and hit *Copy prompt for all plans*.
+## Getting started
 
-3. Paste into Windsurf. Opus reads the full board state via MCP, enriches each plan with detail, and produces a routing table. Every task gets a complexity rating and an agent recommendation.
+For a detailed walkthrough, see our [How to use Switchboard](docs/how_to_use_switchboard.md) guide.
 
-4. Switchboard saves the routing table to a SQLite database and tracks each plan's current stage.
+### 1. Install
 
-5. Hit the column controls to route all plans in one click. If Opus called all 5 plans simple, send the whole batch to Gemini Flash in Antigravity, Kimi in Windsurf, or whatever you have available. High-complexity tasks get routed to Opus in Copilot CLI. 
+Install from any VS Code marketplace. Search for **Switchboard**.
 
-6. When done, hit *Move All Plans* again to send all plans to the Reviewed column and send a review request to Gemini CLI Pro, which compares every implementation against its plan.
+### 2. Set up your agent team
 
+Open the Switchboard sidebar and navigate to **Setup**. Enter your CLI agent startup commands — for example `copilot --allow-all-tools` or `gemini --approval-mode yolo`. Switchboard boots them in VS Code terminals, tracks their PIDs, and dispatches messages using the official VS Code `terminal.sendText` API.
 
-## Features
+Assign agents to roles in the sidebar:
 
-### AUTOBAN
+- **Planner** — your premium model (Opus, Windsurf, Copilot). Writes detailed plans, assigns complexity scores, recommends routing.
+- **Lead Coder** — handles high-complexity tasks. Typically your best CLI agent.
+- **Coder** — handles low-complexity and boilerplate. A cheap, fast model like Gemini Flash.
+- **Reviewer** — compares implementations against plans, flags scope creep, and ships with the Grumpy Principal Engineer persona.
+- **Analyst** — general purpose questions and research.
 
-The AUTOBAN is the central pipeline control surface. Each column represents an agent role, and each card is a plan. Think of it less as a project management board and more as a stateless execution trigger — plans enter, get routed to the right agent, and exit as completed work.
+You can add custom agent roles with their own prompts and routing rules via the setup menu.
 
-- **Drag-and-drop** individual cards, multi-select cards, or use buttons to advance all cards to the next stage
-- **Complexity-based auto-routing** — when you advance plans, the plugin reads the complexity classification and routes high-complexity tasks to your Lead Coder (e.g. Opus) and low-complexity tasks to your standard Coder (e.g. GPT, Flash)
-- **Custom agents** — Switchboard ships with 5 built-in agent roles, but you can add your own roles to the AUTOBAN and customize their automated prompts via the setup menu
+### 3. Create your first plans
 
-### Persistent state tracking
+Click **Create Plan** in the AUTOBAN to add plans to the New column. Write basic goals — Switchboard handles the detail. You can also:
 
-Because the AUTOBAN stores all plan state locally in SQLite, it enables asynchronous, multi-day workflows. You can plan on Monday, execute on Tuesday, and review on Wednesday — without losing context or being forced to keep a chat session alive.
+- Import plans automatically from any folder you specify (point it at Antigravity Brain, a Claude Code output directory, or anywhere else)
+- Use the NotebookLM Airlock to generate plans at zero token cost
+- Use IDE chat commands like `/improve-plan` to deep-plan directly into the database
 
-Standard "vibe coding" — the plan-code-plan-code loop in a single IDE chat — forces you to burn through your daily quotas linearly. If you hit your Windsurf limit mid-feature, your work stops until tomorrow. Your context is trapped in an ephemeral chat window, and you're held hostage by API reset timers.
+### 4. Run your pipeline
 
-Switchboard holds the context for you so you can spread work out across days to better manage quota spend. Furthermore, you can configure the database path (`switchboard.kanban.dbPath`) to point to a cloud-synced folder (like Google Drive or Dropbox), enabling seamless multi-machine handovers and allowing teams to share execution pipelines.
+Hit **Copy All Plans** to generate a planning prompt. Paste it into your Planner agent. It reads the board, enriches each plan, assigns a complexity score, and produces a routing table — every task gets an agent recommendation. You can see exactly what it decided before anything runs.
 
-### Historical Profiling & Archiving
+Hit the column controls to route in one click. The board constructs every prompt automatically and dispatches it to the right agent. No tokens spent on coordination.
 
-Completed plans aren't just deleted—they are automatically sent to a DuckDB archive database. This allows you to semantically search past tasks, query historical features, and review how complex systems were implemented over time without cluttering your active AUTOBAN. You can easily query this archive using chat workflows like `/archive`.
+---
 
-### Plan Import
+## The AUTOBAN
 
-Switchboard watches any folder you specify for new plans and imports them into the AUTOBAN automatically. Point it at the Antigravity Brain folder, a Claude Code output directory, or wherever your preferred planning framework drops files — it doesn't matter. This makes Switchboard compatible with any planning workflow, not just the built-in one. 
+The AUTOBAN is the central control surface — a fully configurable kanban pipeline that actively controls your agent team. Dragging a card or pressing a column button doesn't just move a plan, it dispatches a prompt to the target agent.
 
+Plan state is stored in a local database and prompts are dispatched using the VS Code terminal API. Everything runs on your machine — no external services, no hidden dependencies. For teams, a Google Drive sync option keeps your database out of your repo and accessible across machines.
 
-### Pair Programming Mode
+### Column controls
 
-Pair programming splits high-complexity plans into two streams: Lead Coder handles the complex work, while a cheaper Coder agent (e.g. Gemini Flash) handles the boilerplate simultaneously. This can reduce your primary IDE agent quota by up to 50%.
+Each column has a set of controls at the top:
 
-Enable pair programming with the **Pair Programming** toggle at the top of the AUTOBAN. There are three ways it works, depending on your setup:
+- **Drag and drop** individual cards to trigger that column's agent
+- **Move Selected** — route selected plans to the next stage
+- **Move All** — route all plans in the column to the next stage
+- **Copy Prompt Selected** — generate a prompt for selected plans and copy to clipboard
+- **Copy Prompt All** — generate a prompt for all plans and copy to clipboard
 
-| Mode | How to trigger | Lead gets | Coder gets |
-| :--- | :--- | :--- | :--- |
-| **CLI Parallel** | Drag a high-complexity card to Lead Coder column (Coder column in CLI mode) | CLI terminal dispatch | CLI terminal dispatch |
-| **Hybrid** | Click the **Pair** button on a card (Coder column in CLI mode) | Clipboard prompt → paste to IDE chat | CLI terminal dispatch |
-| **Full Clipboard** | Click the **Pair** button on a card (Coder column in Prompt mode) | Clipboard prompt → paste to IDE chat | Notification button → clipboard prompt |
+### Routing modes
 
-**CLI Parallel** is the default — both agents fire automatically in separate terminals. **Hybrid** is for when you want to use your IDE chat (Windsurf, Antigravity) for the complex work while a CLI agent handles the easy parts. **Full Clipboard** is for IDEs where you prefer pasting all prompts manually. For example, in Windsurf, paste the first prompt into a Cascade chat with Opus. Then, click the notification to generate the second prompt, and paste the second prompt into a Cascade chat with Gemini Flash High. 
+Set each column's routing mode using the toggle in the column header:
 
-To set up Full Clipboard mode: set the Coder column's drag-and-drop mode to **Prompt** using the toggle icon in the column header, then click the **Pair** button on any high-complexity card. 
+- **CLI Triggers** — plans are dispatched automatically via `terminal.sendText`
+- **Prompt mode** — plans are copied to clipboard for manual pasting into IDE chat
 
-#### Aggressive Pair Programming
+### Complexity routing
 
-Enable **Aggressive Pair Programming** in the Setup sidebar to shift more tasks to the Coder agent. This tells the planner to assume the Coder is highly competent, classifying only truly complex work (new architectures, security logic, concurrency) as high complexity for the Lead. Everything else goes to the Coder.
+When you advance plans, Switchboard reads the complexity classification your Planner assigned and routes automatically:
 
-This saves tokens — but the code review step becomes more important. With more work on the Coder, the Reviewer agent in the CODE REVIEWED column is your primary quality gate. Make sure you have a capable model assigned to the Reviewer role when using aggressive mode.
-
-### Task Batching
-
-Select multiple cards in the AUTOBAN to send them as a batch to an agent. This saves quota because every time you send a prompt, you're also sending hidden system instructions and asking the agent to spin up research tasks. Batching means the agent only does this once. All task batches include an instruction for the agent to use its native subagents if available, so that you still get focused attention on each task. 
-
-### Advanced Agent Rigor
-
-When you feel automated outputs are slipping in quality, you can dial up the rigor. Enable features like `switchboard.reviewer.advancedMode` to force the Reviewer to perform deep regression traces (checking for orphaned references and race conditions), or enable `switchboard.leadCoder.inlineChallenge` to force the Lead Coder to adversarially challenge a plan before writing any code. You can also enforce unified strict prompting (`switchboard.team.strictPrompts`) so that all agents act with maximum scrutiny.
+- High complexity → Lead Coder
+- Low complexity → Coder
+- Dynamic → routes based on the threshold you set in the setup menu
 
 ### AUTOBAN Automation
 
-Press the **START AUTOBAN** button at the top of the AUTOBAN to start processing plans through stages on an automated timer. This automation uses no API keys, and does not waste quota on 'orchestrator' agents. Instead, Switchboard spins up multiple terminals per role, with each terminal running a separate CLI agent, and rotates plans gatling-style. Every few minutes a plan is sent to an agent, and by the time the rotation completes, the first terminal is free for a new plan. Each CLI is also instructed to use its own native subagent features, so at full speed you have multiple terminals each running their own subagents to chew through a large backlog.
+Press **START AUTOBAN** to process plans automatically on a timer. Switchboard spins up multiple terminals per role and rotates plans through stages without any manual input. Each CLI is instructed to use its own native subagents, so at full speed you have multiple terminals each running their own subagents working through your backlog. Because each terminal is only triggered every few minutes, this does not trip provider rate limits.
 
-Because each CLI terminal is only being triggered every few minutes, this automation does not trigger any provider rate throttling. 
+Configure per column:
+- Agent count (number of terminals to spawn)
+- Timing interval
+- Batch size (plans per prompt)
 
+---
 
-### Plan Review Comments
+## Core workflows
 
-Highlight text within a plan to send a targeted comment to the Planner agent referencing that exact text, enabling precise planning improvement conversations. A great use of this is to run Claude Code Sonnet in the Planner terminal — after Copilot/Windsurf Opus writes the initial plans, ask Sonnet questions about them without spending Copilot quota.
+### Batching
 
-### Google Jules Integration
+Select multiple cards and send them as a single prompt. Every batch includes an instruction to use native subagents, so each task still gets focused attention — you just pay the system prompt overhead once instead of once per task.
 
-If you're running low on quota and have a Google Pro subscription, press a button in the AUTOBAN to start sending tasks to Jules, which gives you 100 free Gemini requests per day. This works well for low-priority backlog items. To ensure repository safety, Switchboard can automatically run `git add/commit/push` before dispatching files to Jules (`switchboard.jules.autoSync`).
+### Pair programming mode
 
-### Cross-IDE Workflows
+Pair programming splits high-complexity plans into two streams: Lead Coder handles the complex work while a cheaper Coder agent handles boilerplate simultaneously. This can reduce your primary IDE agent quota by up to 50%.
 
-Plan with Antigravity and Gemini CLI, then move the plan to Windsurf running Opus to implement or review. In the AUTOBAN or sidebar, click **COPY** to copy the plan link to your clipboard, then paste it into your other IDE's chat along with an automatically generated implementation prompt.
+Enable with the **Pair Programming** toggle at the top of the AUTOBAN.
 
+| Mode | Lead gets | Coder gets |
+| :--- | :--- | :--- |
+| **CLI Parallel** | CLI terminal dispatch | CLI terminal dispatch |
+| **Hybrid** | Clipboard prompt → paste to IDE chat | CLI terminal dispatch |
+| **Full Clipboard** | Clipboard prompt → paste to IDE chat | Notification button → clipboard prompt |
 
-## Personality & Aesthetic
+Enable **Aggressive Pair Programming** in the setup sidebar to shift more tasks to the Coder. Only truly complex work (new architectures, security logic, concurrency) goes to the Lead. Everything else goes to the Coder. The Reviewer becomes your primary quality gate in this mode.
 
-Switchboard has a distinct flavor. The UI is a minimalist, diegetic **sci-fi command center** — pipeline control surfaces, routing boards, and system status panels designed to feel like you're operating a starship engineering console, not a project management tool.
+### Plan review comments
 
-More importantly, the built-in **Reviewer** agent ships with a **"Grumpy Principal Engineer"** persona. This isn't a gimmick — it's a practical solution to a real problem. When you're reviewing large batches of automated code output, dry AI-generated reviews blur together into an unreadable wall of polite suggestions. The Grumpy Engineer persona enforces strict code accuracy while making the output genuinely engaging and highly readable. Every review reads like feedback from a battle-scarred staff engineer who has seen your exact mistake deployed to production before — pointed, memorable, and impossible to skim past. 
+Highlight text within any plan to send a targeted comment to your Planner referencing that exact text. Useful for precise plan improvements without rewriting the whole plan. A good use of this is running Claude Code Sonnet in the Planner terminal — ask Sonnet questions about Opus-written plans without spending Copilot quota.
 
+### Cross-IDE workflows
 
-## NotebookLM Airlock
+Plan with Antigravity, implement in Windsurf. Click **Copy** on any plan to copy a link and auto-generated implementation prompt to your clipboard, then paste into your other IDE's chat.
 
-The Airlock feature bridges your IDE and Google's NotebookLM, giving you quota-free sprint planning. NotebookLM gives Google Pro subscribers unlimited Gemini Pro use in a sandboxed environment — excellent for planning without burning IDE quotas.
+---
 
-For example, if you use Antigravity Gemini Pro for planning, you exhaust your weekly Pro quota in about 10 plans. With Airlock, you use **0 quota** on 10 plans.
+## Advanced features
+
+### NotebookLM Airlock
+
+The Airlock bridges your IDE and Google NotebookLM, giving you quota-free sprint planning. NotebookLM gives Google Pro subscribers unlimited Gemini Pro in a sandboxed environment.
 
 1. Open the **Airlock** tab and click **Bundle Code** — creates docx bundles of your repo in `.switchboard/airlock/`, plus a manifest and a "How to Plan" skill
 2. Open NotebookLM, create a new notebook, upload the entire airlock folder as sources
 3. Ask NotebookLM to "follow the How to Plan guide and generate plans for every task in the New column"
-4. Copy the output, then use the **Import from Clipboard** button at the top of the AUTOBAN — Switchboard saves each plan into your database
+4. Copy the output, then use **Import from Clipboard** at the top of the AUTOBAN — Switchboard saves each plan into your database
 5. Use the AUTOBAN to assign to agents as normal
 
-The `manifest.md` file included in the Airlock folder maps your repo: file locations across bundles, file sizes, and any introductory comments at the top of each file. 
+### DuckDB plan archive
 
-## IDE Chat Workflows
+Completed plans are automatically sent to a DuckDB archive database rather than deleted. Search past tasks, query historical features, and review how complex systems were implemented over time without cluttering your active AUTOBAN. Query the archive using `/archive` in any IDE chat workflow.
 
-Use these within the Antigravity or Windsurf chat to quickly get a plan generated and inserted into the Kanban. Switchboard reads the Antigravity Brain folder and adds any plans created into the AUTOBAN for you. 
+### Google Jules integration
+
+Running low on quota with a Google Pro subscription? Press a button in the AUTOBAN to start sending tasks to Jules — 100 free Gemini requests per day. Works well for low-priority backlog items. Enable `switchboard.jules.autoSync` to automatically run `git add/commit/push` before dispatching to Jules.
+
+### Prompt Controls
+
+Switchboard's automated prompts can be extended using the checkboxes in the Setup sidebar:
+
+- **Accurate coding mode for Coder prompts** — adds stricter implementation instructions to Coder prompts
+- **Inline challenge step for Lead Coder prompts** — forces the Lead Coder to adversarially challenge a plan before writing any code
+- **Advanced reviewer mode** — enables deep regression analysis including orphaned reference checks and race condition detection. High token usage.
+- **Aggressive pair programming** — shifts more tasks to the Coder agent. Use with a capable Reviewer as your quality gate.
+- **Append PRD** — appends a link to your PRD to every automated prompt, so agents always have requirements context without you having to paste it manually. Supply a Google Drive local sync link to keep agents working from a living document.
+
+### IDE chat commands
+
+Use these within Antigravity or Windsurf chat:
 
 | Command | What it does |
 | :--- | :--- |
-| `/chat` | Ideation mode — discuss requirements before any plan is written. |
-| `/improve-plan` | Deep planning, dependency checks, and adversarial review in one pass. |
-| `/archive` | Query or search the historical DuckDB plan archive. |
-| `/export` | Export the current conversation to the plan archive database. |
+| `/chat` | Switches the AI into planning mode — no code, just collaborative plan writing saved directly to switchboard/plans |
+| `/improve-plan` | Deep planning, dependency checks, and adversarial review in one pass |
+| `/archive` | Query or search the historical DuckDB plan archive |
+| `/export` | Export the current conversation to the plan archive database |
 
+---
 
+## The Grumpy Principal Engineer
 
-## Trust, Account Safety & The ToS
+The built-in Reviewer agent ships with a Grumpy Principal Engineer persona. When reviewing large batches of automated code output, dry AI-generated reviews blur together. The Grumpy Engineer enforces strict code accuracy while making the output genuinely engaging — every review reads like feedback from a battle-scarred staff engineer who has seen your exact mistake deployed to production before. Pointed, memorable, and impossible to skim past.
 
-Switchboard was built to be completely local. **There are no proxy servers, no external API keys, and no ToS violations.**
+---
 
-The coordination layer is strictly file-based. Switchboard uses the official VS Code `terminal.sendText` API to automate agents running in your own terminals, under your own standard authentication. Everything happens entirely on your machine. [Read the architectural analysis here.](docs/ToS_COMPLIANCE.md)
+## Trust, account safety and the ToS
+
+Switchboard is completely local. No proxy servers, no external API keys, no ToS violations.
+
+Coordination uses the official VS Code `terminal.sendText` API to automate agents running in your own terminals, under your own standard authentication. Everything happens on your machine. [Read the full architectural analysis here.](docs/ToS_COMPLIANCE.md)
+
+---
 
 ## Architecture
 
-* **VS Code Extension:** Manages terminals, sidebar UI, AUTOBAN, plan watcher, and inbox watcher.
-* **Bundled MCP Server:** Exposes tools to agents (`send_message`, `check_inbox`, `get_kanban_state`, `start_workflow`, `run_in_terminal`, etc.).
-* **SQLite Database:** Stores plans, routing state, and complexity classifications locally.
-* **File Protocol:** All coordination happens via `.switchboard/` in your workspace — transparent, auditable, and entirely local.
+- **VS Code Extension** — manages terminals, sidebar UI, AUTOBAN, plan watcher, and inbox watcher
+- **Bundled MCP Server** — exposes tools to agents (`send_message`, `check_inbox`, `get_kanban_state`, `start_workflow`, `run_in_terminal`)
+- **Local database** — stores plans, routing state, and complexity classifications locally with optional Google Drive sync
+- **DuckDB archive** — stores completed plans for historical querying
+- **File Protocol** — all coordination happens via `.switchboard/` in your workspace — transparent, auditable, and entirely local
 
-## Privacy & License
+---
+
+## Privacy and licence
+
 No telemetry. No external servers. All coordination data is workspace-local. Open source — MIT License.
 
 [GitHub](https://github.com/TentacleOpera/switchboard/) · [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=TentacleOpera.switchboard)
