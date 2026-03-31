@@ -48,3 +48,19 @@ Windsurf includes unlimited access to Kimi K2.5. When you hit a hard bug, rather
 ### Running a mixed-model cycle within a single subscription
 
 In Antigravity, rather than sending everything to Opus, run a plan-code-review cycle across models: Gemini plans, Sonnet improves the plan and later reviews the output, Gemini implements. This cycle produces comparable quality to a single Opus pass at significantly lower quota cost — Opus in Antigravity is expensive, and the one-shot approach burns through it fast. Switchboard's pair programming mode and complexity routing make this cycle easy to set up without manual prompt switching.
+
+## 6. Use the Airlock feature to access unlimited Gemini Pro quota for planning
+
+The Airlock feature allows you to access unlimited Gemini Pro quota for planning, by bundling your code into a NotebookLM-compatible format, then providing an easy way to import plans back into Switchboard. How to use it:
+
+1. Click the Airlock tab in the sidebar
+2. Click 'Bundle Code' 
+3. Click 'Open NotebookLM'
+4. Upload all files in the .switchboard/Airlock folder as sources into a new Notebook
+5. Ask NotebookLM to write a plan according to the 'How to Plan' guide
+6. At the top of the Kanban 'New' column, there is a button labelled 'Import plan from clipboard'. Copy the Notebook output and click this button to import the plan into Switchboard.
+
+Additionally, if you want to batch plan, simply create basic plans for each task in the Kanban 'New' column. Then follow the steps above, but at step 5, instead press the 'Copy Sprint Prompt' button. This will give you a prompt that asks NotebookLM to write a plan for all tasks in the New column. 
+
+
+

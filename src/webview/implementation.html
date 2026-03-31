@@ -1691,6 +1691,9 @@
                 <label class="startup-row" style="display:block; margin-top:4px;">
                     <input id="design-doc-link-input" type="text" placeholder="https://example.com/prd or /path/to/design.md" style="width:100%;">
                 </label>
+                <div style="font-size:10px; color:var(--accent-orange); margin-top:4px; font-family:var(--font-mono);">
+                    ⚠️ Security: File contents are embedded in AI prompts. Do not link files containing API keys, passwords, or sensitive data.
+                </div>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="accurate-coding-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Accurate coding mode for Coder prompts</span>
@@ -4144,6 +4147,9 @@
                 _setupComplete = true;
                 onboardingContainer.classList.add('hidden');
                 mainContainer.classList.remove('hidden');
+                // Request saved state to populate Terminal Operations section
+                vscode.postMessage({ type: 'getStartupCommands' });
+                vscode.postMessage({ type: 'getVisibleAgents' });
             }
         }
 
