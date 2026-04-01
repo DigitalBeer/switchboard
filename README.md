@@ -8,6 +8,8 @@ It does this programmatically using the VS Code API, so unlike other orchestrati
 
 Switchboard also works with chat-based agents like Windsurf, Antigravity and Cursor. You can switch the board between trigger mode, which auto-sends prompts to terminals, and paste mode, which auto-copies prompts to your clipboard. That way you can combine the strengths of different subscriptions. For example, create 10 plans and tell the free Kimi 2.5 in Windsurf to gather context. Then shove them all into Claude Code to plan. Then punt them into GitHub Copilot as a single prompt to take advantage of its native subagents, before asking Windsurf Opus to review the work.
 
+![Switchboard Savings](docs/savings2.png)
+
 ---
 
 ## How it works
