@@ -1,7 +1,7 @@
 {
   "name": "switchboard",
   "displayName": "Switchboard",
-  "description": "Cross-IDE agent orchestration — workflow routing, terminal targeting, and multi-agent coordination via MCP.",
+  "description": "Drag and drop agent orchestration. Coordinate AI teams without typing prompts.",
   "icon": "icon.png",
   "keywords": [
     "switchboard",
@@ -10,7 +10,7 @@
     "mcp",
     "multi-agent"
   ],
-  "version": "1.5.0",
+  "version": "1.5.1",
   "main": "./dist/extension.js",
   "publisher": "TurnZero",
   "repository": {
