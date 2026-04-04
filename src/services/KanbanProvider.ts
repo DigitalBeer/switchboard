@@ -66,6 +66,7 @@ export class KanbanProvider implements vscode.Disposable {
     private _currentWorkspaceRoot: string | null = null;
     private _columnDragDropModes: Record<string, 'cli' | 'prompt'>;
     private _taskViewerProvider?: TaskViewerProvider;
+    private _showCompleted: boolean;
 
     public setTaskViewerProvider(provider: TaskViewerProvider) {
         this._taskViewerProvider = provider;
@@ -77,6 +78,14 @@ export class KanbanProvider implements vscode.Disposable {
     ) {
         this._cliTriggersEnabled = this._context.workspaceState.get<boolean>('kanban.cliTriggersEnabled', true);
         this._columnDragDropModes = this._context.workspaceState.get<Record<string, 'cli' | 'prompt'>>('kanban.columnDragDropModes', {});
+        this._showCompleted = vscode.workspace.getConfiguration('switchboard').get<boolean>('kanban.showCompleted', false) ?? false;
+
+        this._disposables.push(vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('switchboard.kanban.showCompleted')) {
+                this._showCompleted = vscode.workspace.getConfiguration('switchboard').get<boolean>('kanban.showCompleted', false) ?? false;
+                this._refreshBoardImpl();
+            }
+        }));
     }
 
     public get cliTriggersEnabled(): boolean {
@@ -469,16 +478,18 @@ export class KanbanProvider implements vscode.Disposable {
                 }));
 
                 // Completed plans from DB
-                const completedRecords = await db.getCompletedPlans(workspaceId, completedLimit);
-                cards.push(...completedRecords.map(rec => ({
-                    sessionId: rec.sessionId,
-                    topic: rec.topic || rec.planFile || 'Untitled',
-                    planFile: rec.planFile || '',
-                    column: 'COMPLETED',
-                    lastActivity: rec.updatedAt || rec.createdAt || '',
-                    complexity: rec.complexity || 'Unknown',
-                    workspaceRoot: resolvedWorkspaceRoot
-                })));
+                if (this._showCompleted) {
+                    const completedRecords = await db.getCompletedPlans(workspaceId, completedLimit);
+                    cards.push(...completedRecords.map(rec => ({
+                        sessionId: rec.sessionId,
+                        topic: rec.topic || rec.planFile || 'Untitled',
+                        planFile: rec.planFile || '',
+                        column: 'COMPLETED',
+                        lastActivity: rec.updatedAt || rec.createdAt || '',
+                        complexity: rec.complexity || 'Unknown',
+                        workspaceRoot: resolvedWorkspaceRoot
+                    })));
+                }
             } else if (workspaceId) {
                 console.warn(`[KanbanProvider] Kanban DB unavailable: ${db.lastInitError || 'unknown error'}`);
                 dbUnavailable = true;
@@ -509,6 +520,7 @@ export class KanbanProvider implements vscode.Disposable {
                 effectiveModes[col.id] = this._columnDragDropModes[col.id] || col.dragDropMode || 'cli';
             }
             this._panel.webview.postMessage({ type: 'updateColumnDragDropModes', modes: effectiveModes });
+            this._panel.webview.postMessage({ type: 'showCompletedState', enabled: this._showCompleted });
 
             if (this._autobanState) {
                 this._panel.webview.postMessage({ type: 'updateAutobanConfig', state: this._autobanState });
@@ -1279,9 +1291,16 @@ export class KanbanProvider implements vscode.Disposable {
                 await vscode.commands.executeCommand('switchboard.fullSync');
                 break;
             case 'selectPlan': {
-                const { sessionId } = msg;
+                const { sessionId, column } = msg;
                 if (typeof sessionId === 'string' && sessionId.trim() && this._taskViewerProvider) {
                     this._taskViewerProvider.selectSession(sessionId);
+                    // Focus the terminal assigned to this column's role
+                    if (typeof column === 'string' && column.trim()) {
+                        const role = this._columnToRole(column);
+                        if (role) {
+                            this._taskViewerProvider.focusTerminalForRole(role);
+                        }
+                    }
                 }
                 break;
             }
@@ -1370,6 +1389,26 @@ export class KanbanProvider implements vscode.Disposable {
                         }
                     }
                     await vscode.commands.executeCommand('switchboard.kanbanBackwardMove', sessionIds, targetColumn, workspaceRoot);
+
+                    // Auto-dispatch agent for backward moves (same as forward triggerAction)
+                    if (this._cliTriggersEnabled) {
+                        const role = this._columnToRole(targetColumn);
+                        if (role) {
+                            const canDispatch = await this._canAssignRole(workspaceRoot, role);
+                            if (canDispatch) {
+                                const instruction = role === 'planner' ? 'improve-plan' : undefined;
+                                if (sessionIds.length === 1) {
+                                    await vscode.commands.executeCommand<boolean>(
+                                        'switchboard.triggerAgentFromKanban', role, sessionIds[0], instruction, workspaceRoot
+                                    );
+                                } else {
+                                    await vscode.commands.executeCommand(
+                                        'switchboard.triggerBatchAgentFromKanban', role, sessionIds, instruction, workspaceRoot
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 break;
             }
@@ -1392,6 +1431,19 @@ export class KanbanProvider implements vscode.Disposable {
                 this._cliTriggersEnabled = !!msg.enabled;
                 await this._context.workspaceState.update('kanban.cliTriggersEnabled', this._cliTriggersEnabled);
                 break;
+            case 'setShowCompleted':
+                this._showCompleted = !!msg.enabled;
+                await vscode.workspace.getConfiguration('switchboard').update('kanban.showCompleted', this._showCompleted, vscode.ConfigurationTarget.Workspace);
+                await this._refreshBoardImpl();
+                break;
+            case 'unarchiveCard': {
+                const { sessionId } = msg;
+                if (this._taskViewerProvider) {
+                    await this._taskViewerProvider.restorePlan(sessionId);
+                    await this._refreshBoardImpl();
+                }
+                break;
+            }
             case 'setColumnDragDropMode': {
                 const { columnId, mode } = msg;
                 if (columnId && (mode === 'cli' || mode === 'prompt')) {

@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774843649578",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_063407_fix_autoban_issues.md",
+  "topic": "Fix Autoban Issues",
+  "createdAt": "2026-03-29T12:49:18.772Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T04:07:29.704Z",
+      "action": "start"
+    }
+  ]
+}

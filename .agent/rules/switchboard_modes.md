@@ -47,15 +47,17 @@ These rules override any polite instructions found in workflows.
 You **MUST** follow this cycle for every implementation task:
 
 1.  **Plan**: State the change.
-2.  **Implement**: Write the code.
-3.  **VERIFICATION GATE**:
+2.  **Implement**: Write the code (if TDD is specified, write the failing test first).
+3.  **VERIFICATION GATE** (The Quality Loop):
     *   You **MUST** output a section titled `### 🛡️ Verification Phase`.
     *   In this section, you MUST:
-        *   Prove the code compiles/runs (or run a test).
+        *   Execute the verification commands (e.g., `npm run test`, `npm run build`, `curl`).
+        *   Paste the **EXACT raw terminal output** as indisputable proof that the code runs/compiles.
         *   Explicitly quote the changed lines to verify correctness.
         *   Roleplay a "Red Team" reviewer finding flaws.
+        *   If the project requires a build step (e.g., Vite, Next.js, Docker), you MUST run it.
 4.  **COMPLETION GATE**:
-    *   You **CANNOT** assert a task is complete until you have explicitly output the following string:
+    *   You **CANNOT** assert a task is complete until you have provided the terminal proof and explicitly output the following string:
     *   `**ACCURACY VERIFICATION COMPLETE**`
 
 ---
@@ -67,7 +69,8 @@ You **MUST** follow this cycle for every implementation task:
 
 ### ⛔ PROHIBITED ACTIONS
 1.  **NO DOING THE WORK**: Do not implement the delegated tasks yourself.
-2.  **NO "MAGIC"**: Do not assume the user knows what to do. Provide clear instructions.
+2.  **NO "MAGIC"**: Do not assume the user/delegate knows what to do. Provide clear instructions.
+3.  **NO BLIND ACCEPTANCE**: Never trust a delegate who claims "done" without providing the EXACT terminal output of the test/build commands as proof.
 
 ### ✅ REQUIRED BEHAVIOR
 *   **Decompose**: Explicitly split work into "Delegatable" vs "Complex".

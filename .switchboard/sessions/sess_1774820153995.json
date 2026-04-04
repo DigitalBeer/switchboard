@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153995",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_071108_add_move_controls_to_ticket_view.md",
+  "topic": "Add move controls to ticket view",
+  "createdAt": "2026-03-29T12:49:18.778Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.114Z",
+      "action": "start"
+    }
+  ]
+}

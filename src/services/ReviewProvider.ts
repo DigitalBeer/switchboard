@@ -134,7 +134,10 @@ export class ReviewProvider implements vscode.Disposable {
             this._lastSelection = undefined;
         }, null, this._disposables);
 
-        await this._renderCurrentPlan();
+        // Do NOT call _renderCurrentPlan() here — the webview will send a 'ready'
+        // message once its DOM is initialised, which triggers the render. Calling it
+        // before the webview is ready causes a race where postMessage is lost and the
+        // panel stays stuck on "Loading ticket...".
     }
 
     private async _handleMessage(msg: any): Promise<void> {
@@ -313,8 +316,31 @@ export class ReviewProvider implements vscode.Disposable {
     private async _renderCurrentPlan(): Promise<void> {
         if (!this._panel || !this._currentPlan) return;
 
-        const ticketData = await this._loadCurrentTicketData();
-        await this._renderTicketData(ticketData);
+        try {
+            const ticketData = await this._loadCurrentTicketData();
+            await this._renderTicketData(ticketData);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('[ReviewProvider] Failed to render plan:', message);
+            if (this._panel) {
+                this._panel.webview.postMessage({
+                    type: 'ticketData',
+                    sessionId: this._currentPlan?.sessionId || '',
+                    topic: this._currentPlan?.topic || 'Error',
+                    planFileAbsolute: this._currentPlan?.planFileAbsolute || '',
+                    column: '',
+                    isCompleted: false,
+                    complexity: 'Unknown',
+                    dependencies: [],
+                    planText: `Error loading plan: ${message}`,
+                    renderedHtml: `<p style="color:var(--danger,#f85149);">Error loading plan: ${message.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`,
+                    planMtimeMs: 0,
+                    actionLog: [],
+                    columns: [],
+                    canEditMetadata: false
+                });
+            }
+        }
     }
 
     private async _loadCurrentTicketData(): Promise<ReviewTicketData> {

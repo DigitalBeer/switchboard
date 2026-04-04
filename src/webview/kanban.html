@@ -970,6 +970,13 @@
             </label>
             <span class="toggle-label">Pair Programming</span>
         </label>
+        <label class="cli-toggle-inline" id="show-completed-toggle" data-tooltip="When ON, shows the COMPLETED column with archived history. When OFF, hides it for focus.">
+            <label class="toggle-switch">
+                <input type="checkbox" id="show-completed-checkbox">
+                <span class="toggle-slider"></span>
+            </label>
+            <span class="toggle-label">Show Completed</span>
+        </label>
         <button class="strip-btn" id="btn-refresh-strip" data-tooltip="Sync board with latest backend state">↻ SYNC BOARD</button>
     </div>
     <div id="db-warning-banner" style="display:none; background:#3a2a00; color:#ffcc00; padding:6px 12px; font-size:12px; text-align:center; border-bottom:1px solid #554400;">
@@ -1071,7 +1078,7 @@
             { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', autobanEnabled: true },
             { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', autobanEnabled: true },
             { id: 'CODER CODED', label: 'Coder', role: 'coder', autobanEnabled: true },
-            { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: false },
+            { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', autobanEnabled: true },
             { id: 'COMPLETED', label: 'Completed', kind: 'completed', autobanEnabled: false }
         ];
         let columns = columnDefinitions.map(col => col.id);
@@ -1079,6 +1086,7 @@
         let lastAgentNames = {};
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let cliTriggersEnabled = true;
+        let showCompleted = false;
         let autobanConfig = null; // Received from backend: { enabled, batchSize, rules }
         let autobanCountdownTimer = null;
         let autobanColumns = columnDefinitions.filter(col => col.autobanEnabled).map(col => col.id);
@@ -1091,7 +1099,7 @@
         let testingFailSourceColumn = '';
 
         // Column abbreviations for inline timers
-        const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R', 'COMPLETED': 'D' };
+        const COLUMN_ABBREV = { 'CREATED': 'C', 'PLAN REVIEWED': 'P', 'LEAD CODED': 'L', 'CODER CODED': 'R', 'CODE REVIEWED': 'V', 'COMPLETED': 'D' };
 
         // Icon URIs injected by extension
         const ICON_MOVE_SELECTED = '{{ICON_53}}';
@@ -1243,8 +1251,11 @@
         }
 
         function renderColumns() {
+            const visibleColumnDefinitions = showCompleted
+                ? columnDefinitions
+                : columnDefinitions.filter(def => def.id !== 'COMPLETED');
 
-            kanbanBoard.innerHTML = columnDefinitions.map(def => {
+            kanbanBoard.innerHTML = visibleColumnDefinitions.map(def => {
                 const isCreated = def.id === 'CREATED';
                 const isPlanReviewed = def.id === 'PLAN REVIEWED';
                 const isCompleted = def.kind === 'completed';
@@ -1568,14 +1579,15 @@
             const viewState = captureBoardViewState();
             currentCards = cards;
             const buckets = {};
-            columns.forEach(c => buckets[c] = []);
+            const activeColumns = showCompleted ? columns : columns.filter(c => c !== 'COMPLETED');
+            activeColumns.forEach(c => buckets[c] = []);
 
             cards.forEach(card => {
-                const col = columns.includes(card.column) ? card.column : 'CREATED';
-                buckets[col].push(card);
+                const col = activeColumns.includes(card.column) ? card.column : 'CREATED';
+                if (buckets[col]) buckets[col].push(card);
             });
 
-            columns.forEach(col => {
+            activeColumns.forEach(col => {
                 const container = document.getElementById('col-' + col);
                 const countEl = document.getElementById('count-' + col);
                 const items = buckets[col];
@@ -1599,6 +1611,7 @@
                 el.addEventListener('click', (e) => {
                     if (e.target.closest('.card-btn') || e.target.closest('button')) return;
                     const sid = el.dataset.session;
+                    const column = el.closest('.kanban-column')?.dataset?.column || '';
                     if (selectedCards.has(sid)) {
                         selectedCards.delete(sid);
                         el.classList.remove('selected');
@@ -1607,7 +1620,7 @@
                         el.classList.add('selected');
                         // Sync sidebar dropdown on unmodified single clicks
                         if (!e.shiftKey && !e.metaKey && !e.ctrlKey) {
-                            postKanbanMessage({ type: 'selectPlan', sessionId: sid });
+                            postKanbanMessage({ type: 'selectPlan', sessionId: sid, column });
                         }
                     }
                 });
@@ -1650,9 +1663,10 @@
 
             document.querySelectorAll('.card-btn.recover').forEach(btn => {
                 btn.addEventListener('click', () => {
+                    const sessionId = btn.dataset.session;
                     btn.disabled = true;
-                    btn.textContent = 'Recovering…';
-                    postKanbanMessage({ type: 'recoverSelected', sessionIds: [btn.dataset.session] });
+                    btn.textContent = 'Unarchiving…';
+                    postKanbanMessage({ type: 'unarchiveCard', sessionId });
                 });
             });
 
@@ -1674,10 +1688,10 @@
             const isCompleted = card.column === 'COMPLETED';
             const completedClass = isCompleted ? ' completed' : '';
 
-            // For completed cards, show a Recover button instead of Copy Prompt
+            // For completed cards, show a Unarchive button instead of Copy Prompt
             let primaryActionBtn;
             if (isCompleted) {
-                primaryActionBtn = `<button class="card-btn recover" data-session="${card.sessionId}" data-tooltip="Recover this plan">Recover</button>`;
+                primaryActionBtn = `<button class="card-btn recover" data-session="${card.sessionId}" data-tooltip="Restore this plan to the primary workspace folders">Unarchive</button>`;
             } else {
                 let copyLabel = 'Copy Prompt';
                 if (card.column === 'CREATED') {
@@ -2112,6 +2126,14 @@
                     }
                     break;
                 }
+                case 'showCompletedState':
+                    showCompleted = !!msg.enabled;
+                    const scCheckbox = document.getElementById('show-completed-checkbox');
+                    if (scCheckbox) scCheckbox.checked = showCompleted;
+                    renderColumns();
+                    renderBoard(currentCards);
+                    updateAllColumnAgents();
+                    break;
             }
         });
 
@@ -2136,7 +2158,8 @@
 
             // Compute desired state for each badge
             const badgeData = autobanColumns.map(col => {
-                const abbrev = COLUMN_ABBREV[col] || col.charAt(0);
+                const colDef = columnDefinitions.find(c => c.id === col);
+                const abbrev = COLUMN_ABBREV[col] || (colDef && colDef.label ? colDef.label.charAt(0).toUpperCase() : col.charAt(0).toUpperCase());
                 const rule = autobanConfig.rules && autobanConfig.rules[col];
                 if (rule && rule.enabled) {
                     const lastTickAt = Number(autobanConfig.lastTickAt && autobanConfig.lastTickAt[col]) || Date.now();
@@ -2196,6 +2219,13 @@
         });
         document.getElementById('pairProgrammingCheckbox')?.addEventListener('change', (e) => {
             postKanbanMessage({ type: 'togglePairProgramming', enabled: e.target.checked });
+        });
+        document.getElementById('show-completed-checkbox')?.addEventListener('change', (e) => {
+            showCompleted = !!e.target.checked;
+            renderColumns();
+            renderBoard(currentCards);
+            updateAllColumnAgents();
+            postKanbanMessage({ type: 'setShowCompleted', enabled: showCompleted });
         });
 
         updateCliToggleUi();

@@ -17,21 +17,34 @@ async function run() {
         'Expected shared reviewer execution mode helper.'
     );
     assert.ok(
-        builderSource.includes('The implementation for each of the following ${planCount} plans is complete. Execute a direct reviewer pass in-place for each plan.'),
-        'Expected reviewer batch intro to describe implementation review rather than plan review.'
+        builderSource.includes('The implementation for each of the following ${planCount} plans is complete. Perform an advisory review for each plan.'),
+        'Expected reviewer batch intro to describe advisory review rather than executor pass.'
     );
     assert.ok(
-        builderSource.includes('assess the actual code changes against the plan requirements'),
-        'Expected reviewer batch prompt to anchor review against implementation/code and plan requirements.'
+        builderSource.includes('assess the actual code changes against the plan requirements and produce a structured Review Report.'),
+        'Expected reviewer batch prompt to anchor review against implementation/code and produce a structured Review Report.'
     );
     assert.ok(
-        builderSource.includes('Run verification checks (typecheck/tests as applicable) and include results.'),
-        'Expected reviewer batch prompt to request per-plan review findings/results.'
+        builderSource.includes('VERDICT: NOT READY'),
+        'Expected reviewer batch prompt to include VERDICT system.'
+    );
+    assert.ok(
+        builderSource.includes('ROUTE → FIXER'),
+        'Expected reviewer batch prompt to include routing rules.'
     );
 
     assert.ok(
         builderSource.includes('When you output the adversarial critique (Grumpy and Balanced sections)'),
         'Expected reviewer prompt to include chat critique directive.'
+    );
+
+    assert.ok(
+        !builderSource.includes('Apply code fixes for valid CRITICAL/MAJOR findings'),
+        'Reviewer prompt must NOT contain executor language.'
+    );
+    assert.ok(
+        builderSource.includes('You are a read-only reviewer. You do NOT edit files, run commands, or apply fixes.'),
+        'Expected reviewer prompt to include read-only reviewer directive.'
     );
 
     console.log('autoban reviewer prompt regression test passed');

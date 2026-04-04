@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153996",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_222047_live_feed_not_registering_autoban_moves.md",
+  "topic": "live feed not registering autoban moves",
+  "createdAt": "2026-03-29T12:49:18.776Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.113Z",
+      "action": "start"
+    }
+  ]
+}

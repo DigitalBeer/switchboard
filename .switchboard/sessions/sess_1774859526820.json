@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774859526820",
+  "planFile": ".switchboard\\plans\\brain_2798f454f6db3b72f2452d117671f13494951a734d4d23bb066b6ddd4fbfd3a6.md",
+  "topic": "Replace Kanban Card Timestamps with Complexity Ratings",
+  "createdAt": "2026-03-29T12:49:18.753Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T08:32:06.850Z",
+      "action": "start"
+    }
+  ]
+}

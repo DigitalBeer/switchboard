@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774840049845",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_070032_the_kanban_top_row_buttons_are_confusing.md",
+  "topic": "The kanban top row buttons are confusing",
+  "createdAt": "2026-03-29T12:49:18.778Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T03:07:29.908Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774866727073",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_085450_add_move_all_option_to_top_of_kanban_columns.md",
+  "topic": "Add 'move all' option to top of kanban columns",
+  "createdAt": "2026-03-29T12:49:18.759Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T10:32:07.091Z",
+      "action": "start"
+    }
+  ]
+}

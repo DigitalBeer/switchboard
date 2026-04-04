@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774953859064",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_055724_add_seaprate_column_for_coder_and_lead_coder.md",
+  "topic": "Add separate column for coder and lead coder",
+  "createdAt": "2026-03-29T12:49:18.777Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-31T10:44:19.126Z",
+      "action": "start"
+    }
+  ]
+}

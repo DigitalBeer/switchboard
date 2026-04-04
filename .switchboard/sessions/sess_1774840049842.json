@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774840049842",
+  "planFile": ".switchboard\\plans\\feature_plan_20260312_174651_improve_planner_prompts.md",
+  "topic": "20260312 174651 Improve Planner Prompts",
+  "createdAt": "2026-03-29T12:49:18.763Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T03:07:29.887Z",
+      "action": "start"
+    }
+  ]
+}

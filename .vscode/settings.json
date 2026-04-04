@@ -22,5 +22,6 @@
 	"switchboard.team.strictPrompts": false,
 	"switchboard.leadCoder.inlineChallenge": false,
 	"switchboard.jules.autoSync": false,
-	"switchboard.pairProgramming.aggressive": false
+	"switchboard.pairProgramming.aggressive": false,
+	"switchboard.reviewer.advancedMode": false
 }

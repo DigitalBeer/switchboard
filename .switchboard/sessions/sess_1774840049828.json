@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774840049828",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_063752_avoid_notebook_template_header_for_sidebar_create_plan.md",
+  "topic": "Avoid \"Notebook Plan\" header for sidebar create plan",
+  "createdAt": "2026-03-29T12:49:18.764Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T03:07:29.884Z",
+      "action": "start"
+    }
+  ]
+}

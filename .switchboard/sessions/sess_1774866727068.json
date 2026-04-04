@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774866727068",
+  "planFile": ".switchboard\\plans\\feature_plan_20260315_084645_add_more_controls_to_autoban_config.md",
+  "topic": "Add more controls to autoban config",
+  "createdAt": "2026-03-29T12:49:18.770Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T10:32:07.090Z",
+      "action": "start"
+    }
+  ]
+}

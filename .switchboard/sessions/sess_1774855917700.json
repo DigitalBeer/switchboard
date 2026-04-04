@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774855917700",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_062223_restore_review_feature_and_merge_ticket_view.md",
+  "topic": "Refine ticket view.",
+  "createdAt": "2026-03-29T12:49:18.777Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T07:31:57.706Z",
+      "action": "start"
+    }
+  ]
+}

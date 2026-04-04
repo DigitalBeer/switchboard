@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820154005",
+  "planFile": ".switchboard\\plans\\feature_plan_20260321_230800_aggressive_pair_programming.md",
+  "topic": "Aggressive Pair Programming Mode",
+  "createdAt": "2026-03-29T12:49:18.780Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.174Z",
+      "action": "start"
+    }
+  ]
+}

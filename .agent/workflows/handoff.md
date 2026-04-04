@@ -38,15 +38,17 @@ Allowed branch:
 
 4. **Deliver (Terminal)**
    - Call `send_message(action: "execute", payload)`.
-   - **Payload format**: A single line only: `Please execute the plan at: [ABSOLUTE PATH]`. Do NOT include summaries, context, or multi-line essays.
+   - **Payload format**: A single line only: `Please execute the plan at: [ABSOLUTE PATH]. You MUST run the Verification Plan and paste the exact terminal output as proof before signaling completion.`
    - InboxWatcher will write an auto-delivery receipt on delivery (unless metadata.no_auto_ack=true).
    - Capture dispatch `id` and `createdAt`.
    - Call `complete_workflow_phase(phase: 2, workflow: "handoff", artifacts: [{ path: ".switchboard/handoff", description: "Delegation payload staged and dispatched" }])`.
 
-5. **Wait for User Confirmation + Merge**
+5. **Wait for User Confirmation + Quality Gate**
    - After dispatch, STOP and ask the user to confirm when the remote worker has finished (for example: "Reply `done` when remote execution is complete.").
    - Do not rely on `submit_result`/`status_update` correlation.
-   - On user confirmation, verify delegated changes and merge with local work.
+   - On user confirmation, verify that the delegated worker provided raw terminal verification output.
+   - Before merging, route the completed work to the QA Evaluator by calling `move_kanban_card(sessionId, "SB-QA CLI")` or instructing the user to hand it off to the SB-QA CLI agent.
+   - Wait for the SB-QA CLI agent to confirm successful validation, then merge with local work.
    - Call `complete_workflow_phase(phase: 3, workflow: "handoff")`.
 
 Notes:

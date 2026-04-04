@@ -1878,10 +1878,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const visibleAgents = await taskViewerProvider.getVisibleAgents();
         const includeJulesMonitor = visibleAgents.jules !== false;
         const customAgents = await taskViewerProvider.getCustomAgents();
+        // Order matches kanban columns: Planner(100) → Lead Coder(190) → Coder(200) → Reviewer(300) → Analyst
         const allBuiltInAgents = [
+            { name: 'Planner', role: 'planner' },
             { name: 'Lead Coder', role: 'lead' },
             { name: 'Coder', role: 'coder' },
-            { name: 'Planner', role: 'planner' },
             { name: 'Reviewer', role: 'reviewer' },
             { name: 'Analyst', role: 'analyst' }
         ];

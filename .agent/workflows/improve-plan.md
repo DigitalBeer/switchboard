@@ -23,6 +23,7 @@ Use this workflow to strengthen an existing feature plan in a single fluid pass.
    - Break work into clear execution steps with file paths and line numbers.
    - Add a **Complexity Audit** section using the criteria below.
    - Add a **Dependencies** section checking for conflicts with other plans.
+   - Add a **Verification & Deployment Plan** section. This MUST establish strict Test-Driven Development (TDD) steps where applicable (writing failing tests first) and provide exact, copy-pasteable terminal commands (e.g., `npm run test`, `npm run build`, `curl`) to verify implementation.
    - Do not add net-new product scope unless it is strictly implied by the existing plan.
 
    **Complexity Criteria:**
