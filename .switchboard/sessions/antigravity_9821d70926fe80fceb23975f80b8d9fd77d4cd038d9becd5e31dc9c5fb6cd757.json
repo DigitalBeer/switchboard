@@ -1,7 +1,7 @@
 {
   "sessionId": "antigravity_9821d70926fe80fceb23975f80b8d9fd77d4cd038d9becd5e31dc9c5fb6cd757",
   "planFile": ".switchboard\\plans\\brain_9821d70926fe80fceb23975f80b8d9fd77d4cd038d9becd5e31dc9c5fb6cd757.md",
-  "brainSourcePath": "C:\\Users\\matde\\.gemini\\antigravity\\brain\\ed8a9e98-72fb-4fa3-bddd-f10756e75b44\\implementation_plan.md",
+  "brainSourcePath": "c:\\Users\\matde\\.gemini\\antigravity\\brain\\ed8a9e98-72fb-4fa3-bddd-f10756e75b44\\implementation_plan.md",
   "topic": "Implementation Plan: Archive Fallback and Kanban Visibility",
   "createdAt": "2026-04-02T21:49:29.981Z",
   "source": "antigravity",
@@ -9,6 +9,11 @@
     {
       "workflow": "Implementation",
       "timestamp": "2026-04-04T14:42:31.955Z",
+      "action": "start"
+    },
+    {
+      "workflow": "Implementation",
+      "timestamp": "2026-04-04T23:06:43.981Z",
       "action": "start"
     }
   ]

@@ -1574,6 +1574,32 @@ export class KanbanProvider implements vscode.Disposable {
                 const { sessionId } = msg;
                 if (this._taskViewerProvider) {
                     await this._taskViewerProvider.restorePlan(sessionId);
+                    const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                    if (workspaceRoot) {
+                        const db = this._getKanbanDb(workspaceRoot);
+                        if (await db.ensureReady()) {
+                            await db.updateColumn(sessionId, 'CREATED');
+                        }
+                    }
+                    await this._refreshBoardImpl();
+                }
+                break;
+            }
+            case 'uncompleteCard': {
+                const { sessionIds, targetColumn } = msg;
+                const workspaceRoot = this._resolveWorkspaceRoot(msg.workspaceRoot);
+                if (workspaceRoot && Array.isArray(sessionIds) && sessionIds.length > 0) {
+                    if (this._taskViewerProvider) {
+                        for (const sid of sessionIds) {
+                            await this._taskViewerProvider.restorePlan(sid);
+                        }
+                    }
+                    const db = this._getKanbanDb(workspaceRoot);
+                    if (await db.ensureReady()) {
+                        for (const sid of sessionIds) {
+                            await db.updateColumn(sid, targetColumn || 'CREATED');
+                        }
+                    }
                     await this._refreshBoardImpl();
                 }
                 break;

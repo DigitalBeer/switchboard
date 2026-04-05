@@ -1583,8 +1583,10 @@
             activeColumns.forEach(c => buckets[c] = []);
 
             cards.forEach(card => {
-                const col = activeColumns.includes(card.column) ? card.column : 'CREATED';
-                if (buckets[col]) buckets[col].push(card);
+                const col = columns.includes(card.column) ? card.column : 'CREATED';
+                if (activeColumns.includes(col)) {
+                    if (buckets[col]) buckets[col].push(card);
+                }
             });
 
             activeColumns.forEach(col => {

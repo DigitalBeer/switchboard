@@ -88,9 +88,11 @@ export function buildKanbanBatchPrompt(
     const chatCritiqueDirective =
         `When you output the adversarial critique (Grumpy and Balanced sections), include them verbatim in your chat response as formatted markdown — do not only write them to the plan file. The user must be able to read the critique directly in chat without opening the plan.`;
 
-    const executionDirective = `AUTHORIZATION TO EXECUTE: The plans provided are already authorized. You MUST enter EXECUTION mode immediately. Do NOT enter PLANNING mode or generate an implementation_plan.md. Proceed directly to implementing the changes.`;
+    const executionDirective = `AUTHORIZATION TO EXECUTE: The plans provided are already authorized. You MUST enter EXECUTION mode immediately. Do NOT enter PLANNING mode or generate an implementation_plan.md. Proceed directly to implementing the changes.
+CRITICAL QUALITY GATE: You are STRICTLY FORBIDDEN from reporting completion until you have executed the Verification Plan (e.g., \`npm run test\`, \`npm run build\`, etc.) and pasted the EXACT raw terminal output into your response as proof.`;
 
     const agentHistoryDirective = `\n\nHISTORY JOURNALING (MANDATORY):
+You MUST physically edit the plan file on disk using your file-editing tools. Do NOT just print this in the chat!
 After completing your work, append a structured entry to the "## AGENT HISTORY" section at the bottom of the plan file (create it if missing, AFTER any existing sections like REVIEWER NOTES):
 
 ### [YOUR ROLE] — [ISO TIMESTAMP]
@@ -183,7 +185,7 @@ Fix hint : <A concrete suggestion — a before/after code block, the correct val
    VERDICT: NOT READY — [N] issue(s) found. Highest priority route: [LEAD|CODER|FIXER].
    VERDICT: APPROVED — No issues found. Send card to QA Evaluator for final verification.
 
-CRITICAL: You are a read-only reviewer regarding source code. You MUST NOT edit source code files, run commands, or execute anything. However, you MUST edit the plan file to append your structured ISSUE blocks to the "## REVIEWER NOTES" section, and append your status to the "## AGENT HISTORY" section.
+CRITICAL: You are a read-only reviewer regarding source code. You MUST NOT edit source code files, run commands, or execute anything. However, you MUST physically modify the plan file on disk using your file-editing tools to append your structured ISSUE blocks to the "## REVIEWER NOTES" section, and append your status to the "## AGENT HISTORY" section. Do NOT just print the text in chat; if you do not use a file editing tool to write to the file, the next agent will not see your notes and the process will loop infinitely.
 Do not stop after Stage 1. Complete the Grumpy review, the Balanced synthesis, the structured ISSUE blocks in the plan file, and the VERDICT all in one continuous response.
 Do not use phrases like "I fixed", "I updated", "tests passed", "I applied".
 Use phrases like "Proposed fix:", "This should be changed to:", "Run this to verify:".
@@ -208,7 +210,7 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}
 
-COMPLETION PROTOCOL: When finished, output exactly one of:
+COMPLETION PROTOCOL: When finished, you MUST paste the exact terminal output of your validation commands as proof. Then output exactly one of:
 - IMPLEMENTATION COMPLETE — All plans implemented and verified. Send card to Reviewer.
 - IMPLEMENTATION BLOCKED — reason: [reason]. Send card back to [PLANNER|CODER].${agentHistoryDirective}`;
         if (pairProgrammingEnabled) {
@@ -235,7 +237,7 @@ ${focusDirective}
 PLANS TO PROCESS:
 ${planList}
 
-COMPLETION PROTOCOL: When finished, output exactly one of:
+COMPLETION PROTOCOL: When finished, you MUST paste the exact terminal output of your validation commands as proof. Then output exactly one of:
 - IMPLEMENTATION COMPLETE — All plans implemented and verified. Send card to Reviewer.
 - IMPLEMENTATION BLOCKED — reason: [reason]. Send card back to Planner.${agentHistoryDirective}`, accurateCodingEnabled);
         if (pairProgrammingEnabled) {

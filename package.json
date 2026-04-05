@@ -10,7 +10,7 @@
     "mcp",
     "multi-agent"
   ],
-  "version": "1.5.3",
+  "version": "1.5.3-custom",
   "main": "./dist/extension.js",
   "publisher": "DigitalBeer",
   "author": "DigitalBeer",
