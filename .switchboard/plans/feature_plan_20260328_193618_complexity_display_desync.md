@@ -145,3 +145,42 @@ Replace lines 968–976 with:
 
 ### Complex / Risky
 - None
+
+## Reviewer Pass — 2026-03-29
+
+### Findings Summary
+
+**CRITICAL:** None.
+**MAJOR:** None.
+
+| ID | Severity | File:Line | Finding |
+|----|----------|-----------|---------|
+| N1 | NIT | `KanbanProvider.ts:986` | `KanbanDatabase.forWorkspace(workspaceRoot)` bypasses the per-instance `_getKanbanDb()` cache used everywhere else in the class. Functionally identical (both reach the static singleton), but breaks the consistent DB access pattern. |
+| N2 | NIT | `KanbanProvider.ts:988` | `path.normalize()` and `KanbanDatabase._normalizePath()` normalize different things (resolve `..`/`//` vs. backslash→forward-slash). The double normalization is correct but undocumented — a reader may wonder why `path.normalize` is here when `getPlanByPlanFile` normalizes internally. |
+| N3 | NIT | `KanbanProvider.ts:5` | `crypto` import was used by the old SHA-256 hash code. It's still needed (line 2237, nonce generation) but could confuse future readers inspecting this method in isolation. No action required. |
+
+### Verification of Plan Changes
+
+| Change | Status | Evidence |
+|--------|--------|----------|
+| Fix 1 — SHA-256 hash replaced with `getPlanByPlanFile` lookup | ✅ Implemented | Lines 984–998: uses `db.getPlanByPlanFile(normalized, workspaceId)` with `getWorkspaceId() ǁ getDominantWorkspaceId()` fallback. No SHA-256 hash computation found anywhere in the method. |
+| Fix 2 — `Unknown` override falls through | ✅ Implemented | Lines 976–982: regex captures `Low|High|Unknown`, returns only for `low`/`high`, falls through on `unknown`. |
+| DB guard rejects stale `Unknown` | ✅ Correct | Line 992: `plan.complexity === 'Low' ǁ plan.complexity === 'High'` — DB records with `Unknown` fall through to text parsing tiers. |
+| Self-heal compatibility | ✅ Compatible | `_refreshBoardImpl()` self-heal (lines 412–434, 554–577) calls `getComplexityFromPlan()` for `Unknown` rows. The DB tier now finds the plan but correctly falls through since its complexity is `Unknown`. Text parsing resolves to `Low`/`High`. No circular failure. |
+| `getPlanByPlanFile` exists and is correct | ✅ Verified | `KanbanDatabase.ts:478–487`: queries `plan_file` column with `_normalizePath()` and `workspace_id` scoping. Parameterized SQL. |
+| `getWorkspaceId` / `getDominantWorkspaceId` exist | ✅ Verified | `KanbanDatabase.ts:592–594` (config table) and `597–608` (GROUP BY fallback). |
+
+### Files Changed
+
+None — no code fixes required. All NITs deferred.
+
+### Validation Results
+
+- `npx tsc --noEmit` — ✅ **PASS** (exit code 0, zero errors)
+- `npm run compile` (webpack) — ✅ **PASS** (compiled successfully)
+
+### Remaining Risks
+
+1. **No automated test for DB lookup tier.** The plan acknowledges this (`kanban-complexity.test.ts` only tests text-parsing tiers). If someone changes `getPlanByPlanFile` or `getWorkspaceId` signatures, the breakage would be caught by `tsc` but not by behavioral tests. Low risk — the method is simple and well-guarded.
+2. **Path normalization divergence on exotic paths.** If a plan file path containing `..` or `//` segments enters the system, `path.normalize()` (in the caller) and `_normalizePath()` (in the DB) produce different intermediate forms. The final SQL comparison works because `getPlanByPlanFile` applies `_normalizePath` to both sides. But if a future DB method skips `_normalizePath`, the caller's `path.normalize()` output may not match. Low probability — all current DB write paths use `_normalizePath`.
+3. **NIT N1 (forWorkspace vs _getKanbanDb)** is a consistency issue only. Both reach the same static singleton. If the per-instance cache is ever extended with lifecycle hooks (e.g., dispose), `getComplexityFromPlan` would bypass them. Low risk for now.

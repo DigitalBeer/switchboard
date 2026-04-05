@@ -364,3 +364,29 @@ case 'sendToAgent': {
     - Column, Complexity, and Dependencies stay horizontal on laptop-sized widths (~800px).
     - Layout stacks gracefully and compactly on narrow sidebar widths (<600px).
     - Opening a ticket auto-selects it in the sidebar.
+
+## Reviewer Pass — 2026-03-29
+
+### Findings Summary
+
+| Severity | ID | File | Description | Status |
+|----------|----|------|-------------|--------|
+| MAJOR | M1 | `src/webview/review.html:674` | Edit icon button not hidden in edit mode — orphaned pencil icon visible when `applyMode()` hides the h1 title | **Fixed** |
+| NIT | N1 | `src/webview/review.html:946` | `planShown` emitted on every `renderTicketData()` call including saves — redundant but harmless | Deferred |
+| NIT | N2 | `src/webview/review.html:475,498` | Two media queries at 600px and 640px create a 40px progressive-collapse band — intentional, no action needed | Accepted |
+
+### Files Changed
+
+- `src/webview/review.html` — Added `editTitleBtnEl.classList.add('hidden')` / `.remove('hidden')` in `applyMode()` to toggle edit icon visibility with mode (lines 677, 685).
+
+### Validation Results
+
+- `npx tsc --noEmit` — **PASS** (exit 0, no errors)
+- `grep send-to-agent src/webview/review.html` — **0 matches** (button fully removed)
+- `grep planShown` — present in `review.html` (emitted) and `ReviewProvider.ts` (handled)
+- `grep switchboard.selectSession` — present in `extension.ts` (registered) and `ReviewProvider.ts` (invoked)
+
+### Remaining Risks
+
+- The `planShown` → `selectSession` pipeline fires on every ticket re-render (after saves/updates), not just on initial open. This is wasteful but functionally harmless since `selectSession` is idempotent.
+- The `sendToAgent` backend handler in `ReviewProvider.ts` is dead code. A follow-up cleanup is recommended.

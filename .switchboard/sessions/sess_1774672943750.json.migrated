@@ -21,6 +21,18 @@
       "timestamp": "2026-03-28T10:32:58.832Z",
       "action": "stop",
       "outcome": "User manually moved plan forwards"
+    },
+    {
+      "workflow": "reset-to-coder-coded",
+      "timestamp": "2026-03-28T12:48:11.610Z",
+      "action": "stop",
+      "outcome": "User manually moved plan backwards"
+    },
+    {
+      "workflow": "move-to-code-reviewed",
+      "timestamp": "2026-03-28T12:50:34.163Z",
+      "action": "stop",
+      "outcome": "User manually moved plan forwards"
     }
   ],
   "planFile": ".switchboard/plans/feature_plan_20260328_154223_change_test_fail_icons.md",

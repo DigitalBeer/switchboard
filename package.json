@@ -1,7 +1,7 @@
 {
   "name": "switchboard",
   "displayName": "Switchboard",
-  "description": "Cross-IDE agent orchestration — workflow routing, terminal targeting, and multi-agent coordination via MCP.",
+  "description": "Drag and drop to trigger AI agent teams. No prompts, no API keys, one hand free.",
   "icon": "icon.png",
   "keywords": [
     "switchboard",
@@ -10,7 +10,7 @@
     "mcp",
     "multi-agent"
   ],
-  "version": "1.5.2-custom",
+  "version": "1.5.3",
   "main": "./dist/extension.js",
   "publisher": "DigitalBeer",
   "author": "DigitalBeer",
@@ -25,8 +25,7 @@
     "AI"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onCommand:antigravity.getChromeDevtoolsMcpUrl"
+    "onStartupFinished"
   ],
   "contributes": {
     "viewsContainers": {
@@ -78,10 +77,6 @@
         "title": "Switchboard: Clean Working Memory"
       },
       {
-        "command": "antigravity.getChromeDevtoolsMcpUrl",
-        "title": "Switchboard: Get MCP Inspector URL"
-      },
-      {
         "command": "switchboard.openKanban",
         "title": "Switchboard: Open AUTOBAN"
       },
@@ -92,6 +87,10 @@
       {
         "command": "switchboard.resetKanbanDb",
         "title": "Switchboard: Reset Kanban Database"
+      },
+      {
+        "command": "switchboard.reconcileKanbanDbs",
+        "title": "Switchboard: Reconcile Kanban Databases"
       },
       {
         "command": "switchboard.archiveCurrentPlan",
@@ -186,6 +185,16 @@
           "type": "boolean",
           "default": false,
           "description": "When enabled, automatically runs git add/commit/push before sending plans to Jules. Defaults to OFF."
+        },
+        "switchboard.planner.designDocEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, appends a Design Doc / PRD link to all planner prompts for consistent context delivery."
+        },
+        "switchboard.planner.designDocLink": {
+          "type": "string",
+          "default": "",
+          "description": "URL or path to the Design Doc / PRD to append to planner prompts. Only used when designDocEnabled is true."
         },
         "switchboard.team.strictPrompts": {
           "type": "boolean",
@@ -299,7 +308,7 @@
     "@types/uuid": "^10.0.0",
     "@vscode/codicons": "^0.0.44",
     "adm-zip": "^0.5.16",
-    "chrome-devtools-mcp": "^0.17.1",
+
     "docx": "^9.6.0",
     "dompurify": "^3.3.1",
     "jsdom": "^28.0.0",

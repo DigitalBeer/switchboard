@@ -675,6 +675,7 @@
             if (state.isPreview) {
                 headerTitleEl.classList.remove('hidden');
                 headerTitleInputEl.classList.add('hidden');
+                editTitleBtnEl.classList.remove('hidden');
                 planEditorEl.classList.add('hidden');
                 markdownContentEl.classList.add('active');
                 togglePreviewBtn.textContent = 'Edit Plan';
@@ -682,6 +683,7 @@
             } else {
                 headerTitleEl.classList.add('hidden');
                 headerTitleInputEl.classList.remove('hidden');
+                editTitleBtnEl.classList.add('hidden');
                 planEditorEl.classList.remove('hidden');
                 markdownContentEl.classList.remove('active');
                 togglePreviewBtn.textContent = 'Review Plan';
