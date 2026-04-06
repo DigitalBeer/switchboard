@@ -24,6 +24,8 @@ export interface PromptBuilderOptions {
     aggressivePairProgramming?: boolean;
     /** Whether advanced regression analysis block is appended (reviewer role). */
     advancedReviewerEnabled?: boolean;
+    /** Optional link to a design document (planner role). */
+    designDocLink?: string;
 }
 
 function buildReviewerExecutionIntro(planCount: number): string {
