@@ -998,6 +998,10 @@
             margin-bottom: 2px;
         }
 
+        .startup-row span {
+            color: var(--text-secondary);
+        }
+
         .startup-row input {
             width: 100%;
             background: #0a0a0a;
@@ -1189,22 +1193,6 @@
             margin-bottom: 6px;
         }
 
-        /* Database & Sync Panel */
-        #db-sync-section {
-            margin-top: 12px;
-        }
-
-        .db-sync-toggle {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .db-sync-toggle .section-label {
-            color: var(--accent-green);
-        }
 
         .db-sync-fields {
             display: none;
@@ -1237,11 +1225,12 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            font-size: 11px;
+            font-family: var(--font-mono);
+            font-size: 10px;
             font-weight: 600;
-            color: var(--text-primary);
+            color: var(--text-secondary);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
             margin-bottom: 8px;
         }
 
@@ -1290,30 +1279,50 @@
             margin-bottom: 8px;
         }
 
-        .db-cloud-presets {
+        .db-location-options {
             display: flex;
-            flex-wrap: wrap;
+            flex-direction: column;
             gap: 6px;
+            margin-bottom: 8px;
         }
 
-        .db-preset-btn {
+        .db-radio-option {
             display: flex;
             align-items: center;
-            gap: 4px;
-            padding: 4px 10px;
-            border: 1px solid var(--border-dim);
-            background: var(--bg-dim);
-            color: var(--text-secondary);
+            gap: 8px;
+            padding: 6px 8px;
             border-radius: 4px;
             cursor: pointer;
-            font-size: 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
             transition: all 0.2s ease;
         }
 
-        .db-preset-btn:hover {
-            border-color: var(--border-bright);
-            background: var(--border-dim);
+        .db-radio-option:hover {
+            background: var(--bg-dim);
             color: var(--text-primary);
+        }
+
+        .db-radio-option input[type="radio"] {
+            width: auto;
+            margin: 0;
+            flex-shrink: 0;
+        }
+
+        .db-custom-path-input {
+            width: 100%;
+            padding: 6px 10px;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            background: var(--bg-dim);
+            border: 1px solid var(--border-dim);
+            border-radius: 4px;
+            color: var(--text-primary);
+            margin-top: 4px;
+        }
+
+        .db-custom-path-input:not(.hidden) {
+            display: block;
         }
 
         .db-cli-tool-row {
@@ -1586,7 +1595,7 @@
             <div class="section-label" style="margin:0; font-size: 9px; letter-spacing: 1.5px;">LIVE FEED</div>
             <span class="chevron" id="live-feed-chevron">▶</span>
         </div>
-        <div id="panel-activity" class="tab-panel panel-fields" aria-hidden="true">
+        <div id="panel-activity" class="tab-panel panel-fields" aria-hidden="true" data-accordion="true">
             <div id="activity-list" class="activity-list">
                 <div
                     style="text-align: center; padding: 20px; color: var(--text-secondary); font-family: var(--font-mono);">
@@ -1603,26 +1612,11 @@
                 <div class="section-label" style="margin:0">TERMINAL OPERATIONS</div>
                 <span class="chevron open" id="terminal-operations-chevron">▶</span>
             </div>
-            <div class="panel-fields open" id="terminal-operations-fields">
+            <div class="panel-fields open" id="terminal-operations-fields" data-accordion="true">
                 <button id="createAgentGrid" class="secondary-btn is-teal w-full">OPEN AGENT TERMINALS</button>
                 <button id="btn-deregister-all" class="secondary-btn error w-full">RESET ALL AGENTS</button>
                 <button id="btn-easter-egg" class="secondary-btn w-full" style="margin-top: 6px;">Access main
                     program</button>
-            </div>
-        </div>
-        <!-- SETUP -->
-        <div class="startup-section">
-            <div class="startup-toggle" id="startup-toggle">
-                <div class="section-label" style="margin:0">SETUP</div>
-                <span class="chevron" id="startup-chevron">▶</span>
-            </div>
-            <div class="startup-fields" id="startup-fields">
-                <div class="flex gap-2">
-                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>
-                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
-                </div>
-                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP
-                    CONFIG</button>
                 <div
                     style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
                     AGENT VISIBILITY &amp; CLI COMMANDS</div>
@@ -1667,6 +1661,39 @@
                     <input id="jules-auto-sync-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Auto-sync repo before sending to Jules</span>
                 </label>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    CUSTOM AGENTS</div>
+                <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+                <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
+            </div>
+        </div>
+        <!-- SETUP -->
+        <div class="startup-section">
+            <div class="startup-toggle" id="startup-toggle">
+                <div class="section-label" style="margin:0">SETUP</div>
+                <span class="chevron" id="startup-chevron">▶</span>
+            </div>
+            <div class="startup-fields" id="startup-fields" data-accordion="true">
+                <div class="flex gap-2">
+                    <button id="btn-initialize" class="secondary-btn w-full">INIT PLUGIN</button>
+                    <button id="btn-connect-mcp" class="secondary-btn w-full">CONNECT MCP</button>
+                </div>
+                <button id="btn-copy-mcp-config" class="secondary-btn w-full" style="margin-top: 4px;">COPY MCP
+                    CONFIG</button>
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 8px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    PROMPT CONTROLS</div>
+                <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                    <input id="design-doc-toggle" type="checkbox" style="width:auto; margin:0;">
+                    <span>Append Design Doc to planner prompts</span>
+                </label>
+                <label class="startup-row" style="display:block; margin-top:4px;">
+                    <input id="design-doc-link-input" type="text" placeholder="https://example.com/prd or /path/to/design.md" style="width:100%;">
+                </label>
+                <div style="font-size:10px; color:var(--accent-orange); margin-top:4px; font-family:var(--font-mono);">
+                    ⚠️ Security: File contents are embedded in AI prompts. Do not link files containing API keys, passwords, or sensitive data.
+                </div>
                 <label class="startup-row" style="display:flex; align-items:center; gap:8px; margin-top:6px;">
                     <input id="accurate-coding-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Accurate coding mode for Coder prompts</span>
@@ -1683,19 +1710,6 @@
                     <input id="aggressive-pair-toggle" type="checkbox" style="width:auto; margin:0;">
                     <span>Aggressive pair programming (shift more tasks to Coder)</span>
                 </label>
-                <div
-                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
-                    PLAN INGESTION</div>
-                <label class="startup-row" style="display:block; margin-top:6px;">
-                    <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
-                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard"
-                        style="width:100%;">
-                </label>
-                <div
-                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
-                    CUSTOM AGENTS</div>
-                <div id="custom-agent-list" style="display:flex; flex-direction:column; gap:6px;"></div>
-                <button id="btn-add-custom-agent" class="secondary-btn w-full">ADD CUSTOM AGENT</button>
                 <button id="btn-save-startup" class="secondary-btn w-full"
                     style="margin-top:4px; color: var(--accent-green); border-color: color-mix(in srgb, var(--accent-green) 250%, transparent);">SAVE
                     CONFIGURATION</button>
@@ -1704,76 +1718,66 @@
             </div>
         </div>
 
-        <!-- DATABASE & SYNC -->
-        <div id="db-sync-section">
-            <div class="db-sync-toggle" id="db-sync-toggle-btn">
-                <div class="section-label">DATABASE & SYNC</div>
+        <!-- DATABASE OPERATIONS -->
+        <div class="system-section">
+            <div class="panel-toggle" id="db-sync-toggle-btn">
+                <div class="section-label" style="margin:0">Database operations</div>
                 <span class="chevron" id="db-sync-chevron">▶</span>
             </div>
-            <div class="db-sync-fields" id="db-sync-fields">
+            <div class="db-sync-fields" id="db-sync-fields" data-accordion="true">
+                <div
+                    style="font-size: 10px; color: var(--text-secondary); margin: 10px 0 4px; font-family: var(--font-mono); letter-spacing: 1px;">
+                    PLAN INGESTION</div>
+                <label class="startup-row" style="display:block; margin-top:6px;">
+                    <span style="display:block; margin-bottom:4px;">Additional plan folder</span>
+                    <input id="plan-ingestion-folder-input" type="text" placeholder="e.g. C:\Plans\Switchboard"
+                        style="width:100%;">
+                </label>
                 <div class="db-subsection">
                     <div class="subsection-header">
-                        <span>☁️</span><span>Cloud Database Location</span>
-                        <span class="db-status-badge" id="cloud-status">local</span>
+                        <span>Database Location</span>
+                    </div>
+                    <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4;">
+                        Using a cloud location (Google Drive, Dropbox, iCloud) allows plan metadata to sync across machines without git merge conflicts. The database file stays in sync automatically via your cloud provider.
                     </div>
                     <div class="db-path-display" id="current-db-path">.switchboard/kanban.db</div>
-                    <div class="db-path-actions">
-                        <button id="db-edit-path-btn" class="db-secondary-btn">Edit
-                            Path</button>
-                        <button id="db-test-connection-btn"
-                            class="db-secondary-btn">Test</button>
+                    <div class="db-location-options">
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="local" checked>
+                            <span>Local (.switchboard/kanban.db)</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="google-drive">
+                            <span>Google Drive App</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="dropbox">
+                            <span>Dropbox</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="icloud">
+                            <span>iCloud</span>
+                        </label>
+                        <label class="db-radio-option">
+                            <input type="radio" name="db-location" value="custom">
+                            <span>Custom Path</span>
+                        </label>
+                        <input type="text" id="db-custom-path-input" class="db-custom-path-input hidden" placeholder="Enter custom database path...">
                     </div>
-                    <div class="db-cloud-presets">
-                        <button id="db-preset-google-btn"
-                            class="db-preset-btn">📁 Google Drive</button>
-                        <button id="db-preset-dropbox-btn"
-                            class="db-preset-btn">📦 Dropbox</button>
-                        <button id="db-preset-icloud-btn"
-                            class="db-preset-btn">🍎 iCloud</button>
-                    </div>
+                    <button id="db-update-location-btn" class="db-action-btn w-full" style="margin-top: 8px;">Update Location</button>
                 </div>
+
                 <div class="db-subsection">
                     <div class="subsection-header">
-                        <span>📚</span><span>Archive Storage</span>
-                        <span class="db-status-badge" id="archive-status">not configured</span>
+                        <span>Rebuild Database</span>
                     </div>
-                    <div class="db-path-display" id="current-archive-path">Not configured</div>
-                    <div class="db-path-actions">
-                        <button id="db-edit-archive-btn" class="db-secondary-btn">Set
-                            Archive Path</button>
+                    <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4;">
+                        If the database is corrupted, this will delete and recreate it from your plan files in .switchboard/plans/. Plan metadata will be restored from the markdown files.
                     </div>
-                </div>
-                <div class="db-subsection">
-                    <div class="subsection-header">
-                        <span>🛠️</span><span>CLI Tools</span>
-                    </div>
-                    <div class="db-cli-tool-row">
-                        <span style="font-weight:500; font-size:11px;">DuckDB</span>
-                        <span class="db-tool-status" id="duckdb-status"><span class="db-status-dot red"></span> Not
-                            installed</span>
-                        <button class="db-secondary-btn" id="duckdb-install-btn">Install</button>
-                    </div>
-                    <button class="db-primary-btn"
-                        id="open-duckdb-btn" disabled>Open DuckDB Terminal</button>
-                </div>
-                <div class="db-subsection">
-                    <div class="subsection-header">
-                        <span>⚡</span><span>Quick Actions</span>
-                    </div>
-                    <div class="db-quick-actions">
-                        <button id="db-export-btn" class="db-action-btn"
-                            title="Export completed plans to archive">
-                            <span class="db-action-icon">📤</span>EXPORT
-                        </button>
-                        <button id="db-stats-btn" class="db-action-btn"
-                            title="View database statistics">
-                            <span class="db-action-icon">📊</span>STATS
-                        </button>
-                        <button id="db-reset-btn" class="db-action-btn danger"
-                            title="WARNING: Permanently delete database">
-                            <span class="db-action-icon">🗑️</span>RESET
-                        </button>
-                    </div>
+                    <button id="db-reset-btn" class="db-action-btn danger w-full"
+                        title="WARNING: Permanently delete and rebuild database">
+                        REBUILD DATABASE
+                    </button>
                 </div>
             </div>
         </div>
@@ -1787,9 +1791,8 @@
             <div class="status-indicator" id="mcp-status-footer">
                 <div class="tiny-dot" id="mcp-dot"></div>
                 <span id="mcp-text">MCP: CHECKING</span>
-                <span id="mcp-recheck" title="Recheck MCP connection"
-                    style="cursor:pointer; margin-left:4px; opacity:0.6; font-size:11px;"
-                    onclick="vscode.postMessage({ type: 'recheckMcpConnection' })">&#x21bb;</span>
+                <span id="mcp-recheck-btn" title="Recheck MCP connection"
+                    style="cursor:pointer; margin-left:4px; opacity:0.6; font-size:11px;">&#x21bb;</span>
             </div>
         </div>
     </div>
@@ -2117,6 +2120,9 @@
         document.getElementById('btn-add-custom-agent')?.addEventListener('click', () => openCustomAgentModal());
         document.getElementById('btn-save-custom-agent')?.addEventListener('click', saveCustomAgentDraft);
         document.getElementById('btn-cancel-custom-agent')?.addEventListener('click', closeCustomAgentModal);
+        document.getElementById('mcp-recheck-btn')?.addEventListener('click', () => {
+            vscode.postMessage({ type: 'recheckMcpConnection' });
+        });
         recoverPlansModal.addEventListener('click', (event) => {
             if (event.target === recoverPlansModal) closeRecoverPlansModal();
         });
@@ -2140,11 +2146,51 @@
         const btnGrid = document.getElementById('createAgentGrid');
         if (btnGrid) {
             btnGrid.addEventListener('click', () => {
-                btnGrid.innerText = 'OPENING...';
+                btnGrid.innerText = 'SAVING & OPENING...';
                 btnGrid.classList.add('dispatching');
                 btnGrid.classList.remove('is-teal');
                 btnGrid.disabled = true;
-                vscode.postMessage({ type: 'createAgentGrid' });
+
+                // Auto-collapse Terminal Operations accordion so the user can see the agent list
+                const _toFieldsOnLaunch = document.getElementById('terminal-operations-fields');
+                const _toChevronOnLaunch = document.getElementById('terminal-operations-chevron');
+                if (_toFieldsOnLaunch && _toFieldsOnLaunch.classList.contains('open')) {
+                    _toFieldsOnLaunch.classList.remove('open');
+                    if (_toChevronOnLaunch) _toChevronOnLaunch.classList.remove('open');
+                    // hasManuallyCollapsedThisSession is intentionally NOT set here —
+                    // this is programmatic closure, not user intent. The onboarding guard
+                    // may re-open if agents fail to register, which is correct behaviour.
+                }
+
+                // Collect current CLI commands and custom agent state
+                const commands = { ...lastStartupCommands };
+                document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
+                    const role = input.dataset.role;
+                    commands[role] = input.value.trim();
+                });
+                const visibleAgents = {};
+                document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
+                    const role = cb.dataset.role;
+                    if (role) visibleAgents[role] = cb.checked;
+                });
+                const accurateCodingEnabled = !!document.getElementById('accurate-coding-toggle')?.checked;
+                const advancedReviewerEnabled = !!document.getElementById('advanced-reviewer-toggle')?.checked;
+                const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
+                const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
+                const aggressivePairProgramming = !!document.getElementById('aggressive-pair-toggle')?.checked;
+                const designDocEnabled = !!document.getElementById('design-doc-toggle')?.checked;
+                const designDocLink = document.getElementById('design-doc-link-input')?.value.trim() || '';
+                const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
+                // Save config first, then launch on acknowledgement
+                btnGrid._pendingLaunch = true;
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, advancedReviewerEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, designDocEnabled, designDocLink, planIngestionFolder, customAgents: lastCustomAgents });
+                // Safety fallback: launch anyway if save ack doesn't arrive
+                btnGrid._saveTimeout = setTimeout(() => {
+                    if (btnGrid._pendingLaunch) {
+                        btnGrid._pendingLaunch = false;
+                        vscode.postMessage({ type: 'createAgentGrid' });
+                    }
+                }, 3000);
                 if (btnGrid._gridResultTimeout) clearTimeout(btnGrid._gridResultTimeout);
                 btnGrid._gridResultTimeout = setTimeout(() => {
                     // Safety reset if backend never responds
@@ -2186,20 +2232,67 @@
             });
         }
 
+        /**
+         * Collapses all accordion panels that carry data-accordion="true",
+         * except the one whose id matches `exceptFieldsId`.
+         * Also removes 'open' from the sibling chevron element.
+         *
+         * The chevron element is located by walking to the parent toggle div
+         * (previousElementSibling of the fields div) and finding its .chevron child.
+         *
+         * @param {string|null} exceptFieldsId - ID of the fields div to leave untouched.
+         */
+        function collapseAllAccordions(exceptFieldsId) {
+            document.querySelectorAll('[data-accordion="true"]').forEach(fieldsEl => {
+                if (fieldsEl.id === exceptFieldsId) return; // skip the target panel
+                if (!fieldsEl.classList.contains('open')) return; // already closed
+                fieldsEl.classList.remove('open');
+                // Find the chevron in the sibling toggle div (always the immediately preceding sibling)
+                const toggleEl = fieldsEl.previousElementSibling;
+                if (toggleEl) {
+                    const chevron = toggleEl.querySelector('.chevron');
+                    if (chevron) chevron.classList.remove('open');
+                }
+                // For panel-fields that expose aria-hidden, update it
+                if (fieldsEl.hasAttribute('aria-hidden')) {
+                    fieldsEl.setAttribute('aria-hidden', 'true');
+                }
+            });
+        }
+
         const termOpsToggle = document.getElementById('terminal-operations-toggle');
         if (termOpsToggle) {
             termOpsToggle.addEventListener('click', () => {
                 const fields = document.getElementById('terminal-operations-fields');
                 const chevron = document.getElementById('terminal-operations-chevron');
                 if (fields && chevron) {
+                    const willOpen = !fields.classList.contains('open');
+                    if (willOpen) {
+                        // Collapse all other accordions before opening this one
+                        collapseAllAccordions('terminal-operations-fields');
+                    }
                     const isOpen = fields.classList.toggle('open');
                     chevron.classList.toggle('open', isOpen);
+                    if (isOpen) {
+                        vscode.postMessage({ type: 'getStartupCommands' });
+                        vscode.postMessage({ type: 'getVisibleAgents' });
+                        vscode.postMessage({ type: 'getCustomAgents' });
+                        vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
+                    } else {
+                        // User explicitly collapsed: remember for the rest of this session
+                        hasManuallyCollapsedThisSession = true;
+                    }
                 }
             });
         }
 
         if (liveFeedToggle && liveFeedFields && liveFeedChevron) {
             liveFeedToggle.addEventListener('click', () => {
+                const willOpen = !liveFeedFields.classList.contains('open');
+                if (willOpen) {
+                    // Collapse all other accordions before opening Live Feed
+                    collapseAllAccordions('panel-activity');
+                }
                 const isOpen = liveFeedFields.classList.toggle('open');
                 liveFeedChevron.classList.toggle('open', isOpen);
                 liveFeedFields.setAttribute('aria-hidden', isOpen ? 'false' : 'true');
@@ -2213,17 +2306,18 @@
                 const fields = document.getElementById('startup-fields');
                 const chevron = document.getElementById('startup-chevron');
                 if (fields && chevron) {
+                    const willOpen = !fields.classList.contains('open');
+                    if (willOpen) {
+                        // Collapse all other accordions before opening this one
+                        collapseAllAccordions('startup-fields');
+                    }
                     const isOpen = fields.classList.toggle('open');
                     chevron.classList.toggle('open', isOpen);
                     if (isOpen) {
-                        vscode.postMessage({ type: 'getStartupCommands' });
                         vscode.postMessage({ type: 'getAccurateCodingSetting' });
                         vscode.postMessage({ type: 'getAdvancedReviewerSetting' });
                         vscode.postMessage({ type: 'getLeadChallengeSetting' });
-                        vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
                         vscode.postMessage({ type: 'getAggressivePairSetting' });
-                        vscode.postMessage({ type: 'getVisibleAgents' });
-                        vscode.postMessage({ type: 'getCustomAgents' });
                     }
                 }
             });
@@ -2233,12 +2327,12 @@
         if (btnSaveStartup) {
             btnSaveStartup.addEventListener('click', () => {
                 const commands = { ...lastStartupCommands };
-                document.querySelectorAll('#startup-fields input[type="text"][data-role]').forEach(input => {
+                document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
                     const role = input.dataset.role;
                     commands[role] = input.value.trim();
                 });
                 const visibleAgents = {};
-                document.querySelectorAll('#startup-fields input[type="checkbox"][data-role]').forEach(cb => {
+                document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
                     const role = cb.dataset.role;
                     if (role) visibleAgents[role] = cb.checked;
                 });
@@ -2247,8 +2341,10 @@
                 const leadChallengeEnabled = !!document.getElementById('lead-challenge-toggle')?.checked;
                 const julesAutoSyncEnabled = !!document.getElementById('jules-auto-sync-toggle')?.checked;
                 const aggressivePairProgramming = !!document.getElementById('aggressive-pair-toggle')?.checked;
+                const designDocEnabled = !!document.getElementById('design-doc-toggle')?.checked;
+                const designDocLink = document.getElementById('design-doc-link-input')?.value.trim() || '';
                 const planIngestionFolder = document.getElementById('plan-ingestion-folder-input')?.value.trim() || '';
-                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, advancedReviewerEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, planIngestionFolder, customAgents: lastCustomAgents });
+                vscode.postMessage({ type: 'saveStartupCommands', commands, visibleAgents, accurateCodingEnabled, advancedReviewerEnabled, leadChallengeEnabled, julesAutoSyncEnabled, aggressivePairProgramming, designDocEnabled, designDocLink, planIngestionFolder, customAgents: lastCustomAgents });
                 lastVisibleAgents = { ...lastVisibleAgents, ...visibleAgents };
                 lastPlanIngestionFolder = planIngestionFolder;
                 renderCustomAgentConfigList();
@@ -2303,6 +2399,8 @@
         let lastPlanIngestionFolder = '';
         let lastVisibleAgents = { lead: true, coder: true, reviewer: true, planner: true, analyst: true, jules: true };
         let lastCustomAgents = [];
+        let currentDbPath = '';
+        let workspaceRoot = '';
         // Autoban engine state (received from backend)
         let autobanState = {
             enabled: false,
@@ -2329,6 +2427,13 @@
         let recentActivityCursor = undefined;
         let recentActivityHasMore = false;
         const pendingDispatches = new Set();
+
+        // --- Onboarding Guard State ---
+        let noAgentsDetectionTime = null;        // timestamp of first 0-green detection
+        let hasManuallyCollapsedThisSession = false; // true if user collapsed Terminal Ops this session
+        const RECOVERY_THRESHOLD_MS = 5000;      // ms before onboarding activates
+        let _onboardingRetryTimer = null;         // handle for the single pending follow-up render
+        let _setupComplete = false;               // true once needsSetup === false
 
         function getDispatchKey(role) {
             const sessionId = runSheetSelect.value || '';
@@ -2537,6 +2642,18 @@
                     if (message.dispatchReadiness !== undefined) { lastDispatchReadiness = message.dispatchReadiness || {}; }
                     renderAgentList();
                     break;
+                case 'saveStartupCommandsResult': {
+                    const gridBtn = document.getElementById('createAgentGrid');
+                    if (gridBtn && gridBtn._pendingLaunch) {
+                        gridBtn._pendingLaunch = false;
+                        if (gridBtn._saveTimeout) {
+                            clearTimeout(gridBtn._saveTimeout);
+                            gridBtn._saveTimeout = null;
+                        }
+                        vscode.postMessage({ type: 'createAgentGrid' });
+                    }
+                    break;
+                }
                 case 'createAgentGridResult': {
                     const gridBtn = document.getElementById('createAgentGrid');
                     if (gridBtn) {
@@ -2599,7 +2716,7 @@
                     if (message.commands) {
                         lastStartupCommands = message.commands;
                         lastPlanIngestionFolder = message.planIngestionFolder || '';
-                        document.querySelectorAll('#startup-fields input[type="text"][data-role]').forEach(input => {
+                        document.querySelectorAll('input[type="text"][data-role]').forEach(input => {
                             input.value = message.commands[input.dataset.role] || '';
                         });
                         const planIngestionFolderInput = document.getElementById('plan-ingestion-folder-input');
@@ -2621,7 +2738,7 @@
                 case 'visibleAgents':
                     if (message.agents) {
                         lastVisibleAgents = { ...lastVisibleAgents, ...message.agents };
-                        document.querySelectorAll('#startup-fields .agent-visible-toggle').forEach(cb => {
+                        document.querySelectorAll('.agent-visible-toggle').forEach(cb => {
                             const role = cb.dataset.role;
                             if (role && role in lastVisibleAgents) cb.checked = lastVisibleAgents[role];
                         });
@@ -2673,6 +2790,13 @@
                     if (toggle) {
                         toggle.checked = message.enabled === true;
                     }
+                    break;
+                }
+                case 'designDocSetting': {
+                    const ddToggle = document.getElementById('design-doc-toggle');
+                    const ddLink = document.getElementById('design-doc-link-input');
+                    if (ddToggle) ddToggle.checked = !!message.enabled;
+                    if (ddLink) ddLink.value = message.link || '';
                     break;
                 }
                 case 'recentActivity': {
@@ -2783,8 +2907,40 @@
                 }
                 case 'dbPathUpdated': {
                     const dbPathEl = document.getElementById('current-db-path');
-                    if (dbPathEl) dbPathEl.textContent = message.path || '.switchboard/kanban.db';
-                    updateCloudStatus(message.path || '');
+                    if (dbPathEl) {
+                        dbPathEl.textContent = message.path || '.switchboard/kanban.db';
+                        dbPathEl.style.opacity = '';
+                        dbPathEl.style.fontStyle = '';
+                    }
+                    if (message.workspaceRoot) {
+                        workspaceRoot = message.workspaceRoot;
+                    }
+                    currentDbPath = message.path || '.switchboard/kanban.db';
+                    
+                    // Restore correct radio button selection based on current path
+                    const path = message.path || '';
+                    const homedir = path.includes('~') ? path : '';
+                    let selectedValue = 'local';
+                    
+                    if (path.includes('GoogleDrive') || path.includes('Google Drive')) {
+                        selectedValue = 'google-drive';
+                    } else if (path.includes('Dropbox')) {
+                        selectedValue = 'dropbox';
+                    } else if (path.includes('iCloud') || path.includes('com~apple~CloudDocs')) {
+                        selectedValue = 'icloud';
+                    } else if (path && !path.includes('.switchboard/kanban.db')) {
+                        selectedValue = 'custom';
+                        const customInput = document.getElementById('db-custom-path-input');
+                        if (customInput) {
+                            customInput.value = path;
+                            customInput.classList.remove('hidden');
+                        }
+                    }
+                    
+                    const radioToSelect = document.querySelector(`input[name="db-location"][value="${selectedValue}"]`);
+                    if (radioToSelect) {
+                        radioToSelect.checked = true;
+                    }
                     break;
                 }
                 case 'dbConnectionResult': {
@@ -2793,19 +2949,6 @@
                         dbPathEl2.style.borderLeft = message.success ? '3px solid #28a745' : '3px solid #dc3545';
                         if (!message.success) dbPathEl2.title = message.error || 'Connection failed';
                         setTimeout(() => { dbPathEl2.style.borderLeft = ''; }, 2000);
-                    }
-                    break;
-                }
-                case 'cliStatus':
-                    updateCliToolStatus(message.tool, message.installed, message.version);
-                    break;
-                case 'archivePathUpdated': {
-                    const archPathEl = document.getElementById('current-archive-path');
-                    const archStatusEl = document.getElementById('archive-status');
-                    if (archPathEl) archPathEl.textContent = message.path || 'Not configured';
-                    if (archStatusEl) {
-                        archStatusEl.textContent = message.path ? 'configured' : 'not configured';
-                        archStatusEl.className = 'db-status-badge' + (message.path ? ' synced' : '');
                     }
                     break;
                 }
@@ -3059,9 +3202,110 @@
             return container;
         }
 
+        /**
+         * Returns true if roleId has an active Green-state agent.
+         * Green = dispatchState 'ready', OR terminal heartbeat alive.
+         * Does NOT count 'recoverable' (orange) or 'not_ready' (red).
+         * Jules is always green. Analyst uses the same terminal heartbeat check as other roles.
+         */
+        function isAgentGreen(roleId) {
+            // jules is a built-in cloud feature, always considered available
+            if (roleId === 'jules') return false;
+            const dispatchInfo = lastDispatchReadiness && roleId ? lastDispatchReadiness[roleId] : null;
+            const dispatchState = dispatchInfo?.state ?? null;
+            if (dispatchState === 'ready') return true;
+            if (dispatchState === 'recoverable' || dispatchState === 'not_ready') return false;
+            // Fallback: check terminal heartbeat for agents with no dispatch info
+            const HEARTBEAT_THRESHOLD_MS = 60_000;
+            const matchedTermName = Object.keys(lastTerminals).find(key => lastTerminals[key]?.role === roleId);
+            if (!matchedTermName) return false;
+            const termData = lastTerminals[matchedTermName];
+            if (!termData) return false;
+            const lastSeenMs = Date.parse(termData.lastSeen || '');
+            const heartbeatAlive = !isNaN(lastSeenMs) && (Date.now() - lastSeenMs) < HEARTBEAT_THRESHOLD_MS;
+            return termData.alive !== undefined ? !!termData.alive : (!!termData._isLocal || heartbeatAlive);
+        }
+
         function renderAgentList() {
             // Skip re-render when user is interacting with autoban dropdowns
             if (isAutobanPanelInteracting && currentAgentTab === 'autoban') return;
+
+            // --- Onboarding Guard: show "Agents not connected" if no green agents for >5s ---
+            if (_setupComplete) {
+                const va = lastVisibleAgents;
+                // Count all visible terminal-based roles. Jules is excluded (cloud service, always available).
+                // Analyst is included — if the user has assigned a terminal to the analyst role, it counts.
+                const allRoles = [
+                    ...(va.lead !== false ? ['lead'] : []),
+                    ...(va.coder !== false ? ['coder'] : []),
+                    ...(va.planner !== false ? ['planner'] : []),
+                    ...(va.reviewer !== false ? ['reviewer'] : []),
+                    ...(va.analyst !== false ? ['analyst'] : []),
+                    ...lastCustomAgents.filter(a => va[a.role] !== false).map(a => a.role)
+                ];
+
+                if (allRoles.length > 0) {
+                    const greenCount = allRoles.filter(roleId => isAgentGreen(roleId)).length;
+
+                    if (greenCount > 0) {
+                        // Agents connected — reset detection state
+                        noAgentsDetectionTime = null;
+                        clearTimeout(_onboardingRetryTimer);
+                        _onboardingRetryTimer = null;
+                        // Fall through to normal render below
+                    } else {
+                        // No green agents
+                        if (noAgentsDetectionTime === null) {
+                            noAgentsDetectionTime = Date.now();
+                        }
+                        const elapsed = Date.now() - noAgentsDetectionTime;
+                        if (elapsed < RECOVERY_THRESHOLD_MS) {
+                            // Still within grace period — schedule follow-up and bail out early
+                            clearTimeout(_onboardingRetryTimer);
+                            _onboardingRetryTimer = setTimeout(() => renderAgentList(), RECOVERY_THRESHOLD_MS - elapsed + 100);
+                            return; // keep current display unchanged during grace period
+                        }
+                        // Grace period expired — render onboarding state
+                        agentListStandard.innerHTML = '';
+                        agentListAutoban.innerHTML = '';
+                        if (currentAgentTab !== 'webai') {
+                            agentListWebai.innerHTML = '';
+                        }
+
+                        // Onboarding message
+                        const onboardMsg = document.createElement('div');
+                        onboardMsg.style.cssText = 'text-align:center; padding:20px 12px; color:var(--text-secondary); font-family:var(--font-mono); font-size:11px; line-height:1.6;';
+                        onboardMsg.textContent = 'Agents not connected. Assign and open terminals in Terminal Operations below.';
+                        agentListStandard.appendChild(onboardMsg);
+
+                        // Auto-expand Terminal Operations only if user has not manually collapsed it this session
+                        if (!hasManuallyCollapsedThisSession) {
+                            const toFields = document.getElementById('terminal-operations-fields');
+                            const toChevron = document.getElementById('terminal-operations-chevron');
+                            if (toFields && toChevron && !toFields.classList.contains('open')) {
+                                // Collapse SETUP and Database Operations before auto-opening Terminal Ops
+                                collapseAllAccordions('terminal-operations-fields');
+                                toFields.classList.add('open');
+                                toChevron.classList.add('open');
+                                // Fire same messages as the toggle click handler would
+                                vscode.postMessage({ type: 'getStartupCommands' });
+                                vscode.postMessage({ type: 'getVisibleAgents' });
+                                vscode.postMessage({ type: 'getCustomAgents' });
+                                vscode.postMessage({ type: 'getJulesAutoSyncSetting' });
+                            }
+                        }
+
+                        // Restore autoban and webai panels so other tabs still work
+                        agentListAutoban.appendChild(createAutobanPanel());
+                        if (currentAgentTab !== 'webai') {
+                            agentListWebai.appendChild(createWebAiAirlockPanel());
+                        }
+                        switchAgentTab(currentAgentTab);
+                        return; // skip the rest of normal renderAgentList
+                    }
+                }
+            }
+            // --- End Onboarding Guard ---
 
             // Preserve stateful analyst input across re-renders
             const existingInput = document.getElementById('analyst-input');
@@ -3829,12 +4073,46 @@
             container.appendChild(input);
             container.appendChild(btn);
 
+            const archiveBtn = document.createElement('button');
+            archiveBtn.id = 'btn-query-archives';
+            archiveBtn.className = 'action-btn';
+            archiveBtn.style.marginTop = '4px';
+            archiveBtn.style.width = '100%';
+            archiveBtn.style.opacity = '0.85';
+            archiveBtn.innerText = pendingDispatch ? 'DISPATCHING...' : 'QUERY ARCHIVES';
+            archiveBtn.title = 'Ask Analyst to query archived plans';
+            archiveBtn.disabled = !isReady || pendingDispatch;
+            archiveBtn.onclick = () => {
+                markDispatchPending('analyst');
+                archiveBtn.disabled = true;
+                archiveBtn.innerText = 'DISPATCHING...';
+                vscode.postMessage({ type: 'queryArchives' });
+            };
+            container.appendChild(archiveBtn);
+
+            const tutorialBtn = document.createElement('button');
+            tutorialBtn.id = 'btn-plugin-tutorial';
+            tutorialBtn.className = 'action-btn';
+            tutorialBtn.style.marginTop = '4px';
+            tutorialBtn.style.width = '100%';
+            tutorialBtn.style.opacity = '0.85';
+            tutorialBtn.innerText = pendingDispatch ? 'DISPATCHING...' : 'PLUGIN TUTORIAL';
+            tutorialBtn.title = 'Ask Analyst to guide you through Switchboard features interactively';
+            tutorialBtn.disabled = !isReady || pendingDispatch;
+            tutorialBtn.onclick = () => {
+                markDispatchPending('analyst');
+                tutorialBtn.disabled = true;
+                tutorialBtn.innerText = 'DISPATCHING...';
+                vscode.postMessage({ type: 'pluginTutorial' });
+            };
+            container.appendChild(tutorialBtn);
+
 
             return container;
         }
 
         function updateMcpStatus(msg) {
-            const recheckBtn = document.getElementById('mcp-recheck');
+            const recheckBtn = document.getElementById('mcp-recheck-btn');
             if (msg.diagnostic === 'MCP: Checking...') {
                 mcpDot.className = 'tiny-dot orange';
                 mcpText.innerText = 'MCP: CHECKING';
@@ -3862,11 +4140,16 @@
 
         function toggleOnboarding(needsSetup) {
             if (needsSetup) {
+                _setupComplete = false;
                 onboardingContainer.classList.remove('hidden');
                 mainContainer.classList.add('hidden');
             } else {
+                _setupComplete = true;
                 onboardingContainer.classList.add('hidden');
                 mainContainer.classList.remove('hidden');
+                // Request saved state to populate Terminal Operations section
+                vscode.postMessage({ type: 'getStartupCommands' });
+                vscode.postMessage({ type: 'getVisibleAgents' });
             }
         }
 
@@ -3923,79 +4206,99 @@
             vscode.postMessage({ type: 'finishOnboarding' });
         });
 
-        // --- Database & Sync Panel ---
-        function updateCloudStatus(dbPath) {
-            const badge = document.getElementById('cloud-status');
-            if (!badge) return;
-            if (dbPath.includes('Google Drive') || dbPath.includes('GoogleDrive-') || dbPath.includes('Dropbox') || dbPath.includes('iCloud') || dbPath.includes('CloudDocs')) {
-                badge.textContent = 'cloud synced';
-                badge.className = 'db-status-badge synced';
-            } else if (dbPath.includes('.switchboard')) {
-                badge.textContent = 'local';
-                badge.className = 'db-status-badge';
-            } else {
-                badge.textContent = 'custom';
-                badge.className = 'db-status-badge';
-            }
-        }
-
-        function updateCliToolStatus(tool, installed, version) {
-            if (tool === 'duckdb') {
-                const statusEl = document.getElementById('duckdb-status');
-                const installBtn = document.getElementById('duckdb-install-btn');
-                const openBtn = document.getElementById('open-duckdb-btn');
-                if (statusEl && installed) {
-                    statusEl.innerHTML = '<span class="db-status-dot green"></span> v' + (version || 'installed');
-                    if (installBtn) installBtn.style.display = 'none';
-                    if (openBtn) openBtn.disabled = false;
-                } else if (statusEl) {
-                    statusEl.innerHTML = '<span class="db-status-dot red"></span> Not installed';
-                    if (installBtn) installBtn.style.display = '';
-                    if (openBtn) openBtn.disabled = true;
-                }
-            }
-        }
-
+        // Database & Sync panel toggle
         document.getElementById('db-sync-toggle-btn')?.addEventListener('click', () => {
             const fields = document.getElementById('db-sync-fields');
             const chevron = document.getElementById('db-sync-chevron');
             if (fields && chevron) {
-                fields.classList.toggle('open');
-                chevron.classList.toggle('open');
+                const willOpen = !fields.classList.contains('open');
+                if (willOpen) {
+                    // Collapse all other accordions before opening this one
+                    collapseAllAccordions('db-sync-fields');
+                }
+                const isOpen = fields.classList.toggle('open');
+                chevron.classList.toggle('open', isOpen);
+                if (isOpen) {
+                    vscode.postMessage({ type: 'getStartupCommands' });
+                }
             }
         });
 
         // Database & Sync panel button handlers
-        document.getElementById('db-edit-path-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'editDbPath' });
+        const dbLocationRadios = document.querySelectorAll('input[name="db-location"]');
+        const dbCustomPathInput = document.getElementById('db-custom-path-input');
+        const dbPathDisplay = document.getElementById('current-db-path');
+        
+        // Compute proposed path based on selected location
+        function getProposedPath(location) {
+            if (!workspaceRoot) return '...';
+            const baseName = 'kanban.db';
+            switch (location) {
+                case 'local':
+                    return `${workspaceRoot}/.switchboard/${baseName}`;
+                case 'google-drive':
+                    return `~/Library/CloudStorage/GoogleDrive-*/.switchboard/${baseName}`;
+                case 'dropbox':
+                    return `~/Dropbox/.switchboard/${baseName}`;
+                case 'icloud':
+                    return `~/Library/Mobile Documents/com~apple~CloudDocs/.switchboard/${baseName}`;
+                case 'custom':
+                    return dbCustomPathInput?.value?.trim() || 'Enter custom path...';
+                default:
+                    return currentDbPath;
+            }
+        }
+        
+        // Show/hide custom path input and preview proposed path
+        dbLocationRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (radio.checked) {
+                    // Show proposed path as preview
+                    if (dbPathDisplay) {
+                        const proposed = getProposedPath(radio.value);
+                        dbPathDisplay.textContent = proposed;
+                        dbPathDisplay.style.opacity = '0.7';
+                        dbPathDisplay.style.fontStyle = 'italic';
+                    }
+                    
+                    if (radio.value === 'custom') {
+                        dbCustomPathInput.classList.remove('hidden');
+                        dbCustomPathInput.focus();
+                    } else {
+                        dbCustomPathInput.classList.add('hidden');
+                    }
+                }
+            });
         });
-        document.getElementById('db-test-connection-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'testDbConnection' });
+        
+        // Update preview when custom path input changes
+        dbCustomPathInput?.addEventListener('input', () => {
+            const customRadio = document.querySelector('input[name="db-location"][value="custom"]');
+            if (customRadio?.checked && dbPathDisplay) {
+                const proposed = dbCustomPathInput.value.trim() || 'Enter custom path...';
+                dbPathDisplay.textContent = proposed;
+            }
         });
-        document.getElementById('db-preset-google-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'google-drive' });
+
+        document.getElementById('db-update-location-btn')?.addEventListener('click', () => {
+            const selectedRadio = document.querySelector('input[name="db-location"]:checked');
+            if (!selectedRadio) return;
+            
+            const location = selectedRadio.value;
+            if (location === 'custom') {
+                const customPath = dbCustomPathInput.value.trim();
+                if (!customPath) {
+                    alert('Please enter a custom database path');
+                    return;
+                }
+                vscode.postMessage({ type: 'setCustomDbPath', path: customPath });
+            } else if (location === 'local') {
+                vscode.postMessage({ type: 'setLocalDb' });
+            } else {
+                vscode.postMessage({ type: 'setPresetDbPath', preset: location });
+            }
         });
-        document.getElementById('db-preset-dropbox-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'dropbox' });
-        });
-        document.getElementById('db-preset-icloud-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'setPresetDbPath', preset: 'icloud' });
-        });
-        document.getElementById('db-edit-archive-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'editArchivePath' });
-        });
-        document.getElementById('duckdb-install-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'installCliTool', tool: 'duckdb' });
-        });
-        document.getElementById('open-duckdb-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'openCliTerminal', tool: 'duckdb' });
-        });
-        document.getElementById('db-export-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'exportToArchive' });
-        });
-        document.getElementById('db-stats-btn')?.addEventListener('click', () => {
-            vscode.postMessage({ type: 'viewDbStats' });
-        });
+        
         document.getElementById('db-reset-btn')?.addEventListener('click', () => {
             vscode.postMessage({ type: 'resetDatabase' });
         });
@@ -4004,6 +4307,7 @@
         updatePlanActionStates();
         setActiveTab(activeTab, false);
         vscode.postMessage({ type: 'getRecentActivity', limit: 50 });
+        vscode.postMessage({ type: 'getDbPath' });
         vscode.postMessage({ type: 'ready' });
 
     </script>

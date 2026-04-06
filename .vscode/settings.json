@@ -1,5 +1,7 @@
 {
 	"switchboard.silentScaffolding": false,
+	"switchboard.archive.dbPath": ".switchboard/archive.duckdb",
+	"switchboard.archive.autoArchiveCompleted": true,
 	"mcpServers": {
 		"switchboard": {
 			"command": "node",
@@ -23,5 +25,6 @@
 	"switchboard.leadCoder.inlineChallenge": false,
 	"switchboard.jules.autoSync": false,
 	"switchboard.pairProgramming.aggressive": false,
-	"switchboard.reviewer.advancedMode": false
+	"switchboard.reviewer.advancedMode": false,
+	"switchboard.planner.designDocEnabled": false
 }

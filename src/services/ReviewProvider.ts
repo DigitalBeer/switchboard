@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
 
 export type ReviewPlanContext = {
@@ -410,6 +411,36 @@ export class ReviewProvider implements vscode.Disposable {
         this._currentPlan.initialMode = undefined;
     }
 
+    private _isPathWithinAllowedRoots(candidatePath: string): boolean {
+        // Check workspace root
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceRoot) {
+            const rel = path.relative(workspaceRoot, candidatePath);
+            if (!rel.startsWith('..') && !path.isAbsolute(rel)) return true;
+        }
+
+        // Allow brain directory
+        const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+        const relBrain = path.relative(brainDir, candidatePath);
+        if (!relBrain.startsWith('..') && !path.isAbsolute(relBrain)) return true;
+
+        // Allow custom plan folder
+        try {
+            const config = vscode.workspace.getConfiguration('switchboard');
+            const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+            if (customFolder) {
+                const expanded = customFolder.startsWith('~')
+                    ? path.join(os.homedir(), customFolder.slice(1))
+                    : customFolder;
+                const resolved = path.resolve(expanded);
+                const relCustom = path.relative(resolved, candidatePath);
+                if (!relCustom.startsWith('..') && !path.isAbsolute(relCustom)) return true;
+            }
+        } catch { /* ignore */ }
+
+        return false;
+    }
+
     private async _applyTicketUpdate(msg: ReviewTicketUpdateRequest): Promise<void> {
         if (!this._panel || !this._currentPlan) return;
 
@@ -417,11 +448,15 @@ export class ReviewProvider implements vscode.Disposable {
             if (msg.type === 'savePlanText' && !this._currentPlan.sessionId) {
                 const content = typeof msg.content === 'string' ? msg.content : '';
                 const expectedMtimeMs = Number(msg.expectedMtimeMs);
-                const currentStats = await fs.promises.stat(this._currentPlan.planFileAbsolute);
+                const planPath = this._currentPlan.planFileAbsolute;
+                if (!this._isPathWithinAllowedRoots(planPath)) {
+                    throw new Error(`Refusing to write: path "${planPath}" is outside allowed directories`);
+                }
+                const currentStats = await fs.promises.stat(planPath);
                 if (Number.isFinite(expectedMtimeMs) && Math.abs(currentStats.mtimeMs - expectedMtimeMs) > 1) {
                     throw new Error('Plan file changed on disk since this ticket was opened. Reload the ticket and try again.');
                 }
-                await fs.promises.writeFile(this._currentPlan.planFileAbsolute, content, 'utf8');
+                await fs.promises.writeFile(planPath, content, 'utf8');
                 const ticketData = await this._loadCurrentTicketData();
                 await this._renderTicketData(ticketData);
                 this._panel.webview.postMessage({ type: 'ticketUpdateResult', ok: true, message: 'Plan saved.' });
