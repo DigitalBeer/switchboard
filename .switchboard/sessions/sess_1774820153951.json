@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153951",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_064850_check_implementation_of_backwards_move_cards_and_cli_trigger_switch.md",
+  "topic": "Check implementation of backwards move cards and cli trigger switch",
+  "createdAt": "2026-03-29T12:49:18.777Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.113Z",
+      "action": "start"
+    }
+  ]
+}

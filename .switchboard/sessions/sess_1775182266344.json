@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1775182266344",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_192951_change_complexity_assessment.md",
+  "topic": "Make Kanban Complexity Detector More Lenient",
+  "createdAt": "2026-03-29T12:49:18.768Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-04-03T02:11:06.370Z",
+      "action": "start"
+    }
+  ]
+}

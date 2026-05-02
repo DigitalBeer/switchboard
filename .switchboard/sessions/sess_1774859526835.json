@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774859526835",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_065332_remove_text_input_areas_from_airlock_tab.md",
+  "topic": "Remove text input areas from airlock tab",
+  "createdAt": "2026-03-29T12:49:18.778Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T08:32:06.861Z",
+      "action": "start"
+    }
+  ]
+}

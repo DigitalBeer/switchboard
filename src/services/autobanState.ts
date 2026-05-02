@@ -36,7 +36,8 @@ const DEFAULT_AUTOBAN_RULES: Record<string, AutobanRuleState> = {
     CREATED: { enabled: true, intervalMinutes: 10 },
     'PLAN REVIEWED': { enabled: true, intervalMinutes: 20 },
     'LEAD CODED': { enabled: true, intervalMinutes: 15 },
-    'CODER CODED': { enabled: true, intervalMinutes: 15 }
+    'CODER CODED': { enabled: true, intervalMinutes: 15 },
+    'CODE REVIEWED': { enabled: true, intervalMinutes: 15 }
 };
 
 function normalizeFiniteCount(value: unknown, fallback: number, minimum: number, maximum?: number): number {

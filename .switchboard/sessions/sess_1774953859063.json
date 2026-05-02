@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774953859063",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_092117_investigate_kanban_complexity_and_potential_to_move_to_sqlite_database_system.md",
+  "topic": "Investigate Kanban Complexity and Potential to Move to SQLite Database System",
+  "createdAt": "2026-03-29T12:49:18.775Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-31T10:44:19.119Z",
+      "action": "start"
+    }
+  ]
+}

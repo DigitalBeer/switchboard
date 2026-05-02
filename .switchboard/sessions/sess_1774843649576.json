@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774843649576",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_082234_add_agent_names_to_kanban.md",
+  "topic": "Add agent names to kanban",
+  "createdAt": "2026-03-29T12:49:18.756Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T04:07:29.626Z",
+      "action": "start"
+    }
+  ]
+}

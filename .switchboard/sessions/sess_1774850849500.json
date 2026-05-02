@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774850849500",
+  "planFile": ".switchboard\\plans\\feature_plan_20260321_225300_pair_programming_two_stage_clipboard.md",
+  "topic": "Pair Programming: Two-Stage Clipboard Mode",
+  "createdAt": "2026-03-29T12:49:18.779Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T06:07:29.506Z",
+      "action": "start"
+    }
+  ]
+}

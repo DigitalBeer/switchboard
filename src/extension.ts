@@ -11,6 +11,7 @@ import { KanbanProvider } from './services/KanbanProvider';
 import { KanbanDatabase } from './services/KanbanDatabase';
 import { ReviewProvider, ReviewCommentRequest, ReviewCommentResult, ReviewOpenPlanOption, ReviewPlanContext, ReviewTicketData, ReviewTicketUpdateRequest, ReviewTicketUpdateResult } from './services/ReviewProvider';
 import { sendRobustText } from './services/terminalUtils';
+import { importPlanFiles } from './services/PlanFileImporter';
 import { cleanWorkspace, pruneZombieTerminalEntries } from './lifecycle/cleanWorkspace';
 
 // Status bar item for setup notification
@@ -301,19 +302,69 @@ function normalizeAgentKey(value: string | undefined | null): string {
         .trim();
 }
 
+function isPathWithin(parentDir: string, filePath: string): boolean {
+    const normalizedParent = path.resolve(parentDir);
+    const normalizedFile = path.resolve(filePath);
+    return normalizedFile === normalizedParent || normalizedFile.startsWith(normalizedParent + path.sep);
+}
+
 function isPathWithinRoot(candidate: string, root: string): boolean {
+    // Allow Antigravity brain directory (~/.gemini/antigravity/brain)
+    const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+    if (isPathWithin(brainDir, candidate)) return true;
+
+    // Allow configured custom plan folder (switchboard.kanban.plansFolder)
+    try {
+        const config = vscode.workspace.getConfiguration('switchboard');
+        const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+        if (customFolder) {
+            const expanded = customFolder.startsWith('~')
+                ? path.join(os.homedir(), customFolder.slice(1))
+                : customFolder;
+            const resolved = path.resolve(expanded);
+            if (isPathWithin(resolved, candidate)) return true;
+        }
+    } catch { /* ignore config errors */ }
+
     const rel = path.relative(root, candidate);
     return !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
 function findWorkspaceRootForPath(candidate: string): string | null {
     const absoluteCandidate = path.resolve(candidate);
+
+    // First: check if it's directly inside one of the VS Code workspace folders.
+    // Use a direct path.relative check — NOT isPathWithinRoot — so the brain/custom-folder
+    // allow-list in isPathWithinRoot doesn't short-circuit before the fallback below.
     for (const folder of vscode.workspace.workspaceFolders || []) {
         const workspaceRoot = folder.uri.fsPath;
-        if (isPathWithinRoot(absoluteCandidate, workspaceRoot)) {
+        const rel = path.relative(workspaceRoot, absoluteCandidate);
+        if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
             return workspaceRoot;
         }
     }
+
+    // Second: if the path is in an allowed external directory (brain or custom folder),
+    // fall back to the preferred workspace root so the command has a root to operate against.
+    const brainDir = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+    if (isPathWithin(brainDir, absoluteCandidate)) {
+        return getPreferredWorkspaceRoot();
+    }
+
+    try {
+        const config = vscode.workspace.getConfiguration('switchboard');
+        const customFolder = config.get<string>('kanban.plansFolder')?.trim();
+        if (customFolder) {
+            const expanded = customFolder.startsWith('~')
+                ? path.join(os.homedir(), customFolder.slice(1))
+                : customFolder;
+            const resolved = path.resolve(expanded);
+            if (isPathWithin(resolved, absoluteCandidate)) {
+                return getPreferredWorkspaceRoot();
+            }
+        }
+    } catch { /* ignore */ }
+
     return null;
 }
 
@@ -1027,10 +1078,76 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        const importedCount = await importPlanFiles(workspaceRoot);
         await vscode.commands.executeCommand('switchboard.fullSync');
-        vscode.window.showInformationMessage('Kanban database has been reset and rebuilt.');
+        vscode.window.showInformationMessage(
+            `Kanban database reset. Imported ${importedCount} plan(s) from .switchboard/plans/.`
+        );
     });
     context.subscriptions.push(resetKanbanDbDisposable);
+
+    // Reconcile Kanban Databases command — merge split databases
+    const reconcileKanbanDisposable = vscode.commands.registerCommand('switchboard.reconcileKanbanDbs', async () => {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            vscode.window.showWarningMessage('No workspace open.');
+            return;
+        }
+        const homedir = os.homedir();
+        const candidates = [
+            { label: 'Local', path: KanbanDatabase.defaultDbPath(workspaceRoot) },
+            { label: 'Configured', path: KanbanDatabase.forWorkspace(workspaceRoot).dbPath },
+            { label: 'iCloud', path: path.join(homedir, 'Library', 'Mobile Documents', 'com~apple~CloudDocs', 'Switchboard', 'kanban.db') },
+            { label: 'Dropbox', path: path.join(homedir, 'Dropbox', 'Switchboard', 'kanban.db') },
+        ];
+
+        // De-duplicate by resolved path and find existing DBs
+        const seen = new Set<string>();
+        const found: { label: string; dbPath: string; count: number }[] = [];
+        for (const c of candidates) {
+            const resolved = path.resolve(c.path);
+            if (seen.has(resolved)) continue;
+            seen.add(resolved);
+            if (fs.existsSync(resolved)) {
+                const count = await KanbanDatabase.countPlansInFile(resolved);
+                found.push({ label: c.label, dbPath: resolved, count });
+            }
+        }
+
+        if (found.length < 2) {
+            vscode.window.showInformationMessage('Only one database found. Nothing to reconcile.');
+            return;
+        }
+
+        const source = await vscode.window.showQuickPick(
+            found.map(f => ({ label: `${f.label} (${f.count} plans)`, description: f.dbPath, detail: f.dbPath })),
+            { placeHolder: 'Select SOURCE database (copy FROM)' }
+        );
+        if (!source) return;
+
+        const target = await vscode.window.showQuickPick(
+            found.filter(f => f.dbPath !== source.detail).map(f => ({ label: `${f.label} (${f.count} plans)`, description: f.dbPath, detail: f.dbPath })),
+            { placeHolder: 'Select TARGET database (merge INTO)' }
+        );
+        if (!target) return;
+
+        const confirmMerge = await vscode.window.showWarningMessage(
+            `Merge ${source.label} → ${target.label}? Conflicts resolved by newest updated_at.`,
+            { modal: true },
+            'Merge'
+        );
+        if (confirmMerge !== 'Merge') return;
+
+        try {
+            const merged = await KanbanDatabase.reconcileDatabases(source.detail!, target.detail!);
+            await KanbanDatabase.invalidateWorkspace(workspaceRoot);
+            vscode.commands.executeCommand('switchboard.refreshUI');
+            vscode.window.showInformationMessage(`✅ Reconciliation complete. ${merged} plans merged.`);
+        } catch (err) {
+            vscode.window.showErrorMessage(`Reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+    });
+    context.subscriptions.push(reconcileKanbanDisposable);
 
     // Invalidate DB cache when kanban.dbPath setting changes
     context.subscriptions.push(
@@ -1878,10 +1995,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const visibleAgents = await taskViewerProvider.getVisibleAgents();
         const includeJulesMonitor = visibleAgents.jules !== false;
         const customAgents = await taskViewerProvider.getCustomAgents();
+        // Order matches kanban columns: Planner(100) → Lead Coder(190) → Coder(200) → Reviewer(300) → Analyst
         const allBuiltInAgents = [
+            { name: 'Planner', role: 'planner' },
             { name: 'Lead Coder', role: 'lead' },
             { name: 'Coder', role: 'coder' },
-            { name: 'Planner', role: 'planner' },
             { name: 'Reviewer', role: 'reviewer' },
             { name: 'Analyst', role: 'analyst' }
         ];
@@ -2499,10 +2617,8 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
         return files;
     };
 
-    const registryPath = path.join(workspaceRoot, '.switchboard', 'plan_registry.json');
-    let registryBackedUp = false;
-    let registryModified = false;
-    let registry: { version: number; entries: Record<string, any> } | undefined;
+    const db = KanbanDatabase.forWorkspace(workspaceRoot);
+    const dbReady = await db.ensureReady();
 
     for (const legacyDir of legacyDirs) {
         if (!fs.existsSync(legacyDir)) continue;
@@ -2512,22 +2628,7 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
             continue;
         }
 
-        // Backup registry once before any moves
-        if (!registryBackedUp && fs.existsSync(registryPath)) {
-            try {
-                await fs.promises.copyFile(registryPath, registryPath + '.pre-migration.bak');
-                registryBackedUp = true;
-            } catch { }
-        }
-
-        // Lazy-load registry
-        if (!registry && fs.existsSync(registryPath)) {
-            try {
-                registry = JSON.parse(await fs.promises.readFile(registryPath, 'utf8'));
-            } catch { registry = undefined; }
-        }
-
-        const subDirName = path.basename(legacyDir); // 'features' or 'antigravity_plans'
+        const subDirName = path.basename(legacyDir);
         const renamedFilesMap = new Map<string, string>();
 
         for (const srcPath of files) {
@@ -2535,7 +2636,6 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
             let destName = originalName;
             let destPath = path.join(plansRoot, destName);
 
-            // Collision-safe rename
             if (fs.existsSync(destPath)) {
                 const ext = path.extname(destName);
                 const base = path.basename(destName, ext);
@@ -2551,7 +2651,6 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
                 await fs.promises.rename(srcPath, destPath);
                 renamedFilesMap.set(originalName, destName);
             } catch {
-                // If rename fails (cross-device), fall back to copy+unlink
                 try {
                     await fs.promises.copyFile(srcPath, destPath);
                     await fs.promises.unlink(srcPath);
@@ -2559,72 +2658,24 @@ async function migrateLegacyPlans(workspaceRoot: string): Promise<void> {
                 } catch { continue; }
             }
 
-            // Update registry entries pointing to old paths
-            if (registry?.entries) {
+            // Update DB plan entries pointing to old paths
+            if (dbReady) {
                 const oldRelative = `.switchboard/plans/${subDirName}/${originalName}`;
                 const newRelative = `.switchboard/plans/${destName}`;
-                for (const entry of Object.values(registry.entries)) {
-                    if (entry.localPlanPath === oldRelative) {
-                        entry.localPlanPath = newRelative;
-                        registryModified = true;
+                try {
+                    const wsId = await db.getWorkspaceId() || '';
+                    if (wsId) {
+                        const plan = await db.getPlanByPlanFile(oldRelative, wsId);
+                        if (plan) {
+                            await db.updatePlanFile(plan.sessionId, newRelative);
+                        }
                     }
-                    if (entry.mirrorPath === oldRelative) {
-                        entry.mirrorPath = newRelative;
-                        registryModified = true;
-                    }
-                }
+                } catch { /* non-fatal */ }
             }
         }
 
         try { await fs.promises.rm(legacyDir, { recursive: true, force: true }); } catch { }
-
-        // Also update runsheet planFile references
-        const sessionsDir = path.join(workspaceRoot, '.switchboard', 'sessions');
-        if (fs.existsSync(sessionsDir)) {
-            try {
-                const sessionFiles = await fs.promises.readdir(sessionsDir);
-                for (const sf of sessionFiles) {
-                    if (!sf.endsWith('.json')) continue;
-                    const sfPath = path.join(sessionsDir, sf);
-                    try {
-                        const raw = await fs.promises.readFile(sfPath, 'utf8');
-                        const sheet = JSON.parse(raw);
-                        if (typeof sheet.planFile === 'string' && sheet.planFile.includes(`plans/${subDirName}/`)) {
-                            const oldFile = path.basename(sheet.planFile);
-                            // Use the collision-safe name from our map
-                            const movedName = renamedFilesMap.get(oldFile);
-                            if (movedName) {
-                                sheet.planFile = sheet.planFile.replace(`plans/${subDirName}/${oldFile}`, `plans/${movedName}`);
-                                await fs.promises.writeFile(sfPath, JSON.stringify(sheet, null, 2));
-                            }
-                        }
-                    } catch { /* non-fatal per runsheet */ }
-                }
-            } catch { /* non-fatal */ }
-        }
-
-        // Remove empty legacy dir
         try { await fs.promises.rmdir(legacyDir); } catch { }
-    }
-
-    // Persist updated registry to DB (legacy file no longer used)
-    if (registryModified && registry) {
-        try {
-            const db = KanbanDatabase.forWorkspace(workspaceRoot);
-            if (await db.ensureReady()) {
-                for (const entry of Object.values(registry.entries)) {
-                    if (entry.localPlanPath || entry.mirrorPath) {
-                        const plan = await db.getPlanBySessionId(entry.planId || '');
-                        if (plan) {
-                            await db.updatePlanFile(plan.sessionId, entry.localPlanPath || plan.planFile);
-                            if (entry.mirrorPath) {
-                                await db.updateBrainPaths(plan.sessionId, plan.brainSourcePath, entry.mirrorPath);
-                            }
-                        }
-                    }
-                }
-            }
-        } catch { }
     }
 }
 

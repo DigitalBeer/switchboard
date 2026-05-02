@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774901765471",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_071652_change_the_view_and_complete_kanban_card_buttons_to_icons.md",
+  "topic": "Change the view and complete kanban card buttons to icons",
+  "createdAt": "2026-03-29T12:49:18.765Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T20:16:05.515Z",
+      "action": "start"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774953859059",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_082549_add_a_send_to_planner_button_to_airlock_tab.md",
+  "topic": "Add a send to planner button to airlock tab",
+  "createdAt": "2026-03-29T12:49:18.758Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-31T10:44:19.109Z",
+      "action": "start"
+    }
+  ]
+}

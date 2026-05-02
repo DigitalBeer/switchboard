@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153774",
+  "planFile": ".switchboard\\plans\\feature_plan_20260315_115700_add_complexity_identificaiton_to_get_kanban_state_mcp_tool.md",
+  "topic": "Add complexity identification to get_kanban_state MCP tool",
+  "createdAt": "2026-03-29T12:49:18.770Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.112Z",
+      "action": "start"
+    }
+  ]
+}

@@ -34,7 +34,7 @@ const DEFAULT_KANBAN_COLUMNS: KanbanColumnDefinition[] = [
     { id: 'PLAN REVIEWED', label: 'Planned', role: 'planner', order: 100, kind: 'review', autobanEnabled: true, dragDropMode: 'cli' },
     { id: 'LEAD CODED', label: 'Lead Coder', role: 'lead', order: 190, kind: 'coded', autobanEnabled: true, dragDropMode: 'cli' },
     { id: 'CODER CODED', label: 'Coder', role: 'coder', order: 200, kind: 'coded', autobanEnabled: true, dragDropMode: 'cli' },
-    { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', order: 300, kind: 'reviewed', autobanEnabled: false, dragDropMode: 'cli' },
+    { id: 'CODE REVIEWED', label: 'Reviewed', role: 'reviewer', order: 300, kind: 'reviewed', autobanEnabled: true, dragDropMode: 'cli' },
     { id: 'COMPLETED', label: 'Completed', order: 9999, kind: 'completed', autobanEnabled: false, dragDropMode: 'cli' },
 ];
 
@@ -126,7 +126,7 @@ export function buildKanbanColumns(customAgents: CustomAgentConfig[]): KanbanCol
             role: agent.role,
             order: agent.kanbanOrder,
             kind: 'custom' as const,
-            autobanEnabled: false,
+            autobanEnabled: true,
             dragDropMode: agent.dragDropMode,
         }));
 

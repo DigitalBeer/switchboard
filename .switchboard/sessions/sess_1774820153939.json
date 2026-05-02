@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153939",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_072001_add_windsurf_setup_workaround_hint.md",
+  "topic": "Add windsurf setup workaround hint",
+  "createdAt": "2026-03-29T12:49:18.772Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.113Z",
+      "action": "start"
+    }
+  ]
+}

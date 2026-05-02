@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774953859061",
+  "planFile": ".switchboard\\plans\\feature_plan_20260315_085942_add_prompt_batching.md",
+  "topic": "Add prompt batching",
+  "createdAt": "2026-03-29T12:49:18.770Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-31T10:44:19.118Z",
+      "action": "start"
+    }
+  ]
+}

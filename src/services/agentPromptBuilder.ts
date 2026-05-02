@@ -24,20 +24,22 @@ export interface PromptBuilderOptions {
     aggressivePairProgramming?: boolean;
     /** Whether advanced regression analysis block is appended (reviewer role). */
     advancedReviewerEnabled?: boolean;
+    /** Optional link to a design document (planner role). */
+    designDocLink?: string;
 }
 
 function buildReviewerExecutionIntro(planCount: number): string {
     if (planCount <= 1) {
-        return 'The implementation for this plan is complete. Execute a direct reviewer pass in-place.';
+        return 'The implementation for this plan is complete. Perform an advisory review.';
     }
 
-    return `The implementation for each of the following ${planCount} plans is complete. Execute a direct reviewer pass in-place for each plan.`;
+    return `The implementation for each of the following ${planCount} plans is complete. Perform an advisory review for each plan.`;
 }
 
 function buildReviewerExecutionModeLine(expectation: string): string {
     return `Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
+- You are a read-only reviewer. You do NOT edit files, run commands, or apply fixes.
+- Do not start any auxiliary workflow; execute this review directly.
 - Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
 - ${expectation}`;
 }
@@ -88,7 +90,21 @@ export function buildKanbanBatchPrompt(
     const chatCritiqueDirective =
         `When you output the adversarial critique (Grumpy and Balanced sections), include them verbatim in your chat response as formatted markdown — do not only write them to the plan file. The user must be able to read the critique directly in chat without opening the plan.`;
 
-    const executionDirective = `AUTHORIZATION TO EXECUTE: The plans provided are already authorized. You MUST enter EXECUTION mode immediately. Do NOT enter PLANNING mode or generate an implementation_plan.md. Proceed directly to implementing the changes.`;
+    const executionDirective = `AUTHORIZATION TO EXECUTE: The plans provided are already authorized. You MUST enter EXECUTION mode immediately. Do NOT enter PLANNING mode or generate an implementation_plan.md. Proceed directly to implementing the changes.
+CRITICAL QUALITY GATE: You are STRICTLY FORBIDDEN from reporting completion until you have executed the Verification Plan (e.g., \`npm run test\`, \`npm run build\`, etc.) and pasted the EXACT raw terminal output into your response as proof.`;
+
+    const agentHistoryDirective = `\n\nHISTORY JOURNALING (MANDATORY):
+You MUST physically edit the plan file on disk using your file-editing tools. Do NOT just print this in the chat!
+After completing your work, append a structured entry to the "## AGENT HISTORY" section at the bottom of the plan file (create it if missing, AFTER any existing sections like REVIEWER NOTES):
+
+### [YOUR ROLE] — [ISO TIMESTAMP]
+**Status:** [COMPLETE | BLOCKED | PARTIAL]
+**Summary:** [2-3 sentence summary of what was done]
+**Files Changed:** [comma-separated list of files modified, or "None (read-only)"]
+**Next Step:** [Which agent/column the card should go to next, e.g. "Send to Reviewer", "Send to QA Evaluator", "Send back to Planner"]
+---
+
+This history ensures the next agent in the pipeline has full context of previous work without re-reading chat transcripts. Read the existing ## AGENT HISTORY section (if present) before starting your own work to understand what has happened previously.`;
 
     if (role === 'planner') {
         const plannerVerb = baseInstruction === 'enhance' ? 'enhance' : 'improve';
@@ -117,17 +133,18 @@ Use 'High' for complex logic, new frameworks, or risky state mutations. Use 'Low
 6. ${chatCritiqueDirective}
 7. Update the original plan with the enhancement findings. Do NOT truncate, summarize, or delete existing implementation steps, code blocks, or goal statements.
 8. Recommend agent: if the plan is simple (routine changes, only Routine tasks), say "Send to Coder". If complex (Complex tasks, new frameworks), say "Send to Lead Coder".
+9. Ensure the plan has a "## REVIEWER NOTES" section at the end of the file (initially empty, with a comment: <!-- Reviewer appends structured issue blocks here after each review pass -->). If already present, do not modify it.
 
 ${focusDirective}
 
 PLANS TO PROCESS:
-${planList}`;
+${planList}${agentHistoryDirective}`;
     }
 
     if (role === 'reviewer') {
         const planTarget = plans.length <= 1 ? 'this plan' : 'each listed plan';
-        const reviewerExecutionIntro = buildReviewerExecutionIntro(plans.length);
-        const reviewerExecutionMode = buildReviewerExecutionModeLine(`For ${planTarget}, assess the actual code changes against the plan requirements, fix valid material issues in code when needed, then verify.`);
+        const reviewerIntro = buildReviewerExecutionIntro(plans.length);
+        const reviewerMode = buildReviewerExecutionModeLine(`For ${planTarget}, assess the actual code changes against the plan requirements and produce a structured Review Report.`);
         const advancedReviewerBlock = advancedReviewerEnabled ? `
 
 ADVANCED REGRESSION ANALYSIS (enabled):
@@ -138,28 +155,49 @@ ADVANCED REGRESSION ANALYSIS (enabled):
 5. Audit the full execution path from UI entry point to final state change, not just the changed lines.
 This analysis is token-intensive but catches regressions that plan-compliance-only reviews miss.` : '';
 
-        return `${reviewerExecutionIntro}
+        return `${reviewerIntro}
 
 ${batchExecutionRules}
 
-${reviewerExecutionMode}${advancedReviewerBlock}
+${reviewerMode}${advancedReviewerBlock}
+
+ROUTING RULES — classify every issue:
+- ROUTE → LEAD  : Architectural flaw, wrong approach, plan needs changing, scope mismatch
+- ROUTE → CODER : Logic error, missing implementation, failing test, non-trivial new code needed
+- ROUTE → FIXER : Typo, small missing null-check, off-by-one, lint/format, trivial one-liner fix
 
 For each plan:
 1. Use the plan file as the source of truth for the review criteria.
 2. Stage 1 (Grumpy): adversarial findings, severity-tagged (CRITICAL/MAJOR/NIT), in a dramatic "Grumpy Principal Engineer" voice (incisive, specific, theatrical).
 3. Stage 2 (Balanced): synthesize Stage 1 into actionable fixes — what to keep, what to fix now, what can defer.
-4. Apply code fixes for valid CRITICAL/MAJOR findings.
-5. Run verification checks (typecheck/tests as applicable) and include results.
-6. Update the original plan file with fixed items, files changed, validation results, and remaining risks. Do NOT truncate, summarize, or delete existing implementation steps.
+4. For each CRITICAL or MAJOR finding, append a structured issue block to the "## REVIEWER NOTES" section of the plan file:
 
-CRITICAL: Do not stop after Stage 1. Complete the Grumpy review, the Balanced synthesis, the code fixes, and the plan update all in one continuous response.
+---
+ISSUE [N]
+Severity : CRITICAL | MAJOR | MINOR
+Route    : LEAD | CODER | FIXER
+File     : <relative/path/to/file.ext> (line <N> or lines <N>-<M>)
+Context  : <One sentence describing what the code currently does or what is missing>
+Problem  : <One sentence explaining why this is wrong or incomplete>
+Expected : <One sentence describing the correct behaviour or what the fix must achieve>
+Fix hint : <A concrete suggestion — a before/after code block, the correct value, etc.>
+---
+
+5. After all issues, output exactly one verdict:
+   VERDICT: NOT READY — [N] issue(s) found. Highest priority route: [LEAD|CODER|FIXER].
+   VERDICT: APPROVED — No issues found. Send card to QA Evaluator for final verification.
+
+CRITICAL: You are a read-only reviewer regarding source code. You MUST NOT edit source code files, run commands, or execute anything. However, you MUST physically modify the plan file on disk using your file-editing tools to append your structured ISSUE blocks to the "## REVIEWER NOTES" section, and append your status to the "## AGENT HISTORY" section. Do NOT just print the text in chat; if you do not use a file editing tool to write to the file, the next agent will not see your notes and the process will loop infinitely.
+Do not stop after Stage 1. Complete the Grumpy review, the Balanced synthesis, the structured ISSUE blocks in the plan file, and the VERDICT all in one continuous response.
+Do not use phrases like "I fixed", "I updated", "tests passed", "I applied".
+Use phrases like "Proposed fix:", "This should be changed to:", "Run this to verify:".
 
 ${chatCritiqueDirective}
 
 ${focusDirective}
 
 PLANS TO PROCESS:
-${planList}`;
+${planList}${agentHistoryDirective}`;
     }
 
     if (role === 'lead') {
@@ -172,7 +210,11 @@ ${batchExecutionRules}${challengeBlock}
 ${focusDirective}
 
 PLANS TO PROCESS:
-${planList}`;
+${planList}
+
+COMPLETION PROTOCOL: When finished, you MUST paste the exact terminal output of your validation commands as proof. Then output exactly one of:
+- IMPLEMENTATION COMPLETE — All plans implemented and verified. Send card to Reviewer.
+- IMPLEMENTATION BLOCKED — reason: [reason]. Send card back to [PLANNER|CODER].${agentHistoryDirective}`;
         if (pairProgrammingEnabled) {
             leadPrompt += `\n\nNote: A Coder agent is concurrently handling the Routine tasks for these plans. You only need to do Complex (Band B) work. IMPORTANT: The Coder has JUST started and will NOT be finished yet — do NOT attempt to check or read their work at the start. Begin your Complex implementation immediately. Only check and integrate the Coder's Routine work as a final step before declaring completion, by which time they will have finished.`;
             if (aggressivePairProgramming) {
@@ -195,7 +237,11 @@ ${batchExecutionRules}${challengeBlock}
 ${focusDirective}
 
 PLANS TO PROCESS:
-${planList}`, accurateCodingEnabled);
+${planList}
+
+COMPLETION PROTOCOL: When finished, you MUST paste the exact terminal output of your validation commands as proof. Then output exactly one of:
+- IMPLEMENTATION COMPLETE — All plans implemented and verified. Send card to Reviewer.
+- IMPLEMENTATION BLOCKED — reason: [reason]. Send card back to Planner.${agentHistoryDirective}`, accurateCodingEnabled);
         if (pairProgrammingEnabled) {
             coderPrompt += `\n\nAdditional Instructions: only do Routine (Band A) work.`;
         }
@@ -209,7 +255,10 @@ ${batchExecutionRules}
 ${focusDirective}
 
 PLANS TO PROCESS:
-${planList}`;
+${planList}
+
+COMPLETION PROTOCOL: When finished executing the plans, you MUST update the plan files with your findings.
+${agentHistoryDirective}`;
 }
 
 /**

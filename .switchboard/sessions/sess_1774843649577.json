@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774843649577",
+  "planFile": ".switchboard\\plans\\feature_plan_20260316_091239_change_kanban_header.md",
+  "topic": "change kanban header",
+  "createdAt": "2026-03-29T12:49:18.774Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T04:07:29.695Z",
+      "action": "start"
+    }
+  ]
+}

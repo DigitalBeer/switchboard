@@ -70,3 +70,37 @@ Confirm that the message handler for `recheckMcpConnection` still exists and fun
 
 ## Agent Recommendation
 **Send to Coder** — Single file, well-defined scope, established pattern from previous fix. No architectural decisions required.
+
+## Reviewer Pass — 2026-03-29
+
+### Findings Summary
+
+| ID | Severity | File:Line | Finding | Verdict |
+|----|----------|-----------|---------|---------|
+| R1 | ✅ PASS | `implementation.html:1774-1775` | Inline `onclick` removed, ID changed to `mcp-recheck-btn` | Correct |
+| R2 | ✅ PASS | `implementation.html:2103-2105` | `addEventListener('click', ...)` registered with `vscode.postMessage({ type: 'recheckMcpConnection' })` | Correct |
+| R3 | ✅ PASS | `TaskViewerProvider.ts:2964-2965` | Backend handler dispatches `switchboard.recheckMcp` command | Correct |
+| R4 | ✅ PASS | `TaskViewerProvider.ts:9252-9260` | CSP nonce generation + injection is solid | Correct |
+| R5 | ✅ PASS | All webview files | Zero inline HTML event handler attributes (`onclick=`, `onchange=`, etc.) | Correct |
+| R6 | NIT | `implementation.html` (12 sites) | `.onclick = () => {}` JS property assignments mixed with `addEventListener` style — inconsistent but CSP-safe | Defer |
+| R7 | NIT | `TaskViewerProvider.ts:9270` | Error fallback HTML interpolates `${e}` unsanitized, no CSP on error page — pre-existing, not introduced by this fix | Defer |
+
+### Files Changed (by this reviewer pass)
+
+- **None** — No code changes required. Implementation is correct.
+
+### Validation Results
+
+- `npx tsc --noEmit` — ✅ **PASS** (exit code 0, no errors)
+- Inline event handler audit — ✅ **ZERO** `onclick="..."` HTML attributes across all webview files
+- CSP nonce injection — ✅ Regex `/<script>/g` correctly matches the single bare `<script>` tag at line 1826
+- Backend handler — ✅ `recheckMcpConnection` case exists and dispatches correct VS Code command
+
+### Remaining Risks
+
+1. **Low**: 12 `.onclick =` JS property assignments (lines 2002, 2008, 2954, 2968, 2992, 3025, 3208, 3235, 3245, 3267, 3773, 3800) are CSP-safe but stylistically inconsistent with `addEventListener`. No functional risk — defer to a future cleanup sweep.
+2. **Low**: Error fallback HTML at `TaskViewerProvider.ts:9270` has no CSP and unsanitized error interpolation. Pre-existing issue, not introduced by this fix. Practical risk is minimal (error is from filesystem operations, webview is sandboxed).
+
+### Reviewer Verdict
+
+**✅ APPROVED** — The MCP recheck button CSP fix is correctly implemented. The inline `onclick` was removed, `addEventListener` was added following the established project pattern, and the backend handler is intact. No CRITICAL or MAJOR findings.

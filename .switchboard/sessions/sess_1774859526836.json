@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774859526836",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_113032_fix_complexity_parsing_bug.md",
+  "topic": "Fix complexity parsing bug",
+  "createdAt": "2026-03-29T12:49:18.779Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T08:32:06.861Z",
+      "action": "start"
+    }
+  ]
+}

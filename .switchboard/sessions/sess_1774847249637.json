@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774847249637",
+  "planFile": ".switchboard\\plans\\brain_806c5d316c36feda0b48430dd344708f7c212a5e50bc189046c147a8b5efaf40.md",
+  "topic": "Fix Kanban UI Alignment and Labeling",
+  "createdAt": "2026-03-29T12:49:18.754Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T05:07:29.680Z",
+      "action": "start"
+    }
+  ]
+}

@@ -135,3 +135,30 @@ This is optional — automatic cleanup during manual sync is probably sufficient
 
 ## Agent Recommendation
 **Send to Coder** — Straightforward DB operation with clear safety guards, minimal integration points. Pattern already established by `purgeOrphanedPlans`.
+
+## Reviewer Pass — 2026-03-29
+
+### Findings Summary
+
+| # | Severity | Finding | Location | Status |
+|---|----------|---------|----------|--------|
+| 1 | **MAJOR** | Tombstone cleanup ran unconditionally on every sync (including hot single-sheet paths with `archiveMissing=false`), causing unnecessary full-table scans on every session update | `TaskViewerProvider.ts:926-930` | **Fixed** — moved inside `if (archiveMissing)` block |
+| 2 | **MAJOR** | No input validation on `olderThanDays` — passing 0 or negative value would delete all tombstones, bypassing the 30-day recovery window | `KanbanDatabase.ts:696` | **Fixed** — added clamp to minimum 1 day with warning |
+| 3 | NIT | Two-phase COUNT + DELETE without transaction means logged count could theoretically differ from actual deletions | `KanbanDatabase.ts:708-734` | **Deferred** — safe in sql.js single-thread context; no `await` between count and delete |
+| 4 | NIT | `(countStmt.getAsObject() as any).cnt as number` double-cast | `KanbanDatabase.ts:719` | **Deferred** — consistent with existing codebase patterns |
+| 5 | NIT | Optional `cleanupTombstones` webview command not implemented | Plan §3 | **Accepted** — plan marked it optional; automatic cleanup during full sync is sufficient |
+
+### Files Changed
+
+- `src/services/KanbanDatabase.ts` — Added `olderThanDays` floor guard (clamp < 1 → 1 with console.warn)
+- `src/services/TaskViewerProvider.ts` — Moved `purgeOldTombstones` call inside `if (archiveMissing)` block so it only runs during full syncs
+
+### Validation Results
+
+- `npx tsc --noEmit` — **PASS** (clean, exit 0)
+- Pre-existing baseline was also clean
+
+### Remaining Risks
+
+- **Low**: The COUNT + DELETE two-phase approach logs an approximate count. If exact counts become important (e.g., for telemetry), wrap in a transaction or switch to `_db.run()` only and return a constant.
+- **Low**: No unit tests were added for `purgeOldTombstones`. The plan's verification section calls for them but they were out of scope for this reviewer pass.

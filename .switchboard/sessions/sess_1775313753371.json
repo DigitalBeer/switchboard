@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1775313753371",
+  "planFile": ".switchboard\\plans\\brain_9821d70926fe80fceb23975f80b8d9fd77d4cd038d9becd5e31dc9c5fb6cd757.md",
+  "topic": "Implementation Plan: Archive Fallback and Kanban Visibility",
+  "createdAt": "2026-04-04T14:42:33.282Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-04-04T14:42:33.373Z",
+      "action": "start"
+    }
+  ]
+}

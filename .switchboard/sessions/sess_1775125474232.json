@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1775125474232",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_135545_conversational_kanban_control_via_smart_router.md",
+  "topic": "Conversational Kanban Control via Smart Router",
+  "createdAt": "2026-03-29T12:49:18.767Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-04-02T10:24:34.339Z",
+      "action": "start"
+    }
+  ]
+}

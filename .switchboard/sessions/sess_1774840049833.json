@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774840049833",
+  "planFile": ".switchboard\\plans\\feature_plan_20260312_183409_get_kanban_state_mcp_tool.md",
+  "topic": "Native MCP Tool for Kanban State Resolution",
+  "createdAt": "2026-03-29T12:49:18.764Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T03:07:29.885Z",
+      "action": "start"
+    }
+  ]
+}

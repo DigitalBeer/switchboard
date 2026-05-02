@@ -687,6 +687,17 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({ type: 'selectSession', sessionId });
     }
 
+    /**
+     * Focus the VS Code terminal assigned to the given agent role.
+     * Called by KanbanProvider when the user clicks a card to auto-switch terminals.
+     */
+    public async focusTerminalForRole(role: string): Promise<void> {
+        const agentName = await this._getAgentNameForRole(role);
+        if (agentName) {
+            await vscode.commands.executeCommand('switchboard.focusTerminalByName', agentName);
+        }
+    }
+
     private _deriveLastActionFromEvents(events: any[]): string {
         for (let i = events.length - 1; i >= 0; i--) {
             const workflow = String(events[i]?.workflow || '').trim();
@@ -782,8 +793,15 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             case 'LEAD CODED':
             case 'CODER CODED':
                 return 'CODE REVIEWED';
-            case 'CODE REVIEWED':
-                return null;
+            case 'CODE REVIEWED': {
+                // Walk the column list to find the next column (supports custom agent columns after Reviewed)
+                const columnIds = buildKanbanColumns(customAgents).map(column => column.id);
+                const currentIndex = columnIds.indexOf('CODE REVIEWED');
+                if (currentIndex < 0 || currentIndex >= columnIds.length - 1) {
+                    return null;
+                }
+                return columnIds[currentIndex + 1];
+            }
             default: {
                 const columnIds = buildKanbanColumns(customAgents).map(column => column.id);
                 const currentIndex = columnIds.indexOf(normalizedCurrent);
@@ -1229,16 +1247,16 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
     private _buildReviewerExecutionIntro(planCount: number): string {
         if (planCount <= 1) {
-            return 'The implementation for this plan is complete. Execute a direct reviewer pass in-place.';
+            return 'The implementation for this plan is complete. Perform an advisory review.';
         }
 
-        return `The implementation for each of the following ${planCount} plans is complete. Execute a direct reviewer pass in-place for each plan.`;
+        return `The implementation for each of the following ${planCount} plans is complete. Perform an advisory review for each plan.`;
     }
 
     private _buildReviewerExecutionModeLine(expectation: string): string {
         return `Mode:
-- You are the reviewer-executor for this task.
-- Do not start any auxiliary workflow; execute this task directly.
+- You are a read-only reviewer. You do NOT edit files, run commands, or apply fixes.
+- Do not start any auxiliary workflow; execute this review directly.
 - Treat the challenge stage as inline analysis in this same prompt (no \`/challenge\` workflow).
 - ${expectation}`;
     }
@@ -1328,7 +1346,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         };
         const workflowName = role === 'planner'
             ? (this._plannerWorkflowNameForInstruction(instruction) || workflowMap[role])
-            : workflowMap[role];
+            : (workflowMap[role] || role);
 
         const prompt = this._buildKanbanBatchPrompt(role, validPlans, instruction);
 
@@ -1388,7 +1406,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     }
 
     public async handleKanbanRestorePlan(planId: string, _workspaceRoot?: string): Promise<boolean> {
-        return await this._handleRestorePlan(planId);
+        return await this.restorePlan(planId);
     }
 
     public async handleDeletePlanFromReview(sessionId: string, workspaceRoot?: string): Promise<boolean> {
@@ -2411,7 +2429,25 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
     /** Called by Kanban controls strip to toggle the shared Autoban engine state. */
     public async setAutobanEnabledFromKanban(enabled: boolean): Promise<void> {
         const wasEnabled = this._autobanState.enabled;
-        this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, enabled });
+
+        // Seed autoban rules for custom agent columns that have autobanEnabled but no rule yet
+        if (enabled) {
+            const workspaceRoot = this._resolveWorkspaceRoot();
+            if (workspaceRoot) {
+                const customAgents = await this.getCustomAgents(workspaceRoot);
+                const seededRules = { ...this._autobanState.rules };
+                for (const agent of customAgents) {
+                    if (agent.includeInKanban && !seededRules[agent.role]) {
+                        seededRules[agent.role] = { enabled: true, intervalMinutes: 15 };
+                    }
+                }
+                this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, rules: seededRules, enabled });
+            } else {
+                this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, enabled });
+            }
+        } else {
+            this._autobanState = normalizeAutobanConfigState({ ...this._autobanState, enabled });
+        }
 
         if (enabled && !wasEnabled) {
             this._resetAutobanSessionCounters();
@@ -2462,7 +2498,9 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             case 'CODER CODED':
             case 'CODED':
                 return 'reviewer';
-            default: return null;
+            case 'CODE REVIEWED': return 'reviewer'; // placeholder; actual routing resolved dynamically in _autobanTickColumn
+            default:
+                return column.startsWith('custom_agent_') ? column : null;
         }
     }
 
@@ -2621,8 +2659,18 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             const intervalMs = Math.max(rule.intervalMinutes, 1) * 60 * 1000;
             this._autobanLastTickAt.set(column, Date.now());
 
-            // Fire an immediate tick (serialized via queue) so plans move as soon as the engine starts
-            this._enqueueAutobanTick(column, batchSize);
+            // Delay the first tick for CODE REVIEWED and custom agent columns
+            // to give CLI agents time to start in their terminals
+            const isCustomOrReviewed = column === 'CODE REVIEWED' || column.startsWith('custom_agent_');
+            if (isCustomOrReviewed) {
+                const startupDelay = setTimeout(() => {
+                    this._enqueueAutobanTick(column, batchSize);
+                }, 30_000); // 30s grace period for CLI startup
+                this._autobanTimers.set(`${column}__startup`, startupDelay as unknown as ReturnType<typeof setInterval>);
+            } else {
+                // Fire an immediate tick (serialized via queue) so plans move as soon as the engine starts
+                this._enqueueAutobanTick(column, batchSize);
+            }
 
             const timer = setInterval(() => {
                 this._enqueueAutobanTick(column, batchSize);
@@ -2752,6 +2800,21 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
 
             return true;
         };
+
+        // CODE REVIEWED → resolve the next custom agent column dynamically
+        if (sourceColumn === 'CODE REVIEWED') {
+            const customAgents = await this.getCustomAgents(workspaceRoot);
+            const nextColumn = await this._getNextKanbanColumnForSession(sourceColumn, eligibleCards[0]?.sessionId ?? '', workspaceRoot, customAgents);
+            if (!nextColumn || nextColumn === 'COMPLETED') {
+                // No custom agent columns after CODE REVIEWED; nothing to dispatch
+                return;
+            }
+            const targetRole = nextColumn; // custom agent role IS the column ID
+            const batch = eligibleCards.slice(0, batchSize);
+            console.log(`[Autoban] CODE REVIEWED: dispatching ${batch.length} card(s) to ${targetRole}`);
+            await dispatchWithAutobanTerminal(targetRole, batch);
+            return;
+        }
 
         // Complexity-aware routing for PLAN REVIEWED → Lead/Coder lanes
         if (sourceColumn === 'PLAN REVIEWED' && this._kanbanProvider) {
@@ -3098,7 +3161,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     }
                     case 'restorePlan': {
                         if (data.planId) {
-                            const success = await this._handleRestorePlan(data.planId);
+                            const success = await this.restorePlan(data.planId);
                             this._view?.webview.postMessage({ type: 'restorePlanResult', success, planId: data.planId });
                             if (success) {
                                 const plans = this._getRecoverablePlans();
@@ -3950,7 +4013,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         const runSheet = await log.findRunSheetByPlanFile(relativePlanPath, { includeCompleted: true });
         if (runSheet?.sessionId) {
             await log.deleteRunSheet(runSheet.sessionId);
-            await log.deleteDispatchLog(runSheet.sessionId);
         }
 
         let registryChanged = false;
@@ -4487,7 +4549,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         return recoverable;
     }
 
-    private async _handleRestorePlan(planId: string): Promise<boolean> {
+    public async restorePlan(planId: string): Promise<boolean> {
         const workspaceRoot = this._resolveWorkspaceRoot();
         if (!workspaceRoot) return false;
         await this._activateWorkspaceContext(workspaceRoot);
@@ -4600,14 +4662,18 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                     if (fs.existsSync(archivedMirrorPath)) {
                         await fs.promises.mkdir(path.dirname(mirrorAbsPath), { recursive: true });
                         await fs.promises.copyFile(archivedMirrorPath, mirrorAbsPath);
-                        console.log(`[TaskViewerProvider] Restored plan file from archive: ${path.basename(mirrorAbsPath)}`);
+                        await fs.promises.unlink(archivedMirrorPath);
+                        console.log(`[TaskViewerProvider] Restored plan file from archive (moved): ${path.basename(mirrorAbsPath)}`);
                     }
                 }
             }
 
             await fs.promises.mkdir(sessionsDir, { recursive: true });
             await fs.promises.writeFile(activeRunSheetPath, JSON.stringify(sheet, null, 2));
-            console.log(`[TaskViewerProvider] Restored run sheet: ${sessionId}`);
+            if (fs.existsSync(archivedRunSheetPath)) {
+                await fs.promises.unlink(archivedRunSheetPath);
+            }
+            console.log(`[TaskViewerProvider] Restored run sheet: ${sessionId} (removed from archive)`);
         } catch (e) {
             console.error(`[TaskViewerProvider] Failed to restore run sheet ${sessionId}:`, e);
         }
@@ -5788,6 +5854,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             throw new Error('Plan file path is outside the workspace boundary.');
         }
 
+        // F-08 FALLBACK: If primary path doesn't exist, check archive/plans fallback
+        if (!fs.existsSync(planFileAbsolute)) {
+            const archivePath = path.join(workspaceRoot, '.switchboard', 'archive', 'plans', path.basename(planFileAbsolute));
+            if (fs.existsSync(archivePath)) {
+                return archivePath;
+            }
+        }
+
         return planFileAbsolute;
     }
 
@@ -5972,8 +6046,11 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
         }
 
         const planFileAbsolute = this._getPlanPathFromSheet(workspaceRoot, sheet);
-        const planText = await fs.promises.readFile(planFileAbsolute, 'utf8');
-        const stats = await fs.promises.stat(planFileAbsolute);
+        const planFileExists = fs.existsSync(planFileAbsolute);
+        const planText = planFileExists
+            ? await fs.promises.readFile(planFileAbsolute, 'utf8')
+            : `> ⚠️ Plan file not found on disk.\n> Path: \`${planFileAbsolute}\`\n>\n> This plan may have been archived, moved, or created on another machine.`;
+        const stats = planFileExists ? await fs.promises.stat(planFileAbsolute) : null;
         const customAgents = await this.getCustomAgents(workspaceRoot);
         const columns = buildKanbanColumns(customAgents).map(column => ({ id: column.id, label: column.label }));
         const events: any[] = Array.isArray(sheet.events) ? sheet.events : [];
@@ -5999,7 +6076,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             complexity,
             dependencies,
             planText,
-            planMtimeMs: stats.mtimeMs,
+            planMtimeMs: stats?.mtimeMs ?? 0,
             actionLog: this._getReviewLogEntries(events),
             columns,
             canEditMetadata: true
@@ -6837,7 +6914,6 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             }
 
             await log.deleteRunSheet(sessionId);
-            await log.deleteDispatchLog(sessionId);
             this._activeDispatchSessions.delete(sessionId);
 
             const db = await this._getKanbanDb(resolvedWorkspaceRoot);
@@ -7949,7 +8025,7 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
             });
             messageMetadata.phase_gate = {
                 enforce_persona: 'reviewer',
-                review_mode: strictReviewPrompts ? 'direct_execute_strict' : 'direct_execute_light',
+                review_mode: strictReviewPrompts ? 'advisory_strict' : 'advisory_light',
                 bypass_workflow_triggers: 'true'
             };
 
@@ -7960,14 +8036,14 @@ export class TaskViewerProvider implements vscode.WebviewViewProvider {
                 messagePayload += `\n\nDispatch delivery (strict mode — COMPLETE ALL IN A SINGLE RESPONSE):
 - Write Stage 1 findings to ${reviewerFindingsPath}
 - Write Stage 2 synthesis to ${reviewerSynthesisPath}
-- Post both in chat first, then apply fixes and update the plan. Keep file outputs as archival artifacts.
-- Strict format: Implemented Well / Issues Found / Fixes Applied / Validation Results / Remaining Risks / Final Verdict (Ready/Not Ready).
+- Post both in chat first, then output the structured Review Report with ISSUE blocks and VERDICT.
+- Strict format: Implemented Well / Issues Found (with ISSUE blocks) / VERDICT.
 - Use "Not Ready" only for unresolved code defects or unmet plan requirements, not for environment/tooling constraints.`;
             } else {
                 messagePayload += `\n\nDispatch delivery (light mode — COMPLETE ALL IN A SINGLE RESPONSE):
 - Do NOT write plan/review artifact files in light mode.
-- Post findings and synthesis directly in chat, then apply fixes and update the plan.
-- Suggested format: Implemented Well / Issues Found / Fixes Applied / Validation Results / Remaining Risks / Final Verdict (Ready/Not Ready).
+- Post findings, synthesis, and structured ISSUE blocks directly in chat.
+- End with a single VERDICT line.
 - Use "Not Ready" only for unresolved code defects or unmet plan requirements, not for environment/tooling constraints.`;
             }
         } else if (role === 'lead') {
@@ -8206,7 +8282,12 @@ Create this file exactly as specified, then continue your work.`);
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '_')
             .replace(/^_+|_+$/g, '');
-        return cleaned || 'new_plan';
+        // Cap slug length to avoid Windows MAX_PATH (260 chars) errors.
+        // 80 chars leaves ample room for prefix, timestamp, extension, and directory path.
+        const truncated = cleaned.length > 80
+            ? cleaned.slice(0, 80).replace(/_+$/, '')
+            : cleaned;
+        return truncated || 'new_plan';
     }
 
     private _formatPlanTimestamp(date: Date): string {

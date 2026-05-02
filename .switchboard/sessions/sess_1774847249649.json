@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774847249649",
+  "planFile": ".switchboard\\plans\\feature_plan_20260313_070705_remove_the_copy_to_clipboard_option_from_create_plan_modal.md",
+  "topic": "Remove the copy to clipboard option from create plan modal",
+  "createdAt": "2026-03-29T12:49:18.765Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T05:07:29.680Z",
+      "action": "start"
+    }
+  ]
+}

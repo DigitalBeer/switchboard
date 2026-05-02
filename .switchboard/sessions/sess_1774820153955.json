@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774820153955",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_065103_open_plans_should_opena_new_ticket.md",
+  "topic": "Open plans should open a new ticket",
+  "createdAt": "2026-03-29T12:49:18.778Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-29T21:35:54.113Z",
+      "action": "start"
+    }
+  ]
+}

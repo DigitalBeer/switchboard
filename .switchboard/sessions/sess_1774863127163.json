@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774863127163",
+  "planFile": ".switchboard\\plans\\feature_plan_20260311_224739_improve_how_to_plan_guide.md",
+  "topic": "Maximize Detail and Prevent Truncation in AI Feature Plans",
+  "createdAt": "2026-03-29T12:49:18.761Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T09:32:07.191Z",
+      "action": "start"
+    }
+  ]
+}

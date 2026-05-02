@@ -1,0 +1,13 @@
+{
+  "sessionId": "sess_1774863127165",
+  "planFile": ".switchboard\\plans\\feature_plan_20260317_070719_plans_in_the_reviewed_column_are_out_of_order.md",
+  "topic": "Plans in the reviewed column are out of order",
+  "createdAt": "2026-03-29T12:49:18.778Z",
+  "events": [
+    {
+      "workflow": "unknown",
+      "timestamp": "2026-03-30T09:32:07.193Z",
+      "action": "start"
+    }
+  ]
+}
